@@ -1,0 +1,69 @@
+0 verbose cli /opt/homebrew/Cellar/node/25.9.0_3/bin/node /opt/homebrew/bin/npm
+1 info using npm@11.12.1
+2 info using node@v25.9.0
+3 silly config load:file:/opt/homebrew/lib/node_modules/npm/npmrc
+4 silly config load:file:/opt/homebrew/var/www/vectre-office/backend_node_js/homopathy_clinic_backend_node_js/.npmrc
+5 silly config load:file:/Users/rahul_sahu/Library/Application Support/interpreter/codex-home/home/.npmrc
+6 silly config load:file:/opt/homebrew/etc/npmrc
+7 verbose title npm exec node -e console.log(require('@babel/parser').parse('const x=()=>{}').program.body[0].type)
+8 verbose argv "exec" "--yes" "--package" "@babel/parser" "--" "node" "-e" "console.log(require('@babel/parser').parse('const x=()=>{}').program.body[0].type)"
+9 verbose logfile logs-max:10 dir:/opt/homebrew/var/www/vectre-office/backend_node_js/homopathy_clinic_backend_node_js/.npm-cache/_logs/2026-07-02T09_47_03_418Z-
+10 verbose logfile /opt/homebrew/var/www/vectre-office/backend_node_js/homopathy_clinic_backend_node_js/.npm-cache/_logs/2026-07-02T09_47_03_418Z-debug-0.log
+11 silly logfile done cleaning log files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 http fetch GET 200 https://registry.npmjs.org/npm 284ms
+14 http fetch GET 200 https://registry.npmjs.org/@babel%2fparser 266ms (cache miss)
+15 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+16 silly idealTree buildDeps
+17 silly fetch manifest @babel/parser@8.0.0
+18 silly packumentCache full:https://registry.npmjs.org/@babel%2fparser cache-miss
+19 http fetch GET 200 https://registry.npmjs.org/@babel%2fparser 100ms (cache miss)
+20 silly packumentCache full:https://registry.npmjs.org/@babel%2fparser set size:undefined disposed:false
+21 silly placeDep ROOT @babel/parser@8.0.0 OK for:  want: 8.0.0
+22 silly fetch manifest @babel/types@^8.0.0
+23 silly packumentCache full:https://registry.npmjs.org/@babel%2ftypes cache-miss
+24 http fetch GET 200 https://registry.npmjs.org/@babel%2ftypes 140ms (cache miss)
+25 silly packumentCache full:https://registry.npmjs.org/@babel%2ftypes set size:undefined disposed:false
+26 silly placeDep ROOT @babel/types@8.0.0 OK for: @babel/parser@8.0.0 want: ^8.0.0
+27 silly fetch manifest @babel/helper-string-parser@^8.0.0
+28 silly packumentCache full:https://registry.npmjs.org/@babel%2fhelper-string-parser cache-miss
+29 silly fetch manifest @babel/helper-validator-identifier@^8.0.0
+30 silly packumentCache full:https://registry.npmjs.org/@babel%2fhelper-validator-identifier cache-miss
+31 http fetch GET 200 https://registry.npmjs.org/@babel%2fhelper-string-parser 94ms (cache miss)
+32 silly packumentCache full:https://registry.npmjs.org/@babel%2fhelper-string-parser set size:undefined disposed:false
+33 http fetch GET 200 https://registry.npmjs.org/@babel%2fhelper-validator-identifier 96ms (cache miss)
+34 silly packumentCache full:https://registry.npmjs.org/@babel%2fhelper-validator-identifier set size:undefined disposed:false
+35 silly placeDep ROOT @babel/helper-string-parser@8.0.0 OK for: @babel/types@8.0.0 want: ^8.0.0
+36 silly placeDep ROOT @babel/helper-validator-identifier@8.0.2 OK for: @babel/types@8.0.0 want: ^8.0.0
+37 silly reify moves {}
+38 silly audit bulk request {
+38 silly audit   '@babel/parser': [ '8.0.0' ],
+38 silly audit   '@babel/types': [ '8.0.0' ],
+38 silly audit   '@babel/helper-string-parser': [ '8.0.0' ],
+38 silly audit   '@babel/helper-validator-identifier': [ '8.0.2' ]
+38 silly audit }
+39 http cache @babel/helper-validator-identifier@https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-8.0.2.tgz 0ms (cache hit)
+40 http cache @babel/types@https://registry.npmjs.org/@babel/types/-/types-8.0.0.tgz 0ms (cache hit)
+41 http cache @babel/helper-string-parser@https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-8.0.0.tgz 0ms (cache hit)
+42 http cache @babel/parser@https://registry.npmjs.org/@babel/parser/-/parser-8.0.0.tgz 0ms (cache hit)
+43 silly tarball no local data for @babel/helper-validator-identifier@https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-8.0.2.tgz. Extracting by manifest.
+44 silly tarball no local data for @babel/types@https://registry.npmjs.org/@babel/types/-/types-8.0.0.tgz. Extracting by manifest.
+45 silly tarball no local data for @babel/helper-string-parser@https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-8.0.0.tgz. Extracting by manifest.
+46 silly tarball no local data for @babel/parser@https://registry.npmjs.org/@babel/parser/-/parser-8.0.0.tgz. Extracting by manifest.
+47 http fetch GET 200 https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-8.0.2.tgz 86ms (cache miss)
+48 http fetch GET 200 https://registry.npmjs.org/@babel/types/-/types-8.0.0.tgz 255ms (cache miss)
+49 http fetch POST 200 https://registry.npmjs.org/-/npm/v1/security/advisories/bulk 275ms
+50 silly audit report {}
+51 http fetch GET 200 https://registry.npmjs.org/@babel/parser/-/parser-8.0.0.tgz 308ms (cache miss)
+52 http fetch GET 200 https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-8.0.0.tgz 373ms (cache miss)
+53 verbose cwd /opt/homebrew/var/www/vectre-office/backend_node_js/homopathy_clinic_backend_node_js
+54 verbose os Darwin 25.3.0
+55 verbose node v25.9.0
+56 verbose npm  v11.12.1
+57 notice
+57 notice New minor version of npm available! 11.12.1 -> 11.18.0
+57 notice Changelog: https://github.com/npm/cli/releases/tag/v11.18.0
+57 notice To update run: npm install -g npm@11.18.0
+57 notice  { force: true, Symbol(proc-log.meta): true }
+58 verbose exit 1
+59 verbose code 1

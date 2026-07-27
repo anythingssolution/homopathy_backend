@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@babel/parser": "^8.0.0"
+  },
+  "_npx": {
+    "packages": [
+      "@babel/parser"
+    ]
+  }
+}

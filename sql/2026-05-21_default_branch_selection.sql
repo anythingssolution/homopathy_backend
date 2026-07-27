@@ -1,0 +1,1 @@
+UPDATE `master_users` SET `selected_branch_id` = 1 WHERE `selected_branch_id` is NULL;

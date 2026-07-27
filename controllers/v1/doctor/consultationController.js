@@ -1,0 +1,488 @@
+const {
+    withTransaction,
+    AppError,
+    asyncHandler,
+    createNotificationsForRole,
+    markAppointmentQueueCompleted,
+    emitLiveQueueEvent,
+    normalizeMasterValue,
+    getDoctorAppointmentById,
+    getConsultationAggregateByAppointmentId,
+    getMedicalPricingAggregateByConsultationId,
+    enrichAppointmentChainWithConsultationData,
+    validateConsultationPayload,
+} = require('./shared');
+const {
+    createNextFollowUpIfNeeded,
+    getAppointmentChain,
+    getVisitTypeCode,
+} = require('../../../services/followupService');
+const {
+    scheduleAutoCallNext,
+    DEFAULT_AUTO_CALL_DELAY_MS,
+} = require('../../../services/liveQueueAutomationService');
+const {
+    QUEUE_STATUS,
+    formatDateTimeForSql,
+} = require('../../../services/liveQueueService');
+
+const createConsultation = asyncHandler(async (req, res) => {
+    const {
+        appointmentId,
+        medicationDurationDays,
+        followUpAfterDays,
+        repeatedFromConsultationId,
+        consultationMode,
+        oxygenSaturation,
+        bloodPressure,
+        patientHeight,
+        patientWeight,
+        symptoms,
+        diagnosis,
+        treatmentAdvice,
+        hasNoAdvice,
+        occupation,
+        historyPresentIllness,
+        historyPastIllness,
+        familyHistory,
+        allergiesHistory,
+        gynecologicalHistory,
+        personalSocialHistory,
+        generalExamination,
+        systematicExamination,
+        differentialDiagnosis,
+        followUp,
+        disease,
+        mentalMindStatus,
+        formulaSetId,
+        formulaVersionUsed,
+        quickFormulaInput,
+        followUpChainClosed,
+        medications,
+        tests,
+        totalAmount,
+    } = validateConsultationPayload(req.body);
+
+    let createdConsultationId = null;
+    let pendingFollowUp = null;
+    let shouldNotifyMedical = false;
+
+    const queueCompletionContext = await withTransaction(async (connection) => {
+        const [appointmentRows] = await connection.execute(
+            `SELECT
+                a.appointment_id,
+                a.parent_appointment_id,
+                a.fk_branch_id,
+                a.status,
+                a.is_active,
+                a.queue_status,
+                a.actual_called_at,
+                a.reception_status,
+                a.consultation_payment_status,
+                t.id AS treatment_id,
+                t.treatment_code,
+                t.treatment_name
+             FROM tbl_appointments a
+             JOIN master_treatments t ON t.id = a.fk_treatment_id
+             WHERE a.appointment_id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [appointmentId]
+        );
+
+        if (appointmentRows.length === 0) {
+            throw new AppError('Appointment not found', 404);
+        }
+
+        const appointment = appointmentRows[0];
+
+        if (req.selectedBranchId && Number(appointment.fk_branch_id) !== Number(req.selectedBranchId)) {
+            throw new AppError('You can create consultation only for the selected branch', 403);
+        }
+        if (Number(appointment.is_active) !== 1 || appointment.status === 'Cancelled') {
+            throw new AppError('Consultation cannot be created for a cancelled or inactive appointment', 409);
+        }
+        if (appointment.reception_status !== 'APPROVED_BY_RECEPTION') {
+            throw new AppError('Consultation can only be created after receptionist approval', 409);
+        }
+        if (appointment.consultation_payment_status !== 'PAID') {
+            throw new AppError('Consultation can only be created after consultation payment is collected', 409);
+        }
+        const isLiveQueueCompletion = (
+            appointment.queue_status === QUEUE_STATUS.IN_PROGRESS
+            || (
+                appointment.queue_status === QUEUE_STATUS.WAITING
+                && appointment.actual_called_at
+            )
+        );
+
+        const [existingConsultationRows] = await connection.execute(
+            `SELECT id
+             FROM tbl_consultations
+             WHERE appointment_id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [appointmentId]
+        );
+
+        if (existingConsultationRows.length > 0) {
+            throw new AppError('Consultation already exists for this appointment', 409);
+        }
+
+        if (repeatedFromConsultationId) {
+            const currentVisitType = getVisitTypeCode({
+                treatmentId: appointment.treatment_id,
+                treatmentName: appointment.treatment_name,
+                treatmentCode: appointment.treatment_code,
+            });
+
+            if (currentVisitType !== 'FOLLOW_UP_VISIT' || !appointment.parent_appointment_id) {
+                throw new AppError('Repeat treatment is available only for follow-up visits', 409);
+            }
+
+            const [sourceRows] = await connection.execute(
+                `SELECT c.id
+                 FROM tbl_consultations c
+                 WHERE c.id = ?
+                   AND c.appointment_id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [repeatedFromConsultationId, appointment.parent_appointment_id]
+            );
+
+            if (sourceRows.length === 0) {
+                throw new AppError('Repeat treatment source must be the parent consultation', 409);
+            }
+        }
+
+        const shouldSendToMedical = medications.length > 0 || tests.length > 0;
+        const consultationWorkflowStatus = shouldSendToMedical
+            ? 'READY_FOR_MEDICAL'
+            : 'COMPLETED_NO_PRESCRIPTION';
+        shouldNotifyMedical = shouldSendToMedical;
+
+        const [consultationResult] = await connection.execute(
+            `INSERT INTO tbl_consultations
+             (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+            [
+                appointmentId,
+                req.user.id,
+                symptoms,
+                treatmentAdvice,
+                medicationDurationDays,
+                followUpChainClosed ? 1 : 0,
+                followUpAfterDays,
+                repeatedFromConsultationId,
+                consultationMode,
+                oxygenSaturation,
+                bloodPressure,
+                patientHeight,
+                patientWeight,
+                occupation,
+                historyPresentIllness,
+                historyPastIllness,
+                familyHistory,
+                allergiesHistory,
+                gynecologicalHistory,
+                personalSocialHistory,
+                generalExamination,
+                systematicExamination,
+                differentialDiagnosis,
+                followUp,
+                disease,
+                diagnosis,
+                mentalMindStatus,
+                formulaSetId,
+                formulaVersionUsed,
+                quickFormulaInput,
+                consultationWorkflowStatus,
+                shouldSendToMedical ? 1 : 0,
+            ]
+        );
+
+        createdConsultationId = consultationResult.insertId;
+        const pricingItems = [];
+
+        for (const medication of medications) {
+            if (medication.medicine_type === 'TEXT') {
+                const normalizedMedicineValue = normalizeMasterValue(medication.medicine_value);
+                const [existingMedicineMasters] = await connection.execute(
+                    `SELECT id FROM master_text_medicines WHERE normalized_value = ? LIMIT 1`,
+                    [normalizedMedicineValue]
+                );
+
+                if (existingMedicineMasters.length === 0) {
+                    await connection.execute(
+                        `INSERT INTO master_text_medicines
+                         (medicine_value, normalized_value)
+                         VALUES (?, ?)`,
+                        [medication.medicine_value, normalizedMedicineValue]
+                    );
+                }
+
+                if (medication.remark) {
+                    const normalizedRemarkValue = normalizeMasterValue(medication.remark);
+                    const [existingRemarkMasters] = await connection.execute(
+                        `SELECT id FROM master_text_medicine_remarks WHERE normalized_value = ? LIMIT 1`,
+                        [normalizedRemarkValue]
+                    );
+
+                    if (existingRemarkMasters.length === 0) {
+                        await connection.execute(
+                            `INSERT INTO master_text_medicine_remarks
+                             (remark_value, normalized_value)
+                             VALUES (?, ?)`,
+                            [medication.remark, normalizedRemarkValue]
+                        );
+                    }
+                }
+            }
+
+            const [medicationResult] = await connection.execute(
+                `INSERT INTO tbl_consultation_medications
+                 (consultation_id, medicine_type, medicine_value, remark)
+                 VALUES (?, ?, ?, ?)`,
+                [consultationResult.insertId, medication.medicine_type, medication.medicine_value, medication.remark]
+            );
+
+            pricingItems.push({
+                consultation_medication_id: medicationResult.insertId,
+                medicine_value: medication.medicine_value,
+                amount: medication.amount,
+            });
+
+            for (const dose of medication.doses) {
+                await connection.execute(
+                    `INSERT INTO tbl_medication_dosages
+                     (consultation_medication_id, dose_label, sort_order, times_per_day, balls_per_dose, instructions)
+                     VALUES (?, ?, ?, ?, ?, ?)`,
+                    [medicationResult.insertId, dose.dose_label, dose.sort_order, dose.times_per_day, dose.balls_per_dose, dose.instructions]
+                );
+            }
+        }
+
+        for (const test of tests) {
+            await connection.execute(
+                `INSERT INTO tbl_consultation_tests
+                 (consultation_id, test_name, amount)
+                 VALUES (?, ?, ?)`,
+                [consultationResult.insertId, test.test_name, test.amount]
+            );
+        }
+
+        if (shouldSendToMedical) {
+            const [pricingResult] = await connection.execute(
+                `INSERT INTO tbl_medical_prescription_pricing
+                 (consultation_id, total_amount, remark, created_by, updated_by)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [consultationResult.insertId, totalAmount, 'Doctor entered initial pricing', req.user.id, req.user.id]
+            );
+
+            for (const item of pricingItems) {
+                await connection.execute(
+                    `INSERT INTO tbl_medical_prescription_pricing_items
+                     (pricing_id, consultation_medication_id, medicine_value, amount)
+                     VALUES (?, ?, ?, ?)`,
+                    [pricingResult.insertId, item.consultation_medication_id, item.medicine_value, item.amount]
+                );
+            }
+        }
+
+        await connection.execute(
+            `UPDATE tbl_appointments
+             SET status = 'Completed',
+                 updated_by = ?
+             WHERE appointment_id = ?`,
+            [req.user.id, appointmentId]
+        );
+
+        pendingFollowUp = await createNextFollowUpIfNeeded({
+            connection,
+            appointmentId,
+            followUpAfterDays,
+            followUpChainClosed,
+        });
+
+        if (!isLiveQueueCompletion) {
+            await connection.execute(
+                `UPDATE tbl_appointments
+                 SET queue_status = ?,
+                     actual_completed_at = COALESCE(actual_completed_at, NOW()),
+                     last_queue_event_at = NOW(),
+                     updated_by = ?
+                 WHERE appointment_id = ?`,
+                [QUEUE_STATUS.COMPLETED, req.user.id, appointmentId]
+            );
+
+            return {
+                shouldAutoCallNext: false,
+                isDirectConsultation: true,
+                branchId: Number(appointment.fk_branch_id),
+                slotId: null,
+                appointmentDate: null,
+            };
+        }
+
+        return markAppointmentQueueCompleted(connection, {
+            appointmentId,
+            actorUserId: req.user.id,
+            eventType: 'CONSULTATION_COMPLETED',
+        });
+    });
+
+    const consultation = await getConsultationAggregateByAppointmentId(appointmentId);
+    const appointment = await getDoctorAppointmentById(appointmentId, req.selectedBranchId || null);
+
+    if (shouldNotifyMedical) {
+        await createNotificationsForRole({
+            roleCode: 'MED',
+            branchId: appointment?.fk_branch_id ? Number(appointment.fk_branch_id) : req.selectedBranchId || null,
+            type: 'PRESCRIPTION_READY_FOR_MEDICAL',
+            title: 'Prescription ready for medical',
+            message: `Prescription for patient ${appointment?.patient_full_name || appointmentId} is ready for medical processing.`,
+            entityType: 'consultation',
+            entityId: createdConsultationId || consultation?.consultation_id || 0,
+            emitEvent: 'prescription.ready_for_medical',
+            emitPayload: {
+                consultation_id: createdConsultationId || consultation?.consultation_id || null,
+                appointment_id: appointmentId,
+                patient_name: appointment?.patient_full_name || null,
+                workflow_status: consultation?.workflow_status || 'READY_FOR_MEDICAL',
+                message: 'Prescription ready for medical processing',
+            },
+        });
+    }
+
+    let autoCallNextDueAt = null;
+
+    if (queueCompletionContext.shouldAutoCallNext) {
+        autoCallNextDueAt = await scheduleAutoCallNext({
+            branchId: queueCompletionContext.branchId,
+            slotId: queueCompletionContext.slotId,
+            appointmentDate: queueCompletionContext.appointmentDate,
+            actorUserId: req.user.id,
+            delayMs: DEFAULT_AUTO_CALL_DELAY_MS,
+            reason: 'AUTO_CALL_NEXT_AFTER_CONSULT_COMPLETE',
+        });
+    }
+
+    if (!queueCompletionContext.isDirectConsultation) {
+        await emitLiveQueueEvent({
+            branchId: queueCompletionContext.branchId,
+            slotId: queueCompletionContext.slotId,
+            appointmentDate: queueCompletionContext.appointmentDate,
+            eventName: 'consultation-completed',
+            reason: 'CONSULTATION_COMPLETED',
+            appointmentId,
+            extra: {
+                auto_call_next_due_at: autoCallNextDueAt ? formatDateTimeForSql(autoCallNextDueAt) : null,
+            },
+        });
+    }
+
+    return res.status(201).json({
+        success: true,
+        message: 'Consultation created successfully',
+        data: {
+            appointment,
+            consultation,
+            pending_follow_up: pendingFollowUp,
+        },
+    });
+});
+
+const getConsultationByAppointmentId = asyncHandler(async (req, res) => {
+    const appointmentId = Number(req.params.appointment_id);
+
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+        throw new AppError('Valid appointment_id is required', 400);
+    }
+
+    const appointment = await getDoctorAppointmentById(appointmentId, req.selectedBranchId || null);
+    if (!appointment) {
+        throw new AppError('Appointment not found', 404);
+    }
+
+    const consultation = await getConsultationAggregateByAppointmentId(appointmentId);
+    if (!consultation) {
+        throw new AppError('Consultation not found for this appointment', 404);
+    }
+
+    const pricing = await getMedicalPricingAggregateByConsultationId(consultation.consultation_id);
+    const followUpChain = await enrichAppointmentChainWithConsultationData(
+        await getAppointmentChain(appointmentId)
+    );
+
+    return res.status(200).json({
+        success: true,
+        message: 'Consultation fetched successfully',
+        data: {
+            appointment,
+            consultation,
+            pricing,
+            follow_up_chain: followUpChain,
+        },
+    });
+});
+
+const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
+    const appointmentId = Number(req.params.appointment_id);
+
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+        throw new AppError('Valid appointment_id is required', 400);
+    }
+
+    const appointment = await getDoctorAppointmentById(appointmentId, req.selectedBranchId || null);
+    if (!appointment) {
+        throw new AppError('Appointment not found', 404);
+    }
+
+    const currentVisitType = getVisitTypeCode({
+        treatmentId: appointment.fk_treatment_id,
+        treatmentName: appointment.treatment_name,
+        treatmentCode: appointment.treatment_code,
+    });
+
+    if (currentVisitType !== 'FOLLOW_UP_VISIT' || !appointment.parent_appointment_id) {
+        throw new AppError('Repeat treatment is available only for follow-up visits', 409);
+    }
+
+    const sourceConsultation = await getConsultationAggregateByAppointmentId(appointment.parent_appointment_id);
+    if (!sourceConsultation) {
+        throw new AppError('Parent consultation not found', 404);
+    }
+
+    const pricing = await getMedicalPricingAggregateByConsultationId(sourceConsultation.consultation_id);
+    const pricingByMedicationId = new Map(
+        (pricing?.medications || []).map((item) => [
+            Number(item.consultation_medication_id),
+            Number(item.amount || 0),
+        ])
+    );
+
+    return res.status(200).json({
+        success: true,
+        message: 'Repeat treatment draft fetched successfully',
+        data: {
+            source_consultation_id: sourceConsultation.consultation_id,
+            source_appointment_id: sourceConsultation.appointment_id,
+            medication_duration_days: sourceConsultation.medication_duration_days,
+            medications: sourceConsultation.medications
+                .filter((medication) => String(medication.added_by_role || 'DOCTOR').toUpperCase() !== 'MEDICAL')
+                .map((medication) => ({
+                    medicine_type: medication.medicine_type,
+                    medicine_value: medication.medicine_value,
+                    remark: medication.remark,
+                    doses: medication.doses,
+                    amount: pricingByMedicationId.get(Number(medication.consultation_medication_id)) || 0,
+                })),
+        },
+    });
+});
+
+module.exports = {
+    createConsultation,
+    getConsultationByAppointmentId,
+    getRepeatTreatmentDraft,
+};

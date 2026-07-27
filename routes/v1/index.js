@@ -1,0 +1,28 @@
+const express = require('express');
+const authRoutes = require('./authRoutes');
+const appointmentRoutes = require('./appointmentRoutes');
+const familyMemberRoutes = require('./familyMemberRoutes');
+const doctorRoutes = require('./doctorRoutes');
+const receptionistRoutes = require('./receptionistRoutes');
+const medicalRoutes = require('./medicalRoutes');
+const notificationRoutes = require('./notificationRoutes');
+const billRoutes = require('./billRoutes');
+const liveQueueRoutes = require('./liveQueueRoutes');
+const publicRoutes = require('./publicRoutes');
+const reportRoutes = require('./reportRoutes');
+
+const router = express.Router();
+
+router.use('/auth', authRoutes);
+router.use('/appointments', appointmentRoutes);
+router.use('/family-members', familyMemberRoutes);
+router.use('/doctors', doctorRoutes);
+router.use('/receptionist', receptionistRoutes);
+router.use('/medical', medicalRoutes);
+router.use('/notifications', notificationRoutes);
+router.use('/bills', billRoutes);
+router.use('/live-queue', liveQueueRoutes);
+router.use('/public', publicRoutes);
+router.use('/reports', reportRoutes);
+
+module.exports = router;

@@ -1,0 +1,15 @@
+ALTER TABLE `tbl_consultations`
+  ADD COLUMN `occupation` TEXT NULL AFTER `patient_weight`,
+  ADD COLUMN `history_present_illness` TEXT NULL AFTER `occupation`,
+  ADD COLUMN `history_past_illness` TEXT NULL AFTER `history_present_illness`,
+  ADD COLUMN `family_history` TEXT NULL AFTER `history_past_illness`,
+  ADD COLUMN `allergies_history` TEXT NULL AFTER `family_history`,
+  ADD COLUMN `gynecological_history` TEXT NULL AFTER `allergies_history`,
+  ADD COLUMN `personal_social_history` TEXT NULL AFTER `gynecological_history`,
+  ADD COLUMN `general_examination` TEXT NULL AFTER `personal_social_history`,
+  ADD COLUMN `systematic_examination` TEXT NULL AFTER `general_examination`,
+  ADD COLUMN `differential_diagnosis` TEXT NULL AFTER `systematic_examination`,
+  ADD COLUMN `follow_up` TEXT NULL AFTER `differential_diagnosis`,
+  ADD COLUMN `disease` VARCHAR(255) NULL AFTER `follow_up`,
+  ADD COLUMN `diagnosis` TEXT NULL AFTER `disease`,
+  ADD COLUMN `mental_mind_status` TEXT NULL AFTER `diagnosis`;

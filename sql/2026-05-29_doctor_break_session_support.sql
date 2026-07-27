@@ -1,0 +1,8 @@
+ALTER TABLE `tbl_doctor_live_sessions`
+  MODIFY COLUMN `session_status` ENUM('IN', 'BREAK', 'OUT') NOT NULL DEFAULT 'IN',
+  ADD COLUMN IF NOT EXISTS `break_started_at` DATETIME NULL DEFAULT NULL AFTER `started_at`;
+
+ALTER TABLE `tbl_doctor_live_session_logs`
+  MODIFY COLUMN `old_status` ENUM('IN', 'BREAK', 'OUT') NULL DEFAULT NULL,
+  MODIFY COLUMN `new_status` ENUM('IN', 'BREAK', 'OUT') NOT NULL,
+  MODIFY COLUMN `action` ENUM('START_SESSION', 'TAKE_BREAK', 'RESUME_BREAK', 'PAUSE_SESSION', 'AUTO_TIMEOUT', 'FORCE_END') NOT NULL;
