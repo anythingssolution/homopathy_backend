@@ -15,6 +15,7 @@ const {
     updateMedicalProductMaster,
     deleteMedicalProductMaster,
 } = require('../../controllers/v1/medicalController');
+const { getDoctorTextMedicineMasters } = require('../../controllers/v1/doctorController');
 const {
     authenticate,
     authorizeModuleAccess,
@@ -32,6 +33,7 @@ const upload = multer({
 
 router.use(authenticate, authorizeModuleAccess('MEDICAL'), enforceSelectedBranchScope);
 
+router.get('/masters/text-medicines', getDoctorTextMedicineMasters);
 router.get('/master-medical-products/template', downloadMedicalProductImportTemplate);
 router.post('/master-medical-products/import', upload.single('file'), importMedicalProducts);
 router.get('/master-medical-products/summary', getMedicalProductMasterSummary);
