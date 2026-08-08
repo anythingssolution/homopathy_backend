@@ -102,6 +102,55 @@ const buildFollowUpMeta = (treatments = []) => {
 
 const isFollowUpBookingVisitType = (visitTypeCode) => visitTypeCode === VISIT_TYPE.FOLLOW_UP_VISIT;
 
+const buildFollowUpHistorySubjectScope = (familyMemberId) => {
+    const parsedFamilyMemberId = Number(familyMemberId);
+    const normalizedFamilyMemberId = Number.isInteger(parsedFamilyMemberId) && parsedFamilyMemberId > 0
+        ? parsedFamilyMemberId
+        : null;
+
+    return {
+        sql: 'AND fk_patient_family_member_id <=> ?',
+        params: [normalizedFamilyMemberId],
+    };
+};
+
+const resolveFollowUpFeeDecision = ({ checkedInAt, lastCompletedAt, freeDays }) => {
+    const hasCheckedInAt = checkedInAt !== null && checkedInAt !== undefined && checkedInAt !== '';
+    const hasLastCompletedAt = lastCompletedAt !== null && lastCompletedAt !== undefined && lastCompletedAt !== '';
+    const hasFreeDays = freeDays !== null && freeDays !== undefined && freeDays !== '';
+    const normalizedFreeDays = Number(freeDays);
+    const checkInDate = checkedInAt instanceof Date ? checkedInAt : new Date(checkedInAt);
+    const completedDate = lastCompletedAt instanceof Date ? lastCompletedAt : new Date(lastCompletedAt);
+
+    if (
+        !hasCheckedInAt
+        || !hasLastCompletedAt
+        || !hasFreeDays
+        || !Number.isInteger(normalizedFreeDays)
+        || normalizedFreeDays < 0
+        || Number.isNaN(checkInDate.getTime())
+        || Number.isNaN(completedDate.getTime())
+    ) {
+        return {
+            shouldChargeFee: false,
+            daysDifference: null,
+            freeDays: hasFreeDays && Number.isInteger(normalizedFreeDays) && normalizedFreeDays >= 0
+                ? normalizedFreeDays
+                : null,
+        };
+    }
+
+    const daysDifference = Math.floor(
+        Math.abs(checkInDate.getTime() - completedDate.getTime()) / (24 * 60 * 60 * 1000)
+    );
+
+    return {
+        shouldChargeFee: daysDifference > normalizedFreeDays,
+        daysDifference,
+        freeDays: normalizedFreeDays,
+    };
+};
+
 const canCreateNextFollowUpForVisitType = (visitTypeCode) => [
     VISIT_TYPE.FIRST_CONSULTATION,
     VISIT_TYPE.FOLLOW_UP_VISIT,
@@ -592,6 +641,8 @@ module.exports = {
     decorateTreatmentsWithVisitType,
     getVisitTypeCode,
     isFollowUpBookingVisitType,
+    buildFollowUpHistorySubjectScope,
+    resolveFollowUpFeeDecision,
     canCreateNextFollowUpForVisitType,
     getTreatmentById,
     getAppointmentFollowUpContext,

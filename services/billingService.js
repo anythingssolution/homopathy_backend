@@ -1,6 +1,7 @@
 const AppError = require('../utils/AppError');
 const { query } = require('../config/db');
 const { decorateTokenFields } = require('../utils/tokenDisplay');
+const { getBillableDispensingItems } = require('./dispensaryPricingService');
 
 const PAYMENT_MODES = new Set(['CASH', 'ONLINE']);
 const PAYMENT_STATUSES = new Set(['UNPAID', 'PAID', 'PARTIAL']);
@@ -115,11 +116,12 @@ const replaceMedicationBillItems = async ({
          FROM tbl_medical_prescription_pricing_items mpi
          LEFT JOIN tbl_consultation_medications cm ON cm.id = mpi.consultation_medication_id
          WHERE mpi.pricing_id = ?
+           AND mpi.dispense_status = 'ACTIVE'
          ORDER BY mpi.id ASC`,
         [pricingId]
     );
 
-    for (const item of pricingItems) {
+    for (const item of getBillableDispensingItems(pricingItems)) {
         const itemAmount = normalizeAmount(item.amount) ?? 0;
         const itemType = String(item.added_by_role || '').trim().toUpperCase() === 'MEDICAL'
             ? 'ADDITIONAL_MEDICATION'

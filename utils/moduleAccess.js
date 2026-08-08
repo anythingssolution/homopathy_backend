@@ -7,7 +7,7 @@ const getModuleAccessFromUser = (user) => {
     const hasCrossModuleAccess = getCrossModuleAccessFlag(user?.has_cross_module_access);
 
     const canAccessReceptionModule = roleCode === 'REC' || (roleCode === 'MED' && hasCrossModuleAccess === 1) ? 1 : 0;
-    const canAccessMedicalModule = roleCode === 'MED' || (roleCode === 'REC' && hasCrossModuleAccess === 1) ? 1 : 0;
+    const canAccessMedicalModule = roleCode === 'DOC' || roleCode === 'MED' || (roleCode === 'REC' && hasCrossModuleAccess === 1) ? 1 : 0;
 
     return {
         has_cross_module_access: hasCrossModuleAccess,

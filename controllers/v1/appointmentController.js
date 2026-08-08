@@ -27,6 +27,7 @@ const {
     buildDerivedLiveQueueView,
 } = require('../../services/liveQueueService');
 const { assertBranchDoctorAvailableForBooking } = require('../../services/doctorLeaveService');
+const { projectDispensingStatus } = require('../../services/dispensaryPricingService');
 const {
     buildFollowUpMeta,
     getTreatmentById,
@@ -192,14 +193,14 @@ const mapPrescriptionAggregate = (consultationRows, medicationRows, testRows = [
         const consultationMedicationMap = medicationMap.get(row.consultation_id);
 
         if (!consultationMedicationMap.has(row.consultation_medication_id)) {
-            consultationMedicationMap.set(row.consultation_medication_id, {
+            consultationMedicationMap.set(row.consultation_medication_id, projectDispensingStatus({
                 consultation_medication_id: row.consultation_medication_id,
                 medicine_type: row.medicine_type,
                 medicine_value: row.medicine_value,
                 remark: row.remark,
                 added_by_role: row.added_by_role || 'DOCTOR',
                 doses: [],
-            });
+            }, row));
         }
 
         if (row.medication_dosage_id) {
@@ -1039,6 +1040,11 @@ const listMyAppointments = asyncHandler(async (req, res) => {
                     cm.medicine_value,
                     cm.remark,
                     cm.added_by_role,
+                    mppi.dispense_status,
+                    mppi.void_reason,
+                    mppi.voided_by,
+                    mppi.voided_at,
+                    mppi.version,
                     md.id AS medication_dosage_id,
                     md.dose_label,
                     md.sort_order,
@@ -1046,6 +1052,11 @@ const listMyAppointments = asyncHandler(async (req, res) => {
                     md.balls_per_dose,
                     md.instructions
                  FROM tbl_consultation_medications cm
+                 LEFT JOIN tbl_medical_prescription_pricing mpp
+                   ON mpp.consultation_id = cm.consultation_id
+                 LEFT JOIN tbl_medical_prescription_pricing_items mppi
+                   ON mppi.pricing_id = mpp.id
+                  AND mppi.consultation_medication_id = cm.id
                  LEFT JOIN tbl_medication_dosages md
                    ON md.consultation_medication_id = cm.id
                  WHERE cm.consultation_id IN (${medicationPlaceholders})

@@ -13,6 +13,7 @@ const {
     requestForgotPasswordOtp,
     verifyForgotPasswordOtp,
     resetForgotPassword,
+    changePassword,
     refreshToken,
     logout,
 } = require('../../controllers/v1/authController');
@@ -36,10 +37,12 @@ router.post('/login/otp/verify', authRateLimiter, verifyLoginOtp);
 // Token lifecycle
 router.post('/token/refresh', authRateLimiter, refreshToken);
 
-// Forgot password
+// Forgot password & Change password
 router.post('/password/forgot/request', otpRateLimiter, requestForgotPasswordOtp);
 router.post('/password/forgot/verify', authRateLimiter, verifyForgotPasswordOtp);
 router.post('/password/forgot/reset', authRateLimiter, resetForgotPassword);
+router.put('/password/change', authenticate, authRateLimiter, changePassword);
+router.patch('/password/change', authenticate, authRateLimiter, changePassword);
 
 router.get('/me', authenticate, getCurrentPatient);
 router.get('/branches', authenticate, listSelectableBranches);

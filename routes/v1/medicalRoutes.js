@@ -17,7 +17,7 @@ const {
 } = require('../../controllers/v1/medicalController');
 const {
     authenticate,
-    authorizeRolesOrModuleAccess,
+    authorizeModuleAccess,
     enforceSelectedBranchScope,
     authorizeConsultationBranchScope,
 } = require('../../middleware/authMiddleware');
@@ -30,7 +30,7 @@ const upload = multer({
     },
 });
 
-router.use(authenticate, authorizeRolesOrModuleAccess(['doctor'], 'MEDICAL'), enforceSelectedBranchScope);
+router.use(authenticate, authorizeModuleAccess('MEDICAL'), enforceSelectedBranchScope);
 
 router.get('/master-medical-products/template', downloadMedicalProductImportTemplate);
 router.post('/master-medical-products/import', upload.single('file'), importMedicalProducts);

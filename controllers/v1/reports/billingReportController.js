@@ -1,5 +1,5 @@
 const asyncHandler = require('../../../utils/asyncHandler');
-const { getBillingReports } = require('../../../services/reports/billing');
+const { getBillingReports, getRevenueByConsultantReport, getRevenueByMedicineReport } = require('../../../services/reports/billing');
 const { buildReportResponseMeta, parseReportFilters } = require('./shared');
 
 const getBillingReportsController = asyncHandler(async (req, res) => {
@@ -14,6 +14,32 @@ const getBillingReportsController = asyncHandler(async (req, res) => {
     });
 });
 
+const getRevenueByConsultantController = asyncHandler(async (req, res) => {
+    const filters = parseReportFilters(req);
+    const report = await getRevenueByConsultantReport(filters);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Revenue by consultant report fetched successfully',
+        data: report,
+        meta: buildReportResponseMeta({ filters, report }),
+    });
+});
+
+const getRevenueByMedicineController = asyncHandler(async (req, res) => {
+    const filters = parseReportFilters(req);
+    const report = await getRevenueByMedicineReport(filters);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Revenue by medicine report fetched successfully',
+        data: report,
+        meta: buildReportResponseMeta({ filters, report }),
+    });
+});
+
 module.exports = {
     getBillingReportsController,
+    getRevenueByConsultantController,
+    getRevenueByMedicineController,
 };

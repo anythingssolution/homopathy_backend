@@ -6,6 +6,8 @@ const getPendingAmountReport = require('./pendingAmount');
 const getPaymentModeCollectionReport = require('./paymentModeCollection');
 const getBranchWiseRevenueReport = require('./branchWiseRevenue');
 const getPatientBillingHistoryReport = require('./patientBillingHistory');
+const getRevenueByConsultantReport = require('./revenueByConsultant');
+const getRevenueByMedicineReport = require('./revenueByMedicine');
 
 const getBillingReports = async (filters) => {
     const [
@@ -17,6 +19,8 @@ const getBillingReports = async (filters) => {
         paymentModeCollection,
         branchWiseRevenue,
         patientBillingHistory,
+        revenueByConsultant,
+        revenueByMedicine,
     ] = await Promise.all([
         getTotalRevenueReport(filters),
         getConsultationBillReport(filters),
@@ -26,6 +30,8 @@ const getBillingReports = async (filters) => {
         getPaymentModeCollectionReport(filters),
         getBranchWiseRevenueReport(filters),
         getPatientBillingHistoryReport(filters),
+        getRevenueByConsultantReport(filters),
+        getRevenueByMedicineReport(filters),
     ]);
 
     return {
@@ -37,9 +43,13 @@ const getBillingReports = async (filters) => {
         payment_mode_collection: paymentModeCollection,
         branch_wise_revenue: branchWiseRevenue,
         patient_billing_history: patientBillingHistory,
+        revenue_by_consultant: revenueByConsultant,
+        revenue_by_medicine: revenueByMedicine,
     };
 };
 
 module.exports = {
     getBillingReports,
+    getRevenueByConsultantReport,
+    getRevenueByMedicineReport,
 };

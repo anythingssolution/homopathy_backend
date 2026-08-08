@@ -25,6 +25,7 @@ const {
 const { assertBranchDoctorAvailableForBooking } = require('../../services/doctorLeaveService');
 const { emitToRole } = require('../../utils/realtime');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
+const { projectDispensingStatus } = require('../../services/dispensaryPricingService');
 const {
     BOOKED_FOR_TYPES,
     MAX_ACTIVE_FAMILY_MEMBERS,
@@ -120,13 +121,86 @@ const parseAppointmentVitalsPayload = (body = {}) => {
     const patientHeight = toNullableTrimmedText(body.patient_height, 20);
     const patientWeight = toNullableTrimmedText(body.patient_weight, 20);
 
+    const occupation = toNullableTrimmedText(body.occupation, 255);
+    const historyPresentIllness = toNullableTrimmedText(body.history_present_illness ?? body.historyPresentIllness, 5000);
+    const historyPastIllness = toNullableTrimmedText(body.history_past_illness ?? body.historyPastIllness, 5000);
+    const familyHistory = toNullableTrimmedText(body.family_history ?? body.familyHistory, 5000);
+    const allergiesHistory = toNullableTrimmedText(body.allergies_history ?? body.allergiesHistory, 5000);
+    const gynecologicalHistory = toNullableTrimmedText(body.gynecological_history ?? body.gynecologicalHistory, 5000);
+    const personalSocialHistory = toNullableTrimmedText(body.personal_social_history ?? body.personalSocialHistory, 5000);
+    const generalExamination = toNullableTrimmedText(body.general_examination ?? body.generalExamination, 5000);
+    const systematicExamination = toNullableTrimmedText(body.systematic_examination ?? body.systematicExamination, 5000);
+    const differentialDiagnosis = toNullableTrimmedText(body.differential_diagnosis ?? body.differentialDiagnosis, 5000);
+    const followUp = toNullableTrimmedText(body.follow_up ?? body.followUp, 5000);
+    const disease = toNullableTrimmedText(body.disease, 255);
+    const mentalMindStatus = toNullableTrimmedText(body.mental_mind_status ?? body.mentalMindStatus, 5000);
+
     return {
         oxygen_saturation: oxygenSaturation,
         blood_pressure: bloodPressure,
         patient_height: patientHeight,
         patient_weight: patientWeight,
-        has_any_value: Boolean(oxygenSaturation || bloodPressure || patientHeight || patientWeight),
+        occupation,
+        history_present_illness: historyPresentIllness,
+        history_past_illness: historyPastIllness,
+        family_history: familyHistory,
+        allergies_history: allergiesHistory,
+        gynecological_history: gynecologicalHistory,
+        personal_social_history: personalSocialHistory,
+        general_examination: generalExamination,
+        systematic_examination: systematicExamination,
+        differential_diagnosis: differentialDiagnosis,
+        follow_up: followUp,
+        disease,
+        mental_mind_status: mentalMindStatus,
+        has_any_value: Boolean(
+            oxygenSaturation || bloodPressure || patientHeight || patientWeight ||
+            occupation || historyPresentIllness || historyPastIllness || familyHistory ||
+            allergiesHistory || gynecologicalHistory || personalSocialHistory ||
+            generalExamination || systematicExamination || differentialDiagnosis ||
+            followUp || disease || mentalMindStatus
+        ),
     };
+};
+
+let vitalsColumnsEnsured = false;
+const ensureVitalsColumnsExist = async () => {
+    if (vitalsColumnsEnsured) return;
+    try {
+        const targetColumns = [
+            { name: 'occupation', type: 'VARCHAR(255)' },
+            { name: 'history_present_illness', type: 'TEXT' },
+            { name: 'history_past_illness', type: 'TEXT' },
+            { name: 'family_history', type: 'TEXT' },
+            { name: 'allergies_history', type: 'TEXT' },
+            { name: 'gynecological_history', type: 'TEXT' },
+            { name: 'personal_social_history', type: 'TEXT' },
+            { name: 'general_examination', type: 'TEXT' },
+            { name: 'systematic_examination', type: 'TEXT' },
+            { name: 'differential_diagnosis', type: 'TEXT' },
+            { name: 'follow_up', type: 'TEXT' },
+            { name: 'disease', type: 'VARCHAR(255)' },
+            { name: 'mental_mind_status', type: 'TEXT' },
+        ];
+
+        const existing = await query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'tbl_appointment_vitals' AND TABLE_SCHEMA = DATABASE()`
+        );
+        const existingColNames = new Set(existing.map((row) => String(row.COLUMN_NAME).toLowerCase()));
+
+        for (const col of targetColumns) {
+            if (!existingColNames.has(col.name.toLowerCase())) {
+                try {
+                    await query(`ALTER TABLE tbl_appointment_vitals ADD COLUMN ${col.name} ${col.type} NULL`);
+                } catch (colErr) {
+                    console.error(`Could not add column ${col.name}:`, colErr.message);
+                }
+            }
+        }
+        vitalsColumnsEnsured = true;
+    } catch (err) {
+        console.error('Error ensuring vitals columns exist:', err.message);
+    }
 };
 
 const normalizeFamilyMemberPayload = (body = {}) => {
@@ -281,7 +355,7 @@ const generateTodayAppointmentAuid = async (connection, date = new Date()) => {
 
 const appointmentSelectColumns = `
     a.appointment_id, a.auid, a.fk_patient_id, a.parent_appointment_id, a.fk_branch_id, b.branch_name,
-    a.fk_treatment_id, t.treatment_name, a.fk_slot_id, s.slot_name,
+    a.fk_treatment_id, t.treatment_name, t.consultation_fee, a.fk_slot_id, s.slot_name,
     COALESCE(sto.override_start_time, s.start_time) AS start_time, COALESCE(sto.override_end_time, s.end_time) AS end_time, s.default_consult_minutes, a.current_token_number AS token_number, a.original_token_number, a.current_token_number,
     a.is_shifted, a.shift_reason, a.not_available_at, a.booked_by_type, a.booked_by_user_id,
     a.rescheduled_from_appointment_id, a.reschedule_reason,
@@ -294,6 +368,7 @@ const appointmentSelectColumns = `
     a.cancelled_at, a.cancelled_by_user_id, a.cancelled_by_role,
     a.cancel_reason, a.is_active, a.created_at, a.updated_at,
     v.oxygen_saturation, v.blood_pressure, v.patient_height, v.patient_weight,
+    v.occupation, v.history_present_illness, v.history_past_illness, v.family_history, v.allergies_history, v.gynecological_history, v.personal_social_history, v.general_examination, v.systematic_examination, v.differential_diagnosis, v.follow_up, v.disease, v.mental_mind_status,
     ${getAppointmentPatientColumns()}
 `;
 
@@ -386,6 +461,11 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
             cm.medicine_value,
             cm.remark,
             cm.added_by_role,
+            mppi.dispense_status,
+            mppi.void_reason,
+            mppi.voided_by,
+            mppi.voided_at,
+            mppi.version,
             md.id AS medication_dosage_id,
             md.dose_label,
             md.sort_order,
@@ -393,6 +473,11 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
             md.balls_per_dose,
             md.instructions
          FROM tbl_consultation_medications cm
+         LEFT JOIN tbl_medical_prescription_pricing mpp
+           ON mpp.consultation_id = cm.consultation_id
+         LEFT JOIN tbl_medical_prescription_pricing_items mppi
+           ON mppi.pricing_id = mpp.id
+          AND mppi.consultation_medication_id = cm.id
          LEFT JOIN tbl_medication_dosages md ON md.consultation_medication_id = cm.id
          WHERE cm.consultation_id = ?
          ORDER BY cm.id ASC, COALESCE(md.sort_order, 999) ASC, md.id ASC`,
@@ -403,14 +488,14 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
 
     medicationRows.forEach((row) => {
         if (!medicationMap.has(row.consultation_medication_id)) {
-            medicationMap.set(row.consultation_medication_id, {
+            medicationMap.set(row.consultation_medication_id, projectDispensingStatus({
                 consultation_medication_id: row.consultation_medication_id,
                 medicine_type: row.medicine_type,
                 medicine_value: row.medicine_value,
                 remark: row.remark,
                 added_by_role: row.added_by_role || 'DOCTOR',
                 doses: [],
-            });
+            }, row));
         }
 
         if (row.medication_dosage_id) {
@@ -1489,6 +1574,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
 });
 
 const listReceptionistAppointments = asyncHandler(async (req, res) => {
+    await ensureVitalsColumnsExist();
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
     const slotId = req.query.slot_id !== undefined ? toPositiveInt(req.query.slot_id) : null;
     const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
@@ -1703,6 +1789,7 @@ const listReceptionistAppointments = asyncHandler(async (req, res) => {
 });
 
 const saveReceptionistAppointmentVitals = asyncHandler(async (req, res) => {
+    await ensureVitalsColumnsExist();
     const appointmentId = toPositiveInt(req.params.appointment_id);
 
     if (!appointmentId) {
@@ -1735,16 +1822,58 @@ const saveReceptionistAppointmentVitals = asyncHandler(async (req, res) => {
             throw new AppError('Vitals cannot be updated for a cancelled or inactive appointment', 409);
         }
 
+        let isVitalsColumnsEnsured = false;
+        if (!isVitalsColumnsEnsured) {
+            const extCols = [
+                'occupation TEXT NULL',
+                'history_present_illness TEXT NULL',
+                'history_past_illness TEXT NULL',
+                'family_history TEXT NULL',
+                'allergies_history TEXT NULL',
+                'gynecological_history TEXT NULL',
+                'personal_social_history TEXT NULL',
+                'general_examination TEXT NULL',
+                'systematic_examination TEXT NULL',
+                'differential_diagnosis TEXT NULL',
+                'follow_up TEXT NULL',
+                'disease VARCHAR(255) NULL',
+                'mental_mind_status TEXT NULL',
+            ];
+            for (const colDef of extCols) {
+                try {
+                    await connection.execute(`ALTER TABLE tbl_appointment_vitals ADD COLUMN ${colDef}`);
+                } catch (_err) {}
+            }
+            isVitalsColumnsEnsured = true;
+        }
+
         if (vitals.has_any_value) {
             await connection.execute(
                 `INSERT INTO tbl_appointment_vitals
-                 (appointment_id, oxygen_saturation, blood_pressure, patient_height, patient_weight, captured_by_role, captured_by_user_id, captured_at, updated_by_role, updated_by_user_id, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, NOW())
+                 (appointment_id, oxygen_saturation, blood_pressure, patient_height, patient_weight,
+                  occupation, history_present_illness, history_past_illness, family_history, allergies_history,
+                  gynecological_history, personal_social_history, general_examination, systematic_examination,
+                  differential_diagnosis, follow_up, disease, mental_mind_status,
+                  captured_by_role, captured_by_user_id, captured_at, updated_by_role, updated_by_user_id, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, NOW())
                  ON DUPLICATE KEY UPDATE
-                    oxygen_saturation = VALUES(oxygen_saturation),
-                    blood_pressure = VALUES(blood_pressure),
-                    patient_height = VALUES(patient_height),
-                    patient_weight = VALUES(patient_weight),
+                    oxygen_saturation = COALESCE(VALUES(oxygen_saturation), oxygen_saturation),
+                    blood_pressure = COALESCE(VALUES(blood_pressure), blood_pressure),
+                    patient_height = COALESCE(VALUES(patient_height), patient_height),
+                    patient_weight = COALESCE(VALUES(patient_weight), patient_weight),
+                    occupation = COALESCE(VALUES(occupation), occupation),
+                    history_present_illness = COALESCE(VALUES(history_present_illness), history_present_illness),
+                    history_past_illness = COALESCE(VALUES(history_past_illness), history_past_illness),
+                    family_history = COALESCE(VALUES(family_history), family_history),
+                    allergies_history = COALESCE(VALUES(allergies_history), allergies_history),
+                    gynecological_history = COALESCE(VALUES(gynecological_history), gynecological_history),
+                    personal_social_history = COALESCE(VALUES(personal_social_history), personal_social_history),
+                    general_examination = COALESCE(VALUES(general_examination), general_examination),
+                    systematic_examination = COALESCE(VALUES(systematic_examination), systematic_examination),
+                    differential_diagnosis = COALESCE(VALUES(differential_diagnosis), differential_diagnosis),
+                    follow_up = COALESCE(VALUES(follow_up), follow_up),
+                    disease = COALESCE(VALUES(disease), disease),
+                    mental_mind_status = COALESCE(VALUES(mental_mind_status), mental_mind_status),
                     updated_by_role = VALUES(updated_by_role),
                     updated_by_user_id = VALUES(updated_by_user_id),
                     updated_at = NOW()`,
@@ -1754,12 +1883,61 @@ const saveReceptionistAppointmentVitals = asyncHandler(async (req, res) => {
                     vitals.blood_pressure,
                     vitals.patient_height,
                     vitals.patient_weight,
+                    vitals.occupation,
+                    vitals.history_present_illness,
+                    vitals.history_past_illness,
+                    vitals.family_history,
+                    vitals.allergies_history,
+                    vitals.gynecological_history,
+                    vitals.personal_social_history,
+                    vitals.general_examination,
+                    vitals.systematic_examination,
+                    vitals.differential_diagnosis,
+                    vitals.follow_up,
+                    vitals.disease,
+                    vitals.mental_mind_status,
                     req.user.role_code,
                     req.user.id,
                     req.user.role_code,
                     req.user.id,
                 ]
             );
+
+            try {
+                await connection.execute(
+                    `UPDATE tbl_consultations
+                     SET occupation = COALESCE(?, occupation),
+                         history_present_illness = COALESCE(?, history_present_illness),
+                         history_past_illness = COALESCE(?, history_past_illness),
+                         family_history = COALESCE(?, family_history),
+                         allergies_history = COALESCE(?, allergies_history),
+                         gynecological_history = COALESCE(?, gynecological_history),
+                         personal_social_history = COALESCE(?, personal_social_history),
+                         general_examination = COALESCE(?, general_examination),
+                         systematic_examination = COALESCE(?, systematic_examination),
+                         differential_diagnosis = COALESCE(?, differential_diagnosis),
+                         follow_up = COALESCE(?, follow_up),
+                         disease = COALESCE(?, disease),
+                         mental_mind_status = COALESCE(?, mental_mind_status)
+                     WHERE appointment_id = ?`,
+                    [
+                        vitals.occupation,
+                        vitals.history_present_illness,
+                        vitals.history_past_illness,
+                        vitals.family_history,
+                        vitals.allergies_history,
+                        vitals.gynecological_history,
+                        vitals.personal_social_history,
+                        vitals.general_examination,
+                        vitals.systematic_examination,
+                        vitals.differential_diagnosis,
+                        vitals.follow_up,
+                        vitals.disease,
+                        vitals.mental_mind_status,
+                        appointmentId,
+                    ]
+                );
+            } catch (_consultError) {}
         } else {
             await connection.execute(
                 `DELETE FROM tbl_appointment_vitals

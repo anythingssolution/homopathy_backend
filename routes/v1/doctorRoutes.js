@@ -21,6 +21,7 @@ const {
     createConsultation,
     getConsultationByAppointmentId,
     getRepeatTreatmentDraft,
+    getPrescriptionSuggestions,
     getDoctorHomepageCms,
     listHeroCms,
     createHeroCms,
@@ -36,6 +37,7 @@ const {
     deleteGalleryCms,
     uploadDoctorCmsImage,
     uploadDoctorCmsVideo,
+    updateDoctorPatient,
 } = require('../../controllers/v1/doctorController');
 const {
     uploadCmsImageFile,
@@ -119,8 +121,10 @@ router.post('/leaves/bulk', saveDoctorLeavesBulk);
 router.post('/leaves/bulk-cancel', removeDoctorLeavesBulk);
 router.post('/leaves', saveDoctorLeave);
 router.delete('/leaves/:leave_id', removeDoctorLeave);
+router.patch('/patients/:patient_id', updateDoctorPatient);
 router.post('/consultations', createConsultation);
 router.get('/consultations/:appointment_id/repeat-draft', authorizeAppointmentBranchScope, getRepeatTreatmentDraft);
+router.get('/consultations/prescription-suggestions', getPrescriptionSuggestions);
 router.get('/consultations/:appointment_id', authorizeAppointmentBranchScope, getConsultationByAppointmentId);
 
 module.exports = router;

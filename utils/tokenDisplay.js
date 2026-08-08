@@ -137,15 +137,15 @@ const decorateTokenFields = (
 
     const liveEstimatedStartAt = payload.live_estimated_start_at ?? null;
     const plannedStartAt = payload[plannedStartAtField] ?? null;
+    const checkedInAt = payload[checkedInAtField] ?? payload.checked_in_at ?? null;
+    const bookingTime = payload.created_at ?? payload.booking_time ?? templateStartDateTime ?? plannedStartAt;
     let liveDelayMinutes = 0;
 
-    const baseTimeForDelay = templateStartDateTime || plannedStartAt;
-
-    if (liveEstimatedStartAt && baseTimeForDelay) {
-        const liveDate = safeParseDate(liveEstimatedStartAt);
-        const baseDate = safeParseDate(baseTimeForDelay);
-        if (liveDate && baseDate) {
-            liveDelayMinutes = Math.max(0, Math.round((liveDate.getTime() - baseDate.getTime()) / (60 * 1000)));
+    if (checkedInAt && plannedStartAt) {
+        const checkInDate = safeParseDate(checkedInAt);
+        const plannedDate = safeParseDate(plannedStartAt);
+        if (checkInDate && plannedDate) {
+            liveDelayMinutes = Math.max(0, Math.round((checkInDate.getTime() - plannedDate.getTime()) / (60 * 1000)));
         }
     }
 

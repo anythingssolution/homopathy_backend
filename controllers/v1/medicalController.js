@@ -1,4 +1,5 @@
 const { query, withTransaction } = require('../../config/db');
+const { randomUUID } = require('crypto');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { createNotificationsForRole, createNotificationForUser } = require('../../utils/notificationService');
@@ -21,6 +22,13 @@ const {
     deleteMedicalProduct,
     getMedicalProductSummary,
 } = require('../../services/medicalProductMasterService');
+const {
+    calculateDispensingTotal,
+    ensureDispensingMutationAllowed,
+    projectDispensingStatus,
+    resolveDispensingEventType,
+    validatePrescribedDispensingItems,
+} = require('../../services/dispensaryPricingService');
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -193,6 +201,11 @@ const getMedicalPricingByConsultationId = async (consultationId) => {
             consultation_medication_id,
             medicine_value,
             amount,
+            dispense_status,
+            void_reason,
+            voided_by,
+            voided_at,
+            version,
             created_at,
             updated_at
          FROM tbl_medical_prescription_pricing_items
@@ -201,14 +214,48 @@ const getMedicalPricingByConsultationId = async (consultationId) => {
         [pricingRows[0].pricing_id]
     );
 
+    const events = await query(
+        `SELECT
+            e.id AS event_id,
+            e.pricing_item_id,
+            e.consultation_medication_id,
+            e.event_type,
+            e.old_amount,
+            e.new_amount,
+            e.old_status,
+            e.new_status,
+            e.reason,
+            e.actor_user_id,
+            e.actor_role,
+            u.full_name AS actor_name,
+            e.created_at
+         FROM tbl_medical_dispensing_item_events e
+         LEFT JOIN master_users u ON u.id = e.actor_user_id
+         WHERE e.consultation_id = ?
+         ORDER BY e.id ASC`,
+        [consultationId]
+    );
+
+    const eventsByMedicationId = new Map();
+    events.forEach((event) => {
+        const medicationId = Number(event.consultation_medication_id);
+        if (!eventsByMedicationId.has(medicationId)) {
+            eventsByMedicationId.set(medicationId, []);
+        }
+        eventsByMedicationId.get(medicationId).push(event);
+    });
+
     return {
         ...pricingRows[0],
-        medications: items,
+        medications: items.map((item) => ({
+            ...item,
+            dispense_status: item.dispense_status || 'ACTIVE',
+            events: eventsByMedicationId.get(Number(item.consultation_medication_id)) || [],
+        })),
     };
 };
 
-const buildMedicalPrescriptionListItem = async (row) => {
-    const detail = await getMedicalPrescriptionDetail(row.consultation_id, row.fk_branch_id || null);
+const buildMedicalPrescriptionListItemResponse = (row, detail) => {
     const pricing = detail?.pricing || null;
 
     return {
@@ -255,6 +302,7 @@ const buildMedicalPrescriptionListItem = async (row) => {
         },
         prescription: {
             medication_duration_days: row.medication_duration_days,
+            quick_formula_input: detail?.quick_formula_input ?? null,
             symptoms: row.symptoms,
             treatment_advice: row.treatment_advice,
             created_at: row.created_at,
@@ -264,6 +312,11 @@ const buildMedicalPrescriptionListItem = async (row) => {
             pricing,
         },
     };
+};
+
+const buildMedicalPrescriptionListItem = async (row) => {
+    const detail = await getMedicalPrescriptionDetail(row.consultation_id, row.fk_branch_id || null);
+    return buildMedicalPrescriptionListItemResponse(row, detail);
 };
 
 const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => {
@@ -282,6 +335,7 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
             c.doctor_id,
             c.workflow_status,
             c.medication_duration_days,
+            c.quick_formula_input,
             c.symptoms,
             c.treatment_advice,
             c.created_at,
@@ -366,11 +420,19 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
         [consultationId]
     );
 
+    const pricing = await getMedicalPricingByConsultationId(consultationId);
+    const pricingByMedicationId = new Map(
+        (pricing?.medications || []).map((item) => [Number(item.consultation_medication_id), item])
+    );
+
     return {
         ...rows[0],
-        medications: Array.from(medicationMap.values()),
+        medications: Array.from(medicationMap.values()).map((medication) => projectDispensingStatus(
+            medication,
+            pricingByMedicationId.get(Number(medication.consultation_medication_id)) || null
+        )),
         tests: testRows,
-        pricing: await getMedicalPricingByConsultationId(consultationId),
+        pricing,
     };
 };
 
@@ -648,48 +710,27 @@ const getMedicalPrescription = asyncHandler(async (req, res) => {
 
 const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
     const consultationId = toPositiveInt(req.params.consultation_id || req.body?.consultation_id);
-    const totalAmount = toPositiveAmount(req.body?.amount);
     const remark = req.body?.remark ? String(req.body.remark).trim() : null;
     const medications = Array.isArray(req.body?.medications) ? req.body.medications : null;
     const additionalMedications = Array.isArray(req.body?.additional_medications) ? req.body.additional_medications : [];
     const processAfterSave = toBoolean(req.body?.process_after_save);
     const payment = normalizeMedicalPaymentPayload(req.body?.payment);
+    const submittedRequestKey = String(
+        req.get('Idempotency-Key') || req.body?.request_key || randomUUID()
+    ).trim().slice(0, 100);
+    const requestKey = submittedRequestKey || randomUUID();
 
     if (!consultationId) {
         throw new AppError('Valid consultation_id is required', 400);
     }
 
-    if (totalAmount === null) {
-        throw new AppError('amount must be a valid non-negative number', 400);
-    }
-
-    if (!medications || medications.length === 0) {
+    if (!medications) {
         throw new AppError('medications array is required', 400);
     }
 
     if (payment && !processAfterSave) {
         throw new AppError('payment can only be submitted when process_after_save is true', 400);
     }
-
-    const normalizedItems = medications.map((item, index) => {
-        const medicineValue = String(item?.medicine_value || '').trim();
-        const amount = toPositiveAmount(item?.amount);
-        const consultationMedicationId = item?.consultation_medication_id ? toPositiveInt(item.consultation_medication_id) : null;
-
-        if (!medicineValue) {
-            throw new AppError(`medications[${index}].medicine_value is required`, 400);
-        }
-
-        if (amount === null) {
-            throw new AppError(`medications[${index}].amount must be a valid non-negative number`, 400);
-        }
-
-        return {
-            consultation_medication_id: consultationMedicationId,
-            medicine_value: medicineValue,
-            amount,
-        };
-    });
 
     const normalizedAdditionalItems = additionalMedications.map((item, index) => {
         const medicineValue = String(item?.medicine_value || '').trim();
@@ -713,6 +754,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
 
     let finalizedBillId = null;
     let finalizedPaymentStatus = null;
+    let replayedRequest = false;
 
     await withTransaction(async (connection) => {
         const [consultationRows] = await connection.execute(
@@ -728,6 +770,38 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             throw new AppError('Prescription not found', 404);
         }
 
+        try {
+            await connection.execute(
+                `INSERT INTO tbl_medical_dispensing_requests
+                 (consultation_id, request_key, request_type, created_by)
+                 VALUES (?, ?, ?, ?)`,
+                [consultationId, requestKey, processAfterSave ? 'PROCESS' : 'SAVE', req.user.id]
+            );
+        } catch (error) {
+            if (error?.code === 'ER_DUP_ENTRY') {
+                replayedRequest = true;
+                return;
+            }
+            throw error;
+        }
+
+        const [paidBillRows] = await connection.execute(
+            `SELECT id
+             FROM tbl_bills
+             WHERE consultation_id = ?
+               AND bill_type = 'MEDICATION'
+               AND status = 'ACTIVE'
+               AND (payment_status = 'PAID' OR paid_amount > 0)
+             LIMIT 1
+             FOR UPDATE`,
+            [consultationId]
+        );
+
+        ensureDispensingMutationAllowed({
+            workflowStatus: consultationRows[0].workflow_status,
+            hasPaidBill: paidBillRows.length > 0,
+        });
+
         const [existingPricingRows] = await connection.execute(
             `SELECT id
              FROM tbl_medical_prescription_pricing
@@ -737,10 +811,65 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             [consultationId]
         );
 
-        let pricingId = null;
+        const [prescribedMedications] = await connection.execute(
+            `SELECT id AS consultation_medication_id, medicine_value
+             FROM tbl_consultation_medications
+             WHERE consultation_id = ?
+               AND added_by_role = 'DOCTOR'
+             ORDER BY id ASC
+             FOR UPDATE`,
+            [consultationId]
+        );
+
+        let pricingId = existingPricingRows[0]?.id || null;
+        let existingItems = [];
+
+        if (pricingId) {
+            [existingItems] = await connection.execute(
+                `SELECT
+                    mpi.id AS pricing_item_id,
+                    mpi.consultation_medication_id,
+                    mpi.medicine_value,
+                    mpi.amount,
+                    mpi.dispense_status,
+                    mpi.void_reason,
+                    mpi.voided_by,
+                    mpi.voided_at,
+                    mpi.version
+                 FROM tbl_medical_prescription_pricing_items mpi
+                 JOIN tbl_consultation_medications cm
+                   ON cm.id = mpi.consultation_medication_id
+                  AND cm.consultation_id = ?
+                  AND cm.added_by_role = 'DOCTOR'
+                 WHERE mpi.pricing_id = ?
+                 ORDER BY mpi.id ASC
+                 FOR UPDATE`,
+                [consultationId, pricingId]
+            );
+        }
+
+        const normalizedItems = validatePrescribedDispensingItems({
+            submittedItems: medications,
+            prescribedMedications,
+            existingItems,
+        });
+
+        const [testRows] = await connection.execute(
+            `SELECT id, amount
+             FROM tbl_consultation_tests
+             WHERE consultation_id = ?
+             ORDER BY id ASC
+             FOR UPDATE`,
+            [consultationId]
+        );
+
+        const totalAmount = calculateDispensingTotal({
+            prescribedItems: normalizedItems,
+            additionalItems: normalizedAdditionalItems,
+            tests: testRows,
+        });
 
         if (existingPricingRows.length > 0) {
-            pricingId = existingPricingRows[0].id;
             await connection.execute(
                 `UPDATE tbl_medical_prescription_pricing
                  SET total_amount = ?,
@@ -748,11 +877,6 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                      updated_by = ?
                  WHERE id = ?`,
                 [totalAmount, remark, req.user.id, pricingId]
-            );
-            await connection.execute(
-                `DELETE FROM tbl_medical_prescription_pricing_items
-                 WHERE pricing_id = ?`,
-                [pricingId]
             );
         } else {
             const [insertPricing] = await connection.execute(
@@ -764,6 +888,114 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             pricingId = insertPricing.insertId;
         }
 
+        for (const item of normalizedItems) {
+            const existing = item.existing;
+            const eventType = resolveDispensingEventType({
+                existing,
+                amount: item.amount,
+                dispenseStatus: item.dispense_status,
+                voidReason: item.void_reason,
+            });
+            let pricingItemId = existing?.pricing_item_id || null;
+
+            if (existing && eventType) {
+                const [updateResult] = await connection.execute(
+                    `UPDATE tbl_medical_prescription_pricing_items
+                     SET amount = ?,
+                         medicine_value = ?,
+                         dispense_status = ?,
+                         void_reason = ?,
+                         voided_by = CASE WHEN ? = 'VOID' THEN ? ELSE NULL END,
+                         voided_at = CASE WHEN ? = 'VOID' THEN NOW() ELSE NULL END,
+                         version = version + 1
+                     WHERE id = ?
+                       AND version = ?`,
+                    [
+                        item.amount,
+                        item.medicine_value,
+                        item.dispense_status,
+                        item.void_reason,
+                        item.dispense_status,
+                        req.user.id,
+                        item.dispense_status,
+                        existing.pricing_item_id,
+                        existing.version,
+                    ]
+                );
+
+                if (updateResult.affectedRows !== 1) {
+                    throw new AppError(`Medication ${item.consultation_medication_id} was changed by another user. Please reload.`, 409);
+                }
+            } else if (!existing) {
+                const [insertItem] = await connection.execute(
+                    `INSERT INTO tbl_medical_prescription_pricing_items
+                     (pricing_id, consultation_medication_id, medicine_value, amount,
+                      dispense_status, void_reason, voided_by, voided_at, version)
+                     VALUES (?, ?, ?, ?, ?, ?,
+                             CASE WHEN ? = 'VOID' THEN ? ELSE NULL END,
+                             CASE WHEN ? = 'VOID' THEN NOW() ELSE NULL END, 1)`,
+                    [
+                        pricingId,
+                        item.consultation_medication_id,
+                        item.medicine_value,
+                        item.amount,
+                        item.dispense_status,
+                        item.void_reason,
+                        item.dispense_status,
+                        req.user.id,
+                        item.dispense_status,
+                    ]
+                );
+                pricingItemId = insertItem.insertId;
+            }
+
+            if (eventType) {
+                await connection.execute(
+                    `INSERT INTO tbl_medical_dispensing_item_events
+                     (pricing_item_id, consultation_id, consultation_medication_id, medicine_value,
+                      event_type, old_amount, new_amount, old_status, new_status, reason,
+                      actor_user_id, actor_role, request_key)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        pricingItemId,
+                        consultationId,
+                        item.consultation_medication_id,
+                        item.medicine_value,
+                        eventType,
+                        existing?.amount ?? null,
+                        item.amount,
+                        existing?.dispense_status || null,
+                        item.dispense_status,
+                        item.void_reason,
+                        req.user.id,
+                        req.user.role_code,
+                        requestKey,
+                    ]
+                );
+            }
+        }
+
+        const [oldAdditionalRows] = await connection.execute(
+            `SELECT id
+             FROM tbl_consultation_medications
+             WHERE consultation_id = ?
+               AND medicine_type = 'TEXT'
+               AND added_by_role = 'MEDICAL'
+             FOR UPDATE`,
+            [consultationId]
+        );
+
+        if (oldAdditionalRows.length > 0) {
+            const oldAdditionalIds = oldAdditionalRows.map((row) => Number(row.id));
+            const placeholders = oldAdditionalIds.map(() => '?').join(', ');
+            await connection.execute(
+                `DELETE FROM tbl_medical_prescription_pricing_items
+                 WHERE pricing_id = ?
+                   AND consultation_medication_id IN (${placeholders})`,
+                [pricingId, ...oldAdditionalIds]
+            );
+        }
+
         await connection.execute(
             `DELETE FROM tbl_consultation_medications
              WHERE consultation_id = ?
@@ -771,8 +1003,6 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                AND added_by_role = 'MEDICAL'`,
             [consultationId]
         );
-
-        const finalPricingItems = [...normalizedItems];
 
         for (const item of normalizedAdditionalItems) {
             const [insertMedication] = await connection.execute(
@@ -782,20 +1012,36 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                 [consultationId, item.medicine_value]
             );
 
-            finalPricingItems.push({
-                consultation_medication_id: insertMedication.insertId,
-                medicine_value: item.medicine_value,
-                amount: item.amount,
-            });
-        }
-
-        for (const item of finalPricingItems) {
             await connection.execute(
                 `INSERT INTO tbl_medical_prescription_pricing_items
-                 (pricing_id, consultation_medication_id, medicine_value, amount)
-                 VALUES (?, ?, ?, ?)`,
-                [pricingId, item.consultation_medication_id, item.medicine_value, item.amount]
+                 (pricing_id, consultation_medication_id, medicine_value, amount, dispense_status, version)
+                 VALUES (?, ?, ?, ?, 'ACTIVE', 1)`,
+                [pricingId, insertMedication.insertId, item.medicine_value, item.amount]
             );
+        }
+
+        if (!processAfterSave) {
+            const [existingUnpaidBillRows] = await connection.execute(
+                `SELECT id
+                 FROM tbl_bills
+                 WHERE consultation_id = ?
+                   AND bill_type = 'MEDICATION'
+                   AND status = 'ACTIVE'
+                   AND payment_status = 'UNPAID'
+                   AND paid_amount = 0
+                 LIMIT 1
+                 FOR UPDATE`,
+                [consultationId]
+            );
+
+            if (existingUnpaidBillRows.length > 0) {
+                const refreshedBill = await createMedicationBillFromConsultation({
+                    connection,
+                    consultationId,
+                    createdByUserId: req.user.id,
+                });
+                finalizedBillId = refreshedBill.billId;
+            }
         }
 
         if (processAfterSave) {
@@ -811,16 +1057,31 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
         }
     });
 
+    if (replayedRequest && processAfterSave) {
+        const existingBillRows = await query(
+            `SELECT id
+             FROM tbl_bills
+             WHERE consultation_id = ?
+               AND bill_type = 'MEDICATION'
+               AND status = 'ACTIVE'
+             LIMIT 1`,
+            [consultationId]
+        );
+        finalizedBillId = existingBillRows[0]?.id || null;
+    }
+
     const detail = await getMedicalPrescriptionDetail(consultationId, req.selectedBranchId || null);
     const bill = finalizedBillId ? await getBillDetailById(finalizedBillId) : null;
 
-    if (processAfterSave) {
+    if (processAfterSave && !replayedRequest) {
         await notifyMedicalPrescriptionProcessed({ consultationId, detail });
     }
 
     return res.status(200).json({
         success: true,
-        message: processAfterSave
+        message: replayedRequest
+            ? 'Dispensing request already completed'
+            : processAfterSave
             ? 'Medical prescription priced, processed and payment updated successfully'
             : 'Medical prescription pricing saved successfully',
         data: {
@@ -973,6 +1234,7 @@ const deleteMedicalProductMaster = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    buildMedicalPrescriptionListItemResponse,
     listMedicalPrescriptions,
     listPricedMedicalPrescriptions,
     getMedicalPrescription,

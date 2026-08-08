@@ -16,6 +16,13 @@ const VIDEO_MIME_TO_EXT = {
     'video/webm': 'webm',
 };
 
+const CLINICAL_DOCUMENT_MIME_TO_EXT = {
+    'application/pdf': 'pdf',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+};
+
 let fileTypeModulePromise = null;
 
 const getFileTypeFromBuffer = async () => {
@@ -95,8 +102,34 @@ const validateVideoUpload = async (file, maxBytes) => {
     };
 };
 
+const validateClinicalDocumentUpload = async (file, maxBytes) => {
+    validateSingleExtension(file?.originalname);
+
+    if (!file) {
+        throw new AppError('Clinical document file is required', 400);
+    }
+
+    if (file.size > maxBytes) {
+        throw new AppError(`Clinical document file size must be <= ${maxBytes} bytes`, 400);
+    }
+
+    const detected = await detectFileDetails(file);
+    const ext = CLINICAL_DOCUMENT_MIME_TO_EXT[detected.mime];
+
+    if (!ext) {
+        throw new AppError('Only PDF, JPG, PNG, or WEBP clinical documents are allowed', 400);
+    }
+
+    return {
+        mime: detected.mime,
+        ext,
+    };
+};
+
 module.exports = {
     validateImageUpload,
     validateVideoUpload,
+    validateClinicalDocumentUpload,
     IMAGE_MIME_TO_EXT,
+    CLINICAL_DOCUMENT_MIME_TO_EXT,
 };

@@ -1526,6 +1526,62 @@ const logout = asyncHandler(async (req, res) => {
     });
 });
 
+const changePassword = asyncHandler(async (req, res) => {
+    const { current_password, new_password } = req.body;
+
+    if (!new_password) {
+        throw new AppError('new_password is required', 400);
+    }
+
+    if (String(new_password).length < 6) {
+        throw new AppError('new_password must be at least 6 characters', 400);
+    }
+
+    const userId = req.user.id;
+
+    const userRows = await query(
+        `SELECT id, password, is_active
+         FROM master_users
+         WHERE id = ?
+         LIMIT 1`,
+        [userId]
+    );
+
+    if (userRows.length === 0) {
+        throw new AppError('User not found', 404);
+    }
+
+    const user = userRows[0];
+
+    if (!user.is_active) {
+        throw new AppError('User account is inactive', 403);
+    }
+
+    if (user.password) {
+        if (!current_password) {
+            throw new AppError('current_password is required', 400);
+        }
+        const isMatch = await bcrypt.compare(String(current_password), user.password);
+        if (!isMatch) {
+            throw new AppError('Current password is incorrect', 400);
+        }
+    }
+
+    const hashedPassword = await bcrypt.hash(String(new_password), 10);
+
+    await query(
+        `UPDATE master_users
+         SET password = ?, updated_by = ?, updated_ip = ?
+         WHERE id = ?`,
+        [hashedPassword, userId, getClientIp(req), userId]
+    );
+
+    return res.status(200).json({
+        success: true,
+        message: 'Password changed successfully',
+    });
+});
+
 module.exports = {
     requestRegistrationOtp,
     verifyRegistrationOtp,
@@ -1540,6 +1596,8 @@ module.exports = {
     requestForgotPasswordOtp,
     verifyForgotPasswordOtp,
     resetForgotPassword,
+    changePassword,
     refreshToken,
     logout,
 };
+

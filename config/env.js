@@ -107,6 +107,7 @@ const validateEnv = () => {
             driver: filesystemDriver,
             imageMaxBytes: getNumberEnv('CMS_IMAGE_MAX_BYTES', 10 * 1024 * 1024),
             videoMaxBytes: getNumberEnv('CMS_VIDEO_MAX_BYTES', 250 * 1024 * 1024),
+            clinicalDocumentMaxBytes: getNumberEnv('CLINICAL_DOCUMENT_MAX_BYTES', 10 * 1024 * 1024),
             imageOptimizedMaxWidth: getNumberEnv('CMS_IMAGE_OPTIMIZED_MAX_WIDTH', 1600),
             imageThumbnailMaxWidth: getNumberEnv('CMS_IMAGE_THUMB_MAX_WIDTH', 480),
             spaces: {

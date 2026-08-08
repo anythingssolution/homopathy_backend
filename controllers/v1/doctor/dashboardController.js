@@ -8,6 +8,7 @@ const {
     toPositiveInt,
     isValidDateString,
     DOCTOR_APPOINTMENT_SELECT,
+    normalizeMasterValue,
     buildTextMedicineProductMasters,
 } = require('./shared');
 
@@ -328,7 +329,7 @@ const getDoctorReports = asyncHandler(async (req, res) => {
 });
 
 const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
-    const [textMedicines, textMedicineRemarks, labTests] = await Promise.all([
+    const [textMedicines, textMedicineRemarks, scopedTextMedicineRemarks, labTests] = await Promise.all([
         query(
             `SELECT id, medicine_value, normalized_value, is_active, created_at, updated_at
              FROM master_text_medicines
@@ -339,8 +340,36 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             `SELECT id, remark_value, normalized_value, is_active, created_at, updated_at
              FROM master_text_medicine_remarks
              WHERE is_active = 1
+               AND (normalized_selection_value IS NULL OR normalized_selection_value = '')
              ORDER BY remark_value ASC`
-        ),
+        ).catch((error) => {
+            if (error?.code === 'ER_BAD_FIELD_ERROR') {
+                return query(
+                    `SELECT id, remark_value, normalized_value, is_active, created_at, updated_at
+                     FROM master_text_medicine_remarks
+                     WHERE is_active = 1
+                     ORDER BY remark_value ASC`
+                );
+            }
+
+            throw error;
+        }),
+        query(
+            `SELECT id, remark_value, normalized_value, selection_value, normalized_selection_value,
+                    medicine_value, variant_value, normalized_medicine_value, normalized_variant_value,
+                    is_active, created_at, updated_at
+             FROM master_text_medicine_remarks
+             WHERE is_active = 1
+               AND normalized_selection_value IS NOT NULL
+               AND normalized_selection_value <> ''
+             ORDER BY selection_value ASC, remark_value ASC`
+        ).catch((error) => {
+            if (error?.code === 'ER_BAD_FIELD_ERROR') {
+                return [];
+            }
+
+            throw error;
+        }),
         query(
             `SELECT id, test_name, sample_call, amount, test_type, normalized_test_name, is_active, created_at, updated_at
              FROM master_lab_test_prices
@@ -350,14 +379,62 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
     ]);
 
     const productMasters = await buildTextMedicineProductMasters(textMedicines);
-    const textMedicineRows = textMedicines.map(({ normalized_value: _normalizedValue, ...medicine }) => ({
+    const scopedRemarksBySelectionValue = new Map();
+
+    scopedTextMedicineRemarks.forEach((remark) => {
+        const key = String(remark.normalized_selection_value || '').trim();
+        if (!key) {
+            return;
+        }
+
+        if (!scopedRemarksBySelectionValue.has(key)) {
+            scopedRemarksBySelectionValue.set(key, []);
+        }
+
+        scopedRemarksBySelectionValue.get(key).push({
+            id: remark.id,
+            remark_value: remark.remark_value,
+            created_at: remark.created_at,
+            updated_at: remark.updated_at,
+        });
+    });
+
+    const textMedicineRows = textMedicines.map(({ normalized_value: normalizedMedicineValue, ...medicine }) => ({
         ...medicine,
+        remark_suggestions: scopedRemarksBySelectionValue.get(normalizedMedicineValue) || [],
         medical_products: productMasters.medicalProducts.get(medicine.id) || [],
         products: productMasters.products.get(medicine.id) || [],
         radient_pharma_products: productMasters.radientPharmaProducts.get(medicine.id) || [],
         handwritten_product_prices: productMasters.handwrittenProductPrices.get(medicine.id) || [],
     }));
     const textMedicineRemarkRows = textMedicineRemarks.map(({ normalized_value: _normalizedValue, ...remark }) => remark);
+
+    textMedicineRows.forEach((medicine) => {
+        const getVariantRemarkSuggestions = (variantLabel) => (
+            scopedRemarksBySelectionValue.get(
+                normalizeMasterValue(`${medicine.medicine_value} - ${variantLabel || ''}`)
+            ) || []
+        );
+
+        medicine.medical_products = (medicine.medical_products || []).map((product) => ({
+            ...product,
+            remark_suggestions: getVariantRemarkSuggestions(
+                product.packing || product.size_or_weight || product.product_name || product.category || 'N/A'
+            ),
+        }));
+        medicine.products = (medicine.products || []).map((product) => ({
+            ...product,
+            remark_suggestions: getVariantRemarkSuggestions(product.packing || 'N/A'),
+        }));
+        medicine.radient_pharma_products = (medicine.radient_pharma_products || []).map((product) => ({
+            ...product,
+            remark_suggestions: getVariantRemarkSuggestions(product.net_weight_or_size || 'N/A'),
+        }));
+        medicine.handwritten_product_prices = (medicine.handwritten_product_prices || []).map((product) => ({
+            ...product,
+            remark_suggestions: getVariantRemarkSuggestions(product.product_name || product.category || 'N/A'),
+        }));
+    });
     const labTestRows = labTests.map(({ normalized_test_name: _normalizedTestName, ...test }) => test);
 
     return res.status(200).json({

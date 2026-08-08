@@ -315,6 +315,21 @@ const compareTokenNumbers = (left, right) => {
     return normalizeSequenceNumber(left.appointment_id) - normalizeSequenceNumber(right.appointment_id);
 };
 
+const comparePersistedLiveQueueAssignments = (left, right) => {
+    const leftPosition = normalizeSequenceNumber(left?.live_queue_assigned_position);
+    const rightPosition = normalizeSequenceNumber(right?.live_queue_assigned_position);
+
+    if (
+        leftPosition !== Number.MAX_SAFE_INTEGER
+        && rightPosition !== Number.MAX_SAFE_INTEGER
+        && leftPosition !== rightPosition
+    ) {
+        return leftPosition - rightPosition;
+    }
+
+    return 0;
+};
+
 const resolveEffectiveRuntimeEtaValue = (item) => normalizeDateOrderValue(
     item?.live_estimated_start_at
     || item?.estimated_start_at
@@ -354,6 +369,11 @@ const buildRuntimePriorityMeta = (item) => {
 };
 
 const compareRuntimeTimelineItems = (left, right) => {
+    const assignedPositionOrder = comparePersistedLiveQueueAssignments(left, right);
+    if (assignedPositionOrder !== 0) {
+        return assignedPositionOrder;
+    }
+
     const leftEta = resolveEffectiveRuntimeEtaValue(left);
     const rightEta = resolveEffectiveRuntimeEtaValue(right);
 
@@ -372,6 +392,11 @@ const resolveFrozenReadySequenceOrderValue = (item) => normalizeDateOrderValue(
 );
 
 const compareFrozenReadySequenceItems = (left, right) => {
+    const assignedPositionOrder = comparePersistedLiveQueueAssignments(left, right);
+    if (assignedPositionOrder !== 0) {
+        return assignedPositionOrder;
+    }
+
     const leftOrder = resolveFrozenReadySequenceOrderValue(left);
     const rightOrder = resolveFrozenReadySequenceOrderValue(right);
 
@@ -467,11 +492,178 @@ const parseProtectedWindowAppointmentIds = (metaJson = null) => {
     }
 };
 
+const MAX_POST_PROTECTED_SHUFFLES = 2;
+
+const resolveBoundedEarlyArrivalAssignments = ({
+    queueRows = [],
+    checkingInAppointmentId,
+    checkedInAt = new Date(),
+}) => {
+    const appointmentId = Number(checkingInAppointmentId || 0);
+    const current = queueRows.find((row) => Number(row?.appointment_id || 0) === appointmentId) || null;
+    const checkInDate = checkedInAt instanceof Date ? checkedInAt : parseMysqlDateTime(checkedInAt);
+    const plannedStartAt = parseMysqlDateTime(current?.planned_start_at || null);
+
+    if (!current || !(checkInDate instanceof Date) || Number.isNaN(checkInDate.getTime())) {
+        return { applied: false, assignments: [], displacedAssignments: [] };
+    }
+
+    const checkInLimit = plannedStartAt instanceof Date && !Number.isNaN(plannedStartAt.getTime())
+        ? addMinutes(plannedStartAt, CHECK_IN_GRACE_MINUTES)
+        : null;
+    if (!checkInLimit || checkInDate.getTime() > checkInLimit.getTime()) {
+        return { applied: false, assignments: [], displacedAssignments: [] };
+    }
+
+    const tokenNumber = normalizeSequenceNumber(
+        current.original_token_number ?? current.token_number ?? current.current_token_number
+    );
+    if (tokenNumber === Number.MAX_SAFE_INTEGER) {
+        return { applied: false, assignments: [], displacedAssignments: [] };
+    }
+
+    const assignedRows = queueRows
+        .filter((row) => (
+            Number(row?.appointment_id || 0) !== appointmentId
+            && Boolean(row?.checked_in_at)
+            && READY_QUEUE_STATUSES.includes(row?.queue_status)
+            && !row?.actual_called_at
+            && !row?.actual_started_at
+            && !row?.actual_completed_at
+            && normalizeSequenceNumber(row?.live_queue_assigned_position) !== Number.MAX_SAFE_INTEGER
+        ))
+        .sort((left, right) => {
+            const assignedOrder = comparePersistedLiveQueueAssignments(left, right);
+            return assignedOrder !== 0 ? assignedOrder : compareTokenNumbers(left, right);
+        });
+    const hasActiveAssignmentCohort = assignedRows.length > 0;
+    const hasUnarrivedLowerToken = queueRows.some((row) => (
+        Number(row?.appointment_id || 0) !== appointmentId
+        && !row?.checked_in_at
+        && ACTIVE_QUEUE_STATUSES.includes(row?.queue_status)
+        && normalizeSequenceNumber(
+            row?.original_token_number ?? row?.token_number ?? row?.current_token_number
+        ) < tokenNumber
+    ));
+    const startsEarlyArrivalCohort = !hasActiveAssignmentCohort
+        && hasUnarrivedLowerToken
+        && plannedStartAt instanceof Date
+        && checkInDate.getTime() < plannedStartAt.getTime();
+
+    if (!hasActiveAssignmentCohort && !startsEarlyArrivalCohort) {
+        return { applied: false, assignments: [], displacedAssignments: [] };
+    }
+
+    let insertionIndex = assignedRows.reduce((lastLowerIndex, row, index) => {
+        const rowTokenNumber = normalizeSequenceNumber(
+            row?.original_token_number ?? row?.token_number ?? row?.current_token_number
+        );
+        return rowTokenNumber < tokenNumber ? index + 1 : lastLowerIndex;
+    }, 0);
+
+    assignedRows.forEach((row, index) => {
+        const rowTokenNumber = normalizeSequenceNumber(
+            row?.original_token_number ?? row?.token_number ?? row?.current_token_number
+        );
+        const displacementCount = Number(row?.live_queue_displacement_count || 0);
+        if (
+            index >= insertionIndex
+            && rowTokenNumber > tokenNumber
+            && Number(row?.live_queue_early_arrival || 0) === 1
+            && displacementCount >= MAX_POST_PROTECTED_SHUFFLES
+        ) {
+            insertionIndex = index + 1;
+        }
+    });
+
+    const orderedRows = [...assignedRows];
+    orderedRows.splice(insertionIndex, 0, {
+        ...current,
+        checked_in_at: formatDateTimeForSql(checkInDate),
+        live_queue_early_arrival: startsEarlyArrivalCohort ? 1 : Number(current.live_queue_early_arrival || 0),
+        live_queue_displacement_count: Number(current.live_queue_displacement_count || 0),
+    });
+
+    const oldPositionById = new Map(assignedRows.map((row) => [
+        Number(row.appointment_id),
+        Number(row.live_queue_assigned_position),
+    ]));
+    const assignments = orderedRows.map((row, index) => {
+        const rowAppointmentId = Number(row.appointment_id);
+        const oldPosition = oldPositionById.get(rowAppointmentId) || null;
+        const assignedPosition = index + 1;
+        const rowTokenNumber = normalizeSequenceNumber(
+            row?.original_token_number ?? row?.token_number ?? row?.current_token_number
+        );
+        const wasDisplaced = rowAppointmentId !== appointmentId
+            && oldPosition !== null
+            && assignedPosition > oldPosition
+            && rowTokenNumber > tokenNumber
+            && Number(row?.live_queue_early_arrival || 0) === 1;
+        const displacementCount = Math.min(
+            Number(row?.live_queue_displacement_count || 0) + (wasDisplaced ? 1 : 0),
+            MAX_POST_PROTECTED_SHUFFLES
+        );
+
+        return {
+            appointmentId: rowAppointmentId,
+            oldPosition,
+            assignedPosition,
+            displacementCount,
+            earlyArrival: Number(row?.live_queue_early_arrival || 0) === 1,
+            wasDisplaced,
+            isLocked: displacementCount >= MAX_POST_PROTECTED_SHUFFLES,
+        };
+    });
+    const currentAssignment = assignments.find((assignment) => assignment.appointmentId === appointmentId);
+
+    return {
+        applied: true,
+        assignments,
+        displacedAssignments: assignments.filter((assignment) => assignment.wasDisplaced),
+        assignedPosition: currentAssignment?.assignedPosition || null,
+        displacementCount: currentAssignment?.displacementCount || 0,
+        isLocked: Boolean(currentAssignment?.isLocked),
+        startedByEarlyArrival: startsEarlyArrivalCohort,
+    };
+};
+
 const isVisibleQueueItem = (item) => (
     Boolean(item)
     && item.queue_bucket !== 'NOT_ARRIVED'
     && !(item.is_on_hold && !item.present_now)
 );
+
+const enforceMaxShuffleLimitOnRemainingItems = (remainingItems = []) => {
+    if (!Array.isArray(remainingItems) || remainingItems.length <= 1) {
+        return remainingItems || [];
+    }
+
+    return remainingItems.map((item) => {
+        const currentShuffleCount = Number(
+            item?.live_queue_displacement_count ?? item?.shuffle_count ?? 0
+        );
+        const originalTokenNumber = normalizeSequenceNumber(item?.original_token_number ?? item?.token_number);
+        const currentTokenNumber = normalizeSequenceNumber(item?.current_token_number ?? item?.token_number);
+
+        const isShuffledFromOriginal = originalTokenNumber !== Number.MAX_SAFE_INTEGER
+            && currentTokenNumber !== Number.MAX_SAFE_INTEGER
+            && originalTokenNumber !== currentTokenNumber;
+
+        let effectiveShuffleCount = currentShuffleCount;
+        if (isShuffledFromOriginal && effectiveShuffleCount === 0) {
+            effectiveShuffleCount = 1;
+        }
+
+        const cappedShuffleCount = Math.min(effectiveShuffleCount, MAX_POST_PROTECTED_SHUFFLES);
+
+        return {
+            ...item,
+            shuffle_count: cappedShuffleCount,
+            is_shuffle_locked: cappedShuffleCount >= MAX_POST_PROTECTED_SHUFFLES,
+        };
+    });
+};
 
 const applyProtectedVisibleQueueWindow = (
     runtimeItems = [],
@@ -508,10 +700,12 @@ const applyProtectedVisibleQueueWindow = (
         return !pinnedIds.has(appointmentId) && !protectedVisibleIds.has(appointmentId);
     });
 
+    const enforcedRemainingItems = enforceMaxShuffleLimitOnRemainingItems(remainingItems);
+
     return [
         ...pinnedItems,
         ...protectedVisibleItems,
-        ...remainingItems,
+        ...enforcedRemainingItems,
     ];
 };
 
@@ -1381,6 +1575,11 @@ const normalizeRuntimeAppointmentRow = (row) => decorateTokenFields({
         : Number(row.current_token_number),
     original_token_number: row?.original_token_number === null || row?.original_token_number === undefined ? null : Number(row.original_token_number),
     arrival_sequence: row?.arrival_sequence === null || row?.arrival_sequence === undefined ? null : Number(row.arrival_sequence),
+    live_queue_assigned_position: row?.live_queue_assigned_position === null || row?.live_queue_assigned_position === undefined
+        ? null
+        : Number(row.live_queue_assigned_position),
+    live_queue_displacement_count: Number(row?.live_queue_displacement_count || 0),
+    live_queue_early_arrival: Number(row?.live_queue_early_arrival || 0),
     live_wait_minutes_snapshot: row?.live_wait_minutes_snapshot === null || row?.live_wait_minutes_snapshot === undefined
         ? null
         : Number(row.live_wait_minutes_snapshot),
@@ -1965,6 +2164,9 @@ const recalculateLiveRuntimeProjection = async (connection, {
             a.queue_status,
             a.checked_in_at,
             a.arrival_sequence,
+            a.live_queue_assigned_position,
+            a.live_queue_displacement_count,
+            a.live_queue_early_arrival,
             a.actual_called_at,
             a.actual_started_at,
             a.actual_completed_at,
@@ -1974,6 +2176,7 @@ const recalculateLiveRuntimeProjection = async (connection, {
             a.live_estimated_end_at,
             a.live_wait_minutes_snapshot,
             a.live_eta_updated_at,
+            a.created_at,
             COALESCE(a.assigned_slot_duration_minutes, t.estimated_duration_minutes, s.default_consult_minutes, 15) AS consult_minutes
          FROM tbl_appointments a
          JOIN master_treatments t ON t.id = a.fk_treatment_id
@@ -2620,11 +2823,15 @@ const getLiveQueueSnapshot = async ({
             a.last_queue_event_at,
             a.checked_in_at,
             a.arrival_sequence,
+            a.live_queue_assigned_position,
+            a.live_queue_displacement_count,
+            a.live_queue_early_arrival,
             a.is_shifted,
             a.shift_reason,
             a.booked_by_type,
             a.reception_status,
-            a.consultation_payment_status
+            a.consultation_payment_status,
+            a.created_at
          FROM tbl_appointments a
          ${getAppointmentPatientJoin()}
          JOIN master_treatments t ON t.id = a.fk_treatment_id
@@ -2649,11 +2856,15 @@ const getLiveQueueSnapshot = async ({
             a.queue_status,
             a.checked_in_at,
             a.arrival_sequence,
+            a.live_queue_assigned_position,
+            a.live_queue_displacement_count,
+            a.live_queue_early_arrival,
             a.actual_called_at,
             a.actual_started_at,
             a.actual_completed_at,
             a.planned_start_at,
-            a.live_estimated_start_at
+            a.live_estimated_start_at,
+            a.created_at
          FROM tbl_appointments a
          WHERE a.fk_branch_id = ?
            AND a.fk_slot_id = ?
@@ -3159,6 +3370,9 @@ const getCurrentDateTokenList = async ({
             a.not_available_at,
             a.checked_in_at,
             a.arrival_sequence,
+            a.live_queue_assigned_position,
+            a.live_queue_displacement_count,
+            a.live_queue_early_arrival,
             a.planned_start_at,
             a.planned_end_at,
             a.live_estimated_start_at,
@@ -3170,7 +3384,8 @@ const getCurrentDateTokenList = async ({
             a.actual_completed_at,
             a.last_queue_event_at,
             a.symptoms,
-            a.appointment_date
+            a.appointment_date,
+            a.created_at
          FROM tbl_appointments a
          ${getAppointmentPatientJoin()}
          JOIN master_clinic_branches b ON b.id = a.fk_branch_id
@@ -3210,11 +3425,15 @@ const getCurrentDateTokenList = async ({
             a.queue_status,
             a.checked_in_at,
             a.arrival_sequence,
+            a.live_queue_assigned_position,
+            a.live_queue_displacement_count,
+            a.live_queue_early_arrival,
             a.actual_called_at,
             a.actual_started_at,
             a.actual_completed_at,
             a.planned_start_at,
-            a.live_estimated_start_at
+            a.live_estimated_start_at,
+            a.created_at
          FROM tbl_appointments a
          WHERE ${timelineConditions.join(' AND ')}
          ORDER BY a.fk_branch_id ASC, a.fk_slot_id ASC, a.current_token_number ASC, a.created_at ASC`,
@@ -3709,6 +3928,8 @@ module.exports = {
     buildPlateBlankTimelineRows,
     sortAppointmentsByRuntimeQueue,
     sortReadyCandidatesByFrozenQueueSequence,
+    resolveBoundedEarlyArrivalAssignments,
     getActiveProtectedWindowAppointmentIds,
     autoSelectAndCallNextReady,
+    applyProtectedVisibleQueueWindow,
 };

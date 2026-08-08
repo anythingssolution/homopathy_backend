@@ -1,0 +1,14 @@
+node_modules/
+.env
+logs/
+npm-debug.log*
+/.npm-cache
+/external_files
+*.json
+package.json
+/.tmp-pydeps
+BRANCH2_70_TOKEN_LAYOUT_IMPLEMENTATION_REPORT.md
+README_FRONTEND_QUEUE_CHANGES_HANDOFF.md
+README_LIVE_QUEUE_FRONTEND_SOCKET_INTEGRATION_REACT.md
+README_REALTIME_TOKEN_SHIFT_AND_HOLD_RULES.md
+/backups

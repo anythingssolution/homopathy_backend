@@ -6,6 +6,7 @@ const { markAppointmentQueueCompleted, emitLiveQueueEvent } = require('../../../
 const { decorateTokenFields } = require('../../../utils/tokenDisplay');
 const { normalizeRoleCode } = require('../../../utils/roles');
 const { getCrossModuleAccessFlag } = require('../../../utils/moduleAccess');
+const { projectDispensingStatus } = require('../../../services/dispensaryPricingService');
 const {
     getAppointmentPatientColumns,
     getAppointmentPatientJoin,
@@ -103,10 +104,23 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
          AND a.consultation_payment_status = 'PAID' THEN 1
         ELSE 0
     END AS can_consult,
-    v.oxygen_saturation,
-    v.blood_pressure,
-    v.patient_height,
-    v.patient_weight,
+    COALESCE(NULLIF(c.oxygen_saturation, ''), v.oxygen_saturation) AS oxygen_saturation,
+    COALESCE(NULLIF(c.blood_pressure, ''), v.blood_pressure) AS blood_pressure,
+    COALESCE(NULLIF(c.patient_height, ''), v.patient_height) AS patient_height,
+    COALESCE(NULLIF(c.patient_weight, ''), v.patient_weight) AS patient_weight,
+    COALESCE(NULLIF(c.occupation, ''), v.occupation) AS occupation,
+    COALESCE(NULLIF(c.history_present_illness, ''), v.history_present_illness) AS history_present_illness,
+    COALESCE(NULLIF(c.history_past_illness, ''), v.history_past_illness) AS history_past_illness,
+    COALESCE(NULLIF(c.family_history, ''), v.family_history) AS family_history,
+    COALESCE(NULLIF(c.allergies_history, ''), v.allergies_history) AS allergies_history,
+    COALESCE(NULLIF(c.gynecological_history, ''), v.gynecological_history) AS gynecological_history,
+    COALESCE(NULLIF(c.personal_social_history, ''), v.personal_social_history) AS personal_social_history,
+    COALESCE(NULLIF(c.general_examination, ''), v.general_examination) AS general_examination,
+    COALESCE(NULLIF(c.systematic_examination, ''), v.systematic_examination) AS systematic_examination,
+    COALESCE(NULLIF(c.differential_diagnosis, ''), v.differential_diagnosis) AS differential_diagnosis,
+    COALESCE(NULLIF(c.follow_up, ''), v.follow_up) AS follow_up,
+    COALESCE(NULLIF(c.disease, ''), v.disease) AS disease,
+    COALESCE(NULLIF(c.mental_mind_status, ''), v.mental_mind_status) AS mental_mind_status,
     ${getAppointmentPatientColumns()}
  FROM tbl_appointments a
  JOIN master_clinic_branches b ON b.id = a.fk_branch_id
@@ -126,16 +140,99 @@ const ALLOWED_MEDICINE_TYPES = new Set(['NUMERIC', 'TEXT']);
 const ALLOWED_CONSULTATION_MODES = new Set(['PHYSICAL_PRESENT', 'ON_CALL']);
 const normalizeMasterValue = (value) => String(value || '').trim().toLowerCase();
 
+const parseTextMedicineVariantPair = (medicineValue) => {
+    const normalizedMedicineValue = String(medicineValue || '').trim();
+    const separator = ' - ';
+    const separatorIndex = normalizedMedicineValue.indexOf(separator);
+
+    if (separatorIndex <= 0 || separatorIndex === normalizedMedicineValue.length - separator.length) {
+        return null;
+    }
+
+    const medicineName = normalizedMedicineValue.slice(0, separatorIndex).trim();
+    const variantName = normalizedMedicineValue.slice(separatorIndex + separator.length).trim();
+
+    if (!medicineName || !variantName) {
+        return null;
+    }
+
+    return {
+        medicine_value: medicineName,
+        variant_value: variantName,
+        selection_value: normalizedMedicineValue,
+        normalized_medicine_value: normalizeMasterValue(medicineName),
+        normalized_variant_value: normalizeMasterValue(variantName),
+        normalized_selection_value: normalizeMasterValue(normalizedMedicineValue),
+    };
+};
+
+const buildTextMedicineSuggestionKey = (medicineValue) => {
+    const pair = parseTextMedicineVariantPair(medicineValue);
+    if (pair) {
+        return pair;
+    }
+
+    const selectionValue = String(medicineValue || '').trim();
+    if (!selectionValue) {
+        return null;
+    }
+
+    return {
+        medicine_value: selectionValue,
+        variant_value: '',
+        selection_value: selectionValue,
+        normalized_medicine_value: normalizeMasterValue(selectionValue),
+        normalized_variant_value: '',
+        normalized_selection_value: normalizeMasterValue(selectionValue),
+    };
+};
+
 const queryOptionalMasterTable = async (sql, params = []) => {
     try {
         return await query(sql, params);
     } catch (error) {
-        if (error?.code === 'ER_NO_SUCH_TABLE') {
+        if (error?.code === 'ER_NO_SUCH_TABLE' || error?.code === 'ER_BAD_FIELD_ERROR') {
             return [];
         }
 
         throw error;
     }
+};
+
+const saveTextMedicineRemarkSuggestion = async (connection, medication) => {
+    if (medication?.medicine_type !== 'TEXT' || !medication?.remark) {
+        return;
+    }
+
+    const suggestionKey = buildTextMedicineSuggestionKey(medication.medicine_value);
+    if (!suggestionKey) {
+        return;
+    }
+
+    await connection.execute(
+        `INSERT INTO master_text_medicine_remarks
+         (remark_value, normalized_value, selection_value, normalized_selection_value,
+          medicine_value, variant_value, normalized_medicine_value, normalized_variant_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+             remark_value = VALUES(remark_value),
+             selection_value = VALUES(selection_value),
+             medicine_value = VALUES(medicine_value),
+             variant_value = VALUES(variant_value),
+             normalized_medicine_value = VALUES(normalized_medicine_value),
+             normalized_variant_value = VALUES(normalized_variant_value),
+             is_active = 1`,
+        [
+            medication.remark,
+            normalizeMasterValue(medication.remark),
+            suggestionKey.selection_value,
+            suggestionKey.normalized_selection_value,
+            suggestionKey.medicine_value,
+            suggestionKey.variant_value,
+            suggestionKey.normalized_medicine_value,
+            suggestionKey.normalized_variant_value,
+        ]
+    );
 };
 
 const groupRowsByTextMedicine = (textMedicines, rows) => {
@@ -270,14 +367,14 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
 
     medicationRows.forEach((medication) => {
         if (!medicationMap.has(medication.consultation_medication_id)) {
-            medicationMap.set(medication.consultation_medication_id, {
+            medicationMap.set(medication.consultation_medication_id, projectDispensingStatus({
                 consultation_medication_id: medication.consultation_medication_id,
                 medicine_type: medication.medicine_type,
                 medicine_value: medication.medicine_value,
                 remark: medication.remark,
                 added_by_role: medication.added_by_role || 'DOCTOR',
                 doses: [],
-            });
+            }, medication));
         }
 
         if (medication.medication_dosage_id) {
@@ -360,24 +457,24 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.follow_up_after_days,
             c.repeated_from_consultation_id,
             c.consultation_mode,
-            c.oxygen_saturation,
-            c.blood_pressure,
-            c.patient_height,
-            c.patient_weight,
-            c.occupation,
-            c.history_present_illness,
-            c.history_past_illness,
-            c.family_history,
-            c.allergies_history,
-            c.gynecological_history,
-            c.personal_social_history,
-            c.general_examination,
-            c.systematic_examination,
-            c.differential_diagnosis,
-            c.follow_up,
-            c.disease,
+            COALESCE(NULLIF(c.oxygen_saturation, ''), v.oxygen_saturation) AS oxygen_saturation,
+            COALESCE(NULLIF(c.blood_pressure, ''), v.blood_pressure) AS blood_pressure,
+            COALESCE(NULLIF(c.patient_height, ''), v.patient_height) AS patient_height,
+            COALESCE(NULLIF(c.patient_weight, ''), v.patient_weight) AS patient_weight,
+            COALESCE(NULLIF(c.occupation, ''), v.occupation) AS occupation,
+            COALESCE(NULLIF(c.history_present_illness, ''), v.history_present_illness) AS history_present_illness,
+            COALESCE(NULLIF(c.history_past_illness, ''), v.history_past_illness) AS history_past_illness,
+            COALESCE(NULLIF(c.family_history, ''), v.family_history) AS family_history,
+            COALESCE(NULLIF(c.allergies_history, ''), v.allergies_history) AS allergies_history,
+            COALESCE(NULLIF(c.gynecological_history, ''), v.gynecological_history) AS gynecological_history,
+            COALESCE(NULLIF(c.personal_social_history, ''), v.personal_social_history) AS personal_social_history,
+            COALESCE(NULLIF(c.general_examination, ''), v.general_examination) AS general_examination,
+            COALESCE(NULLIF(c.systematic_examination, ''), v.systematic_examination) AS systematic_examination,
+            COALESCE(NULLIF(c.differential_diagnosis, ''), v.differential_diagnosis) AS differential_diagnosis,
+            COALESCE(NULLIF(c.follow_up, ''), v.follow_up) AS follow_up,
+            COALESCE(NULLIF(c.disease, ''), v.disease) AS disease,
             c.diagnosis,
-            c.mental_mind_status,
+            COALESCE(NULLIF(c.mental_mind_status, ''), v.mental_mind_status) AS mental_mind_status,
             c.formula_set_id,
             c.formula_version_used,
             c.quick_formula_input,
@@ -393,6 +490,7 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.updated_at
          FROM tbl_consultations c
          JOIN master_users d ON d.id = c.doctor_id
+         LEFT JOIN tbl_appointment_vitals v ON v.appointment_id = c.appointment_id
          WHERE c.appointment_id = ?
          LIMIT 1`,
         [appointmentId]
@@ -409,6 +507,11 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             cm.medicine_value,
             cm.remark,
             cm.added_by_role,
+            mppi.dispense_status,
+            mppi.void_reason,
+            mppi.voided_by,
+            mppi.voided_at,
+            mppi.version,
             md.id AS medication_dosage_id,
             md.dose_label,
             md.sort_order,
@@ -416,6 +519,11 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             md.balls_per_dose,
             md.instructions
          FROM tbl_consultation_medications cm
+         LEFT JOIN tbl_medical_prescription_pricing mpp
+           ON mpp.consultation_id = cm.consultation_id
+         LEFT JOIN tbl_medical_prescription_pricing_items mppi
+           ON mppi.pricing_id = mpp.id
+          AND mppi.consultation_medication_id = cm.id
          LEFT JOIN tbl_medication_dosages md
            ON md.consultation_medication_id = cm.id
          WHERE cm.consultation_id = ?
@@ -464,6 +572,11 @@ const getMedicalPricingAggregateByConsultationId = async (consultationId) => {
             consultation_medication_id,
             medicine_value,
             amount,
+            dispense_status,
+            void_reason,
+            voided_by,
+            voided_at,
+            version,
             created_at,
             updated_at
          FROM tbl_medical_prescription_pricing_items
@@ -909,7 +1022,10 @@ module.exports = {
     normalizeAppointmentStatus,
     DOCTOR_APPOINTMENT_SELECT,
     normalizeMasterValue,
+    parseTextMedicineVariantPair,
+    buildTextMedicineSuggestionKey,
     buildTextMedicineProductMasters,
+    saveTextMedicineRemarkSuggestion,
     getDoctorAppointmentById,
     STAFF_ACCESS_ROLE_MAP,
     buildStaffAccessResponseRows,

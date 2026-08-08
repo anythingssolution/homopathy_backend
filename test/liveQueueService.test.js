@@ -11,9 +11,150 @@ const {
     buildDerivedLiveQueueView,
     buildFrozenDisplaySequenceView,
     SESSION_STATUS,
+    resolveBoundedEarlyArrivalAssignments,
     sortReadyCandidatesByFrozenQueueSequence,
     sortAppointmentsByRuntimeQueue,
 } = require('../services/liveQueueService');
+
+const applyBoundedCheckIn = (rows, appointmentId, checkedInAt) => {
+    const result = resolveBoundedEarlyArrivalAssignments({
+        queueRows: rows,
+        checkingInAppointmentId: appointmentId,
+        checkedInAt,
+    });
+    const assignmentById = new Map(
+        result.assignments.map((assignment) => [assignment.appointmentId, assignment])
+    );
+
+    rows.forEach((row) => {
+        const assignment = assignmentById.get(Number(row.appointment_id));
+        if (assignment) {
+            row.live_queue_assigned_position = assignment.assignedPosition;
+            row.live_queue_displacement_count = assignment.displacementCount;
+            row.live_queue_early_arrival = assignment.earlyArrival ? 1 : 0;
+        }
+
+        if (Number(row.appointment_id) === Number(appointmentId)) {
+            row.checked_in_at = checkedInAt;
+            row.queue_status = 'CHECKED_IN';
+        }
+    });
+
+    return result;
+};
+
+test('bounded early-arrival assignment produces 1, 2, 40, 3 and locks token 40 after two displacements', () => {
+    const rows = [1, 2, 3, 40].map((tokenNumber) => ({
+        appointment_id: tokenNumber,
+        token_number: tokenNumber,
+        original_token_number: tokenNumber,
+        current_token_number: tokenNumber,
+        queue_status: 'BOOKED',
+        checked_in_at: null,
+        planned_start_at: `2026-08-02 ${tokenNumber === 40 ? '12:00' : '10:00'}:00`,
+        actual_called_at: null,
+        actual_started_at: null,
+        actual_completed_at: null,
+        live_queue_assigned_position: null,
+        live_queue_displacement_count: 0,
+        live_queue_early_arrival: 0,
+    }));
+
+    const first = applyBoundedCheckIn(rows, 40, '2026-08-02 08:00:00');
+    assert.equal(first.assignedPosition, 1);
+    assert.equal(first.startedByEarlyArrival, true);
+
+    const second = applyBoundedCheckIn(rows, 1, '2026-08-02 08:01:00');
+    assert.equal(second.displacedAssignments[0].appointmentId, 40);
+    assert.equal(second.displacedAssignments[0].displacementCount, 1);
+
+    const third = applyBoundedCheckIn(rows, 2, '2026-08-02 08:02:00');
+    assert.equal(third.displacedAssignments[0].appointmentId, 40);
+    assert.equal(third.displacedAssignments[0].displacementCount, 2);
+    assert.equal(third.displacedAssignments[0].isLocked, true);
+
+    const fourth = applyBoundedCheckIn(rows, 3, '2026-08-02 08:03:00');
+    assert.deepEqual(fourth.displacedAssignments, []);
+    assert.deepEqual(
+        [...rows]
+            .filter((row) => row.checked_in_at)
+            .sort((left, right) => left.live_queue_assigned_position - right.live_queue_assigned_position)
+            .map((row) => row.original_token_number),
+        [1, 2, 40, 3]
+    );
+    assert.equal(rows.find((row) => row.appointment_id === 40).live_queue_assigned_position, 3);
+    assert.equal(rows.find((row) => row.appointment_id === 40).live_queue_displacement_count, 2);
+    assert.equal(rows.find((row) => row.appointment_id === 3).live_queue_assigned_position, 4);
+});
+
+test('bounded early-arrival assignment does not attach to ordinary or late check-ins', () => {
+    const ordinaryRows = [{
+        appointment_id: 1,
+        original_token_number: 1,
+        current_token_number: 1,
+        queue_status: 'BOOKED',
+        checked_in_at: null,
+        planned_start_at: '2026-08-02 10:00:00',
+    }];
+    const lateRows = [
+        {
+            appointment_id: 1,
+            original_token_number: 1,
+            current_token_number: 1,
+            queue_status: 'BOOKED',
+            checked_in_at: null,
+            planned_start_at: '2026-08-02 10:00:00',
+        },
+        {
+            appointment_id: 40,
+            original_token_number: 40,
+            current_token_number: 40,
+            queue_status: 'BOOKED',
+            checked_in_at: null,
+            planned_start_at: '2026-08-02 12:00:00',
+        },
+    ];
+
+    assert.equal(resolveBoundedEarlyArrivalAssignments({
+        queueRows: ordinaryRows,
+        checkingInAppointmentId: 1,
+        checkedInAt: '2026-08-02 09:55:00',
+    }).applied, false);
+    assert.equal(resolveBoundedEarlyArrivalAssignments({
+        queueRows: lateRows,
+        checkingInAppointmentId: 40,
+        checkedInAt: '2026-08-02 12:16:00',
+    }).applied, false);
+});
+
+test('persisted bounded assignment drives ready queue order without moving called patients', () => {
+    const readyRows = [
+        { appointment_id: 1, original_token_number: 1, current_token_number: 1, live_queue_assigned_position: 1 },
+        { appointment_id: 2, original_token_number: 2, current_token_number: 2, live_queue_assigned_position: 2 },
+        { appointment_id: 40, original_token_number: 40, current_token_number: 40, live_queue_assigned_position: 3, live_queue_displacement_count: 2, live_queue_early_arrival: 1 },
+        { appointment_id: 3, original_token_number: 3, current_token_number: 3, live_queue_assigned_position: 4 },
+    ].map((row) => ({
+        ...row,
+        queue_status: 'CHECKED_IN',
+        checked_in_at: '2026-08-02 08:00:00',
+        planned_start_at: `2026-08-02 10:${String(row.original_token_number).padStart(2, '0')}:00`,
+    }));
+    const called = {
+        ...readyRows.shift(),
+        queue_status: 'WAITING',
+        actual_called_at: '2026-08-02 09:59:00',
+    };
+    const result = buildDerivedLiveQueueView({
+        queueItems: [called, ...readyRows],
+        timelineItems: [called, ...readyRows],
+        sessionStatus: SESSION_STATUS.RUNNING,
+        protectedWindowAppointmentIds: [2, 40],
+        now: new Date(2026, 7, 2, 10, 0, 0),
+    });
+
+    assert.equal(result.calledQueue[0].appointment_id, 1);
+    assert.deepEqual(result.readyQueue.map((row) => row.original_token_number), [2, 40, 3]);
+});
 
 const makeQueueItem = ({
     appointmentId,

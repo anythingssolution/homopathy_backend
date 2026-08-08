@@ -1,3 +1,4 @@
+const { query } = require('../../../config/db');
 const {
     withTransaction,
     AppError,
@@ -11,6 +12,7 @@ const {
     getMedicalPricingAggregateByConsultationId,
     enrichAppointmentChainWithConsultationData,
     validateConsultationPayload,
+    saveTextMedicineRemarkSuggestion,
 } = require('./shared');
 const {
     createNextFollowUpIfNeeded,
@@ -125,9 +127,7 @@ const createConsultation = asyncHandler(async (req, res) => {
             [appointmentId]
         );
 
-        if (existingConsultationRows.length > 0) {
-            throw new AppError('Consultation already exists for this appointment', 409);
-        }
+        const isUpdating = existingConsultationRows.length > 0;
 
         if (repeatedFromConsultationId) {
             const currentVisitType = getVisitTypeCode({
@@ -161,47 +161,111 @@ const createConsultation = asyncHandler(async (req, res) => {
             : 'COMPLETED_NO_PRESCRIPTION';
         shouldNotifyMedical = shouldSendToMedical;
 
-        const [consultationResult] = await connection.execute(
-            `INSERT INTO tbl_consultations
-             (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
-            [
-                appointmentId,
-                req.user.id,
-                symptoms,
-                treatmentAdvice,
-                medicationDurationDays,
-                followUpChainClosed ? 1 : 0,
-                followUpAfterDays,
-                repeatedFromConsultationId,
-                consultationMode,
-                oxygenSaturation,
-                bloodPressure,
-                patientHeight,
-                patientWeight,
-                occupation,
-                historyPresentIllness,
-                historyPastIllness,
-                familyHistory,
-                allergiesHistory,
-                gynecologicalHistory,
-                personalSocialHistory,
-                generalExamination,
-                systematicExamination,
-                differentialDiagnosis,
-                followUp,
-                disease,
-                diagnosis,
-                mentalMindStatus,
-                formulaSetId,
-                formulaVersionUsed,
-                quickFormulaInput,
-                consultationWorkflowStatus,
-                shouldSendToMedical ? 1 : 0,
-            ]
-        );
+        if (isUpdating) {
+            createdConsultationId = existingConsultationRows[0].id;
 
-        createdConsultationId = consultationResult.insertId;
+            await connection.execute(
+                `UPDATE tbl_consultations
+                 SET doctor_id = ?, symptoms = ?, treatment_advice = ?, medication_duration_days = ?,
+                     follow_up_chain_closed = ?, follow_up_after_days = ?, repeated_from_consultation_id = ?,
+                     consultation_mode = ?, oxygen_saturation = ?, blood_pressure = ?, patient_height = ?,
+                     patient_weight = ?, occupation = ?, history_present_illness = ?, history_past_illness = ?,
+                     family_history = ?, allergies_history = ?, gynecological_history = ?, personal_social_history = ?,
+                     general_examination = ?, systematic_examination = ?, differential_diagnosis = ?, follow_up = ?,
+                     disease = ?, diagnosis = ?, mental_mind_status = ?, formula_set_id = ?, formula_version_used = ?,
+                     quick_formula_input = ?, workflow_status = ?, doctor_finalized_at = NOW(),
+                     sent_to_medical_at = CASE WHEN ? = 1 THEN NOW() ELSE NULL END
+                 WHERE id = ?`,
+                [
+                    req.user.id,
+                    symptoms,
+                    treatmentAdvice,
+                    medicationDurationDays,
+                    followUpChainClosed ? 1 : 0,
+                    followUpAfterDays,
+                    repeatedFromConsultationId,
+                    consultationMode,
+                    oxygenSaturation,
+                    bloodPressure,
+                    patientHeight,
+                    patientWeight,
+                    occupation,
+                    historyPresentIllness,
+                    historyPastIllness,
+                    familyHistory,
+                    allergiesHistory,
+                    gynecologicalHistory,
+                    personalSocialHistory,
+                    generalExamination,
+                    systematicExamination,
+                    differentialDiagnosis,
+                    followUp,
+                    disease,
+                    diagnosis,
+                    mentalMindStatus,
+                    formulaSetId,
+                    formulaVersionUsed,
+                    quickFormulaInput,
+                    consultationWorkflowStatus,
+                    shouldSendToMedical ? 1 : 0,
+                    createdConsultationId,
+                ]
+            );
+
+            await connection.execute(`DELETE FROM tbl_consultation_tests WHERE consultation_id = ?`, [createdConsultationId]);
+            await connection.execute(`DELETE FROM tbl_consultation_medications WHERE consultation_id = ?`, [createdConsultationId]);
+
+            const [oldPricing] = await connection.execute(
+                `SELECT id FROM tbl_medical_prescription_pricing WHERE consultation_id = ? LIMIT 1`,
+                [createdConsultationId]
+            );
+            if (oldPricing.length > 0) {
+                await connection.execute(`DELETE FROM tbl_medical_prescription_pricing_items WHERE pricing_id = ?`, [oldPricing[0].id]);
+                await connection.execute(`DELETE FROM tbl_medical_prescription_pricing WHERE id = ?`, [oldPricing[0].id]);
+            }
+        } else {
+            const [consultationResult] = await connection.execute(
+                `INSERT INTO tbl_consultations
+                 (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+                [
+                    appointmentId,
+                    req.user.id,
+                    symptoms,
+                    treatmentAdvice,
+                    medicationDurationDays,
+                    followUpChainClosed ? 1 : 0,
+                    followUpAfterDays,
+                    repeatedFromConsultationId,
+                    consultationMode,
+                    oxygenSaturation,
+                    bloodPressure,
+                    patientHeight,
+                    patientWeight,
+                    occupation,
+                    historyPresentIllness,
+                    historyPastIllness,
+                    familyHistory,
+                    allergiesHistory,
+                    gynecologicalHistory,
+                    personalSocialHistory,
+                    generalExamination,
+                    systematicExamination,
+                    differentialDiagnosis,
+                    followUp,
+                    disease,
+                    diagnosis,
+                    mentalMindStatus,
+                    formulaSetId,
+                    formulaVersionUsed,
+                    quickFormulaInput,
+                    consultationWorkflowStatus,
+                    shouldSendToMedical ? 1 : 0,
+                ]
+            );
+            createdConsultationId = consultationResult.insertId;
+        }
+
         const pricingItems = [];
 
         for (const medication of medications) {
@@ -220,30 +284,15 @@ const createConsultation = asyncHandler(async (req, res) => {
                         [medication.medicine_value, normalizedMedicineValue]
                     );
                 }
-
-                if (medication.remark) {
-                    const normalizedRemarkValue = normalizeMasterValue(medication.remark);
-                    const [existingRemarkMasters] = await connection.execute(
-                        `SELECT id FROM master_text_medicine_remarks WHERE normalized_value = ? LIMIT 1`,
-                        [normalizedRemarkValue]
-                    );
-
-                    if (existingRemarkMasters.length === 0) {
-                        await connection.execute(
-                            `INSERT INTO master_text_medicine_remarks
-                             (remark_value, normalized_value)
-                             VALUES (?, ?)`,
-                            [medication.remark, normalizedRemarkValue]
-                        );
-                    }
-                }
             }
+
+            await saveTextMedicineRemarkSuggestion(connection, medication);
 
             const [medicationResult] = await connection.execute(
                 `INSERT INTO tbl_consultation_medications
                  (consultation_id, medicine_type, medicine_value, remark)
                  VALUES (?, ?, ?, ?)`,
-                [consultationResult.insertId, medication.medicine_type, medication.medicine_value, medication.remark]
+                [createdConsultationId, medication.medicine_type, medication.medicine_value, medication.remark]
             );
 
             pricingItems.push({
@@ -267,7 +316,7 @@ const createConsultation = asyncHandler(async (req, res) => {
                 `INSERT INTO tbl_consultation_tests
                  (consultation_id, test_name, amount)
                  VALUES (?, ?, ?)`,
-                [consultationResult.insertId, test.test_name, test.amount]
+                [createdConsultationId, test.test_name, test.amount]
             );
         }
 
@@ -276,7 +325,7 @@ const createConsultation = asyncHandler(async (req, res) => {
                 `INSERT INTO tbl_medical_prescription_pricing
                  (consultation_id, total_amount, remark, created_by, updated_by)
                  VALUES (?, ?, ?, ?, ?)`,
-                [consultationResult.insertId, totalAmount, 'Doctor entered initial pricing', req.user.id, req.user.id]
+                [createdConsultationId, totalAmount, 'Doctor entered initial pricing', req.user.id, req.user.id]
             );
 
             for (const item of pricingItems) {
@@ -481,8 +530,126 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
     });
 });
 
+const normalizeSequenceNumber = (val) => {
+    const parsed = Number(val);
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : Number.MAX_SAFE_INTEGER;
+};
+
+const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
+    const appointmentId = Number(req.query.appointment_id);
+    const symptoms = req.query.symptoms;
+    const diagnosis = req.query.diagnosis;
+
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+        throw new AppError('Valid appointment_id is required', 400);
+    }
+
+    const appointments = await query(
+        `SELECT fk_patient_id FROM tbl_appointments WHERE appointment_id = ? LIMIT 1`,
+        [appointmentId]
+    );
+
+    if (appointments.length === 0) {
+        throw new AppError('Appointment not found', 404);
+    }
+
+    const patientId = Number(appointments[0].fk_patient_id);
+    const trimmedSymptoms = String(symptoms || '').trim();
+    const trimmedDiagnosis = String(diagnosis || '').trim();
+
+    if (!trimmedSymptoms && !trimmedDiagnosis) {
+        return res.status(200).json({
+            success: true,
+            message: 'No symptoms or diagnosis provided for suggestions',
+            data: [],
+        });
+    }
+
+    // CASE 1: Search patient's own history
+    let patientMatchRows = [];
+    const patientMatchConditions = [];
+    const patientMatchParams = [patientId];
+
+    if (trimmedSymptoms) {
+        patientMatchConditions.push(`LOWER(c.symptoms) LIKE ? OR LOWER(c.disease) LIKE ?`);
+        patientMatchParams.push(`%${trimmedSymptoms.toLowerCase()}%`, `%${trimmedSymptoms.toLowerCase()}%`);
+    }
+    if (trimmedDiagnosis) {
+        patientMatchConditions.push(`LOWER(c.diagnosis) LIKE ? OR LOWER(c.disease) LIKE ?`);
+        patientMatchParams.push(`%${trimmedDiagnosis.toLowerCase()}%`, `%${trimmedDiagnosis.toLowerCase()}%`);
+    }
+
+    let sqlPatient = `
+        SELECT DISTINCT c.quick_formula_input
+        FROM tbl_consultations c
+        JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+        WHERE a.fk_patient_id = ? 
+          AND a.is_active = 1 
+          AND c.quick_formula_input IS NOT NULL 
+          AND TRIM(c.quick_formula_input) <> ''
+    `;
+
+    if (patientMatchConditions.length > 0) {
+        sqlPatient += ` AND (${patientMatchConditions.join(' OR ')}) ORDER BY c.created_at DESC LIMIT 50`;
+        patientMatchRows = await query(sqlPatient, patientMatchParams);
+    }
+
+    let targetRows = [];
+    let isPatientHistoryUsed = false;
+
+    if (patientMatchRows.length > 0) {
+        targetRows = patientMatchRows;
+        isPatientHistoryUsed = true;
+    } else {
+        // CASE 2: Global history search
+        let globalMatchRows = [];
+        const globalMatchConditions = [];
+        const globalMatchParams = [];
+
+        if (trimmedSymptoms) {
+            globalMatchConditions.push(`LOWER(c.symptoms) LIKE ? OR LOWER(c.disease) LIKE ?`);
+            globalMatchParams.push(`%${trimmedSymptoms.toLowerCase()}%`, `%${trimmedSymptoms.toLowerCase()}%`);
+        }
+        if (trimmedDiagnosis) {
+            globalMatchConditions.push(`LOWER(c.diagnosis) LIKE ? OR LOWER(c.disease) LIKE ?`);
+            globalMatchParams.push(`%${trimmedDiagnosis.toLowerCase()}%`, `%${trimmedDiagnosis.toLowerCase()}%`);
+        }
+
+        let sqlGlobal = `
+            SELECT DISTINCT c.quick_formula_input
+            FROM tbl_consultations c
+            JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+            WHERE a.is_active = 1 
+              AND c.quick_formula_input IS NOT NULL 
+              AND TRIM(c.quick_formula_input) <> ''
+        `;
+
+        if (globalMatchConditions.length > 0) {
+            sqlGlobal += ` AND (${globalMatchConditions.join(' OR ')}) ORDER BY c.created_at DESC LIMIT 50`;
+            globalMatchRows = await query(sqlGlobal, globalMatchParams);
+        }
+        targetRows = globalMatchRows;
+    }
+
+    const uniqueSuggestions = Array.from(
+        new Set(
+            targetRows
+                .map((r) => String(r.quick_formula_input || '').trim())
+                .filter(Boolean)
+        )
+    );
+
+    return res.status(200).json({
+        success: true,
+        message: 'Prescription suggestions fetched successfully',
+        basis: isPatientHistoryUsed ? 'PATIENT_HISTORY' : 'GLOBAL_HISTORY',
+        data: uniqueSuggestions,
+    });
+});
+
 module.exports = {
     createConsultation,
     getConsultationByAppointmentId,
     getRepeatTreatmentDraft,
+    getPrescriptionSuggestions,
 };

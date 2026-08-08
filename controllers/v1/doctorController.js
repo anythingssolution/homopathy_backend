@@ -6,4 +6,5 @@ module.exports = {
     ...require('./doctor/formulaMasterController'),
     ...require('./doctor/cmsController'),
     ...require('./doctor/cmsUploadController'),
+    ...require('./doctor/patientUpdateController'),
 };
