@@ -41,6 +41,14 @@ const formatSecondsToTime = (value) => {
         .join(':');
 };
 
+const isFridayDate = (dateStr) => {
+    if (!dateStr || typeof dateStr !== 'string') return false;
+    const match = dateStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return false;
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return date.getDay() === 5;
+};
+
 const resolveEffectiveSlotTiming = async ({
     executor,
     branchId,
@@ -60,7 +68,13 @@ const resolveEffectiveSlotTiming = async ({
             COALESCE(o.override_end_time, s.end_time) AS effective_end_time,
             o.id AS override_id,
             o.reason,
-            CASE WHEN o.id IS NULL THEN 0 ELSE 1 END AS has_override
+            CASE WHEN o.id IS NULL THEN 0 ELSE 1 END AS has_override,
+            (
+                SELECT MIN(min_s.id)
+                FROM master_slots min_s
+                WHERE min_s.fk_branch_id = s.fk_branch_id
+                  AND min_s.is_active = 1
+            ) AS first_slot_id
          FROM master_slots s
          LEFT JOIN tbl_doctor_slot_time_overrides o
            ON o.fk_branch_id = s.fk_branch_id
@@ -79,17 +93,42 @@ const resolveEffectiveSlotTiming = async ({
     }
 
     const row = rows[0];
+    let effectiveStart = String(row.effective_start_time);
+    let effectiveEnd = String(row.effective_end_time);
+    let hasOverride = Boolean(Number(row.has_override));
+    let reason = row.reason || null;
+
+    // Apply Friday schedule rule for Branch 2 (Devendra Nagar / Pandri Branch): first slot starts at 3:00 PM (15:00:00)
+    const isFriday = isFridayDate(appointmentDate);
+    const isBranch2 = Number(row.branch_id) === 2;
+    const isFirstSlot = Number(row.slot_id) === Number(row.first_slot_id);
+
+    if (isFriday && isBranch2 && isFirstSlot && !hasOverride) {
+        const fridayStartTime = '15:00:00';
+        if (effectiveStart < fridayStartTime) {
+            const shift = calculateShiftedTiming({
+                defaultStartTime: String(row.default_start_time),
+                defaultEndTime: String(row.default_end_time),
+                overrideStartTime: fridayStartTime,
+            });
+            effectiveStart = shift.overrideStartTime;
+            effectiveEnd = shift.overrideEndTime;
+            hasOverride = true;
+            reason = 'Devendra Nagar (Pandri Branch) Friday recurring schedule: first slot starts at 3:00 PM';
+        }
+    }
+
     return {
         slotId: Number(row.slot_id),
         branchId: Number(row.branch_id),
         slotName: row.slot_name,
         defaultStartTime: String(row.default_start_time),
         defaultEndTime: String(row.default_end_time),
-        effectiveStartTime: String(row.effective_start_time),
-        effectiveEndTime: String(row.effective_end_time),
+        effectiveStartTime: effectiveStart,
+        effectiveEndTime: effectiveEnd,
         overrideId: row.override_id ? Number(row.override_id) : null,
-        hasOverride: Boolean(Number(row.has_override)),
-        reason: row.reason || null,
+        hasOverride,
+        reason,
     };
 };
 
