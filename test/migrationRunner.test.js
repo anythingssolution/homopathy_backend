@@ -5,6 +5,7 @@ const path = require('path');
 const test = require('node:test');
 
 const {
+    closeMigrationConnection,
     discoverMigrations,
     getMigrationConfig,
     runMigrations,
@@ -337,5 +338,35 @@ test('migration config validates required DB values without requiring JWT settin
     assert.throws(
         () => getMigrationConfig({ DB_HOST: 'mysql' }),
         /DB_USER, DB_NAME/
+    );
+});
+
+test('connection cleanup does not hide the migration failure', async () => {
+    const primaryError = new Error('original migration failure');
+    const logged = [];
+    const connection = {
+        end: async () => {
+            throw new Error("Can't add new command when connection is in closed state");
+        },
+    };
+
+    await assert.doesNotReject(() => closeMigrationConnection({
+        connection,
+        operationError: primaryError,
+        logger: { error: (message) => logged.push(message) },
+    }));
+    assert.match(logged[0], /Could not close database connection after failure/);
+});
+
+test('connection cleanup still reports an unexpected close failure after success', async () => {
+    const connection = {
+        end: async () => {
+            throw new Error('unexpected close failure');
+        },
+    };
+
+    await assert.rejects(
+        () => closeMigrationConnection({ connection }),
+        /unexpected close failure/
     );
 });
