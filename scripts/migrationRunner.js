@@ -172,6 +172,24 @@ const releaseMigrationLock = async (connection, lockName) => {
     await connection.query('SELECT RELEASE_LOCK(?) AS lock_released', [lockName]);
 };
 
+const closeMigrationConnection = async ({
+    connection,
+    operationError = null,
+    logger = console,
+}) => {
+    try {
+        await connection.end();
+    } catch (closeError) {
+        if (!operationError) {
+            throw closeError;
+        }
+
+        logger.error?.(
+            `[migrations] Could not close database connection after failure: ${closeError.message}`
+        );
+    }
+};
+
 const assertMigrationHistory = (migrations, records) => {
     const migrationsByName = new Map(migrations.map((migration) => [migration.name, migration]));
     const highestLocalName = migrations.at(-1)?.name || null;
@@ -306,6 +324,8 @@ const runMigrations = async ({
                 const executionMs = Date.now() - startedAt;
                 const errorMessage = String(error.message || error).slice(0, MAX_ERROR_MESSAGE_LENGTH);
 
+                logger.error(`[migrations] Migration ${migration.name} failed: ${errorMessage}`);
+
                 try {
                     await connection.query(
                         `UPDATE \`${TRACKING_TABLE}\`
@@ -396,6 +416,7 @@ const runFromEnvironment = async ({ statusOnly = false, environment = process.en
         : path.resolve(__dirname, '..', 'sql', 'migrations');
     const migrations = await discoverMigrations(migrationsDir);
     const connection = await createMigrationConnection(config);
+    let operationError = null;
 
     try {
         if (statusOnly) {
@@ -414,8 +435,11 @@ const runFromEnvironment = async ({ statusOnly = false, environment = process.en
             lockTimeoutSeconds: config.lockTimeoutSeconds,
             environment,
         });
+    } catch (error) {
+        operationError = error;
+        throw error;
     } finally {
-        await connection.end();
+        await closeMigrationConnection({ connection, operationError });
     }
 };
 
@@ -423,6 +447,7 @@ module.exports = {
     MIGRATION_FILENAME_PATTERN,
     TRACKING_TABLE,
     assertMigrationHistory,
+    closeMigrationConnection,
     discoverMigrations,
     getLockName,
     getMigrationConfig,
