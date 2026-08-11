@@ -19,15 +19,31 @@ CREATE TABLE IF NOT EXISTS `tbl_branch_recurring_schedule_rules` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Insert/Update recurring rule for Branch 2 (Devendra Nagar / Pandri Branch) on Fridays (day_of_week = 6, 3:00 PM = 15:00:00)
+UPDATE `tbl_branch_recurring_schedule_rules`
+SET `override_start_time` = '15:00:00',
+    `rule_description` = 'Devendra Nagar (Pandri Branch) Friday first slot starts at 3:00 PM',
+    `is_active` = 1,
+    `updated_at` = CURRENT_TIMESTAMP
+WHERE `fk_branch_id` = 2
+  AND `fk_slot_id` IS NULL
+  AND `day_of_week` = 6;
+
 INSERT INTO `tbl_branch_recurring_schedule_rules`
   (`fk_branch_id`, `fk_slot_id`, `day_of_week`, `override_start_time`, `rule_description`, `is_active`)
-VALUES
-  (2, NULL, 6, '15:00:00', 'Devendra Nagar (Pandri Branch) Friday first slot starts at 3:00 PM', 1)
-ON DUPLICATE KEY UPDATE
-  `override_start_time` = VALUES(`override_start_time`),
-  `rule_description` = VALUES(`rule_description`),
-  `is_active` = 1,
-  `updated_at` = CURRENT_TIMESTAMP;
+SELECT
+  2,
+  NULL,
+  6,
+  '15:00:00',
+  'Devendra Nagar (Pandri Branch) Friday first slot starts at 3:00 PM',
+  1
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM `tbl_branch_recurring_schedule_rules`
+  WHERE `fk_branch_id` = 2
+    AND `fk_slot_id` IS NULL
+    AND `day_of_week` = 6
+);
 
 -- 3. Add column to master_slots if not present for direct fallback
 ALTER TABLE `master_slots`
