@@ -31,6 +31,36 @@ const getStringEnv = (key, fallback = null) => {
     return String(value).trim();
 };
 
+const getBooleanEnv = (key, fallback = false) => {
+    const rawValue = process.env[key];
+
+    if (rawValue === undefined || rawValue === null || String(rawValue).trim() === '') {
+        return fallback;
+    }
+
+    const normalizedValue = String(rawValue).trim().toLowerCase();
+
+    if (normalizedValue === 'true') {
+        return true;
+    }
+
+    if (normalizedValue === 'false') {
+        return false;
+    }
+
+    throw new Error(`Environment variable ${key} must be either true or false`);
+};
+
+const validateOtpValue = (key, value) => {
+    const normalizedValue = String(value ?? '').trim();
+
+    if (!/^\d{6}$/.test(normalizedValue)) {
+        throw new Error(`Environment variable ${key} must be exactly 6 digits`);
+    }
+
+    return normalizedValue;
+};
+
 const validateEnv = () => {
     const missing = requiredEnvVars.filter((key) => !getStringEnv(key));
 
@@ -52,6 +82,9 @@ const validateEnv = () => {
     const port = getNumberEnv('PORT', 4000);
     const dbPort = getNumberEnv('DB_PORT', 3306);
     const dbConnectionLimit = getNumberEnv('DB_CONNECTION_LIMIT', 10);
+    const nodeEnv = getStringEnv('NODE_ENV', 'development');
+    const defaultOtp = validateOtpValue('DEFAULT_OTP', getStringEnv('DEFAULT_OTP', '123456'));
+    const useDefaultOtpInProduction = getBooleanEnv('USE_DEFAULT_OTP_IN_PRODUCTION', false);
     const otpExpiresInSec = getNumberEnv('OTP_EXPIRES_IN_SEC', 300);
     const otpResendIntervalSec = getNumberEnv('OTP_RESEND_INTERVAL_SEC', 60);
     const authWindowMs = getNumberEnv('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000);
@@ -67,7 +100,7 @@ const validateEnv = () => {
 
     return {
         port,
-        nodeEnv: getStringEnv('NODE_ENV', 'development'),
+        nodeEnv,
         jwtSecret,
         registrationTokenSecret: getStringEnv('REGISTRATION_TOKEN_SECRET', jwtSecret),
         forgotPasswordTokenSecret: getStringEnv('FORGOT_PASSWORD_TOKEN_SECRET', jwtSecret),
@@ -82,7 +115,8 @@ const validateEnv = () => {
             connectionLimit: dbConnectionLimit,
         },
         otp: {
-            defaultOtp: getStringEnv('DEFAULT_OTP', '123456'),
+            defaultOtp,
+            useDefaultInProduction: useDefaultOtpInProduction,
             expiresInSec: otpExpiresInSec,
             resendIntervalSec: otpResendIntervalSec,
         },
@@ -129,4 +163,6 @@ module.exports = {
     env,
     getStringEnv,
     getNumberEnv,
+    getBooleanEnv,
+    validateOtpValue,
 };

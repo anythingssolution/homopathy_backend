@@ -338,6 +338,9 @@ const startServer = async () => {
         await loadBranchLayoutsIntoCache();
         startPendingFollowUpNotifier();
         startLiveQueueDueJobWorker();
+        if (env.nodeEnv === 'production' && env.otp.useDefaultInProduction) {
+            console.warn('[startup] WARNING: Production default OTP mode is enabled');
+        }
         server.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);
         });

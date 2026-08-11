@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { randomUUID, randomInt, createHash } = require('crypto');
+const { randomUUID, createHash } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const { env } = require('../../config/env');
 const AppError = require('../../utils/AppError');
@@ -9,6 +9,7 @@ const { normalizeRole, normalizeRoleCode, getRoleMeta } = require('../../utils/r
 const { getModuleAccessFromUser } = require('../../utils/moduleAccess');
 const { isBranchScopedRole } = require('../../utils/branchScope');
 const { sendRegistrationWelcomeWhatsApp } = require('../../utils/whatsappService');
+const { generateOtp } = require('../../utils/otp');
 
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -91,13 +92,11 @@ const getAccessTokenSecret = () => env.jwtSecret;
 const getRegistrationTokenSecret = () => env.registrationTokenSecret;
 const getForgotPasswordTokenSecret = () => env.forgotPasswordTokenSecret;
 
-const generateOtp = () => {
-    if (env.nodeEnv === 'production') {
-        return String(randomInt(100000, 1000000));
-    }
-
-    return String(env.otp.defaultOtp);
-};
+const generateOtpForCurrentEnvironment = () => generateOtp({
+    nodeEnv: env.nodeEnv,
+    defaultOtp: env.otp.defaultOtp,
+    useDefaultInProduction: env.otp.useDefaultInProduction,
+});
 
 const sendOtpToMobile = async (mobileNo, otp) => {
     // Replace this with a real SMS gateway integration in production.
@@ -436,7 +435,7 @@ const requestOtpRecord = async ({ purpose, mobileNo, patientId = null }) => {
         }
     }
 
-    const otp = generateOtp();
+    const otp = generateOtpForCurrentEnvironment();
     const otpHash = await bcrypt.hash(otp, 10);
 
     const result = await query(
@@ -854,7 +853,7 @@ const requestLoginOtp = asyncHandler(async (req, res) => {
         }
     }
 
-    const otp = generateOtp();
+    const otp = generateOtpForCurrentEnvironment();
     const otpHash = await bcrypt.hash(otp, 10);
 
     await query(
@@ -1600,4 +1599,3 @@ module.exports = {
     refreshToken,
     logout,
 };
-

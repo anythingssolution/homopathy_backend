@@ -306,7 +306,7 @@ Notes:
 - After logout, the same token can no longer access protected routes.
 - Client should still remove the token from local storage/session storage.
 
-### Login via OTP (Step 1: Request OTP)
+### Login via (Step 1: Request OTP)
 
 - `POST /api/v1/auth/login/otp/request`
 - Body:
@@ -321,7 +321,10 @@ Notes:
 
 - OTP resend is blocked for 60 seconds.
 - In local/non-production, response includes `default_otp` for testing.
-- In production, dynamic OTP is generated and stored hashed in DB.
+- In production, `USE_DEFAULT_OTP_IN_PRODUCTION=true` makes OTP requests use `DEFAULT_OTP`.
+- In production, `USE_DEFAULT_OTP_IN_PRODUCTION=false` (the default) generates a random six-digit OTP.
+- Production responses never include `default_otp`, regardless of the toggle value.
+- OTPs are stored hashed in DB in both modes.
 - Login OTP request is rate-limited.
 - Successful OTP login response includes `token` and `refresh_token`.
 
@@ -548,7 +551,7 @@ Sample success response:
 - `POST /api/v1/receptionist/book-appointment`
 - `GET /api/v1/receptionist/appointments`
 - `POST /api/v1/receptionist/appointments/:appointment_id/approve-and-collect-payment`
-- `POST /api/v1/receptionist/appointments/:appointment_id/approve` *(legacy alias; ab payment payload mandatory hai)*
+- `POST /api/v1/receptionist/appointments/:appointment_id/approve` _(legacy alias; ab payment payload mandatory hai)_
 - `POST /api/v1/receptionist/appointments/:appointment_id/not-available`
 - `POST /api/v1/receptionist/appointments/:appointment_id/reschedule`
 - `GET /api/v1/receptionist/prescriptions`
@@ -680,6 +683,7 @@ Notes:
 - Prefer setting `FORGOT_PASSWORD_TOKEN_SECRET` separately in production.
 - Set `CORS_ORIGIN` to your frontend origin in production instead of `*`.
 - Auth and OTP routes are rate-limited using environment-based limits.
+- `DEFAULT_OTP` must contain exactly six digits. `USE_DEFAULT_OTP_IN_PRODUCTION` accepts only `true` or `false` and requires a backend restart after changing it.
 - Refresh-token sessions are stored in `tbl_user_refresh_tokens`.
 - In production, keep `.env` out of version control.
 - Daily error logs are stored in `logs/error-YYYY-MM-DD.log`.
