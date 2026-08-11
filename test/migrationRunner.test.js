@@ -9,6 +9,7 @@ const {
     discoverMigrations,
     getMigrationConfig,
     runMigrations,
+    runWithMigrationConnection,
     sha256,
     validateMigrationSql,
 } = require('../scripts/migrationRunner');
@@ -369,4 +370,33 @@ test('connection cleanup still reports an unexpected close failure after success
         () => closeMigrationConnection({ connection }),
         /unexpected close failure/
     );
+});
+
+test('waits for the migration operation before closing its connection', async () => {
+    let releaseOperation;
+    let closed = false;
+    const gate = new Promise((resolve) => {
+        releaseOperation = resolve;
+    });
+    const connection = {
+        end: async () => {
+            closed = true;
+        },
+    };
+
+    const pending = runWithMigrationConnection({
+        connection,
+        operation: async () => {
+            await gate;
+            assert.equal(closed, false);
+            return 'complete';
+        },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closed, false);
+
+    releaseOperation();
+    assert.equal(await pending, 'complete');
+    assert.equal(closed, true);
 });
