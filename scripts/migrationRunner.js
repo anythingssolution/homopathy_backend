@@ -190,6 +190,23 @@ const closeMigrationConnection = async ({
     }
 };
 
+const runWithMigrationConnection = async ({
+    connection,
+    operation,
+    logger = console,
+}) => {
+    let operationError = null;
+
+    try {
+        return await operation();
+    } catch (error) {
+        operationError = error;
+        throw error;
+    } finally {
+        await closeMigrationConnection({ connection, operationError, logger });
+    }
+};
+
 const assertMigrationHistory = (migrations, records) => {
     const migrationsByName = new Map(migrations.map((migration) => [migration.name, migration]));
     const highestLocalName = migrations.at(-1)?.name || null;
@@ -416,31 +433,28 @@ const runFromEnvironment = async ({ statusOnly = false, environment = process.en
         : path.resolve(__dirname, '..', 'sql', 'migrations');
     const migrations = await discoverMigrations(migrationsDir);
     const connection = await createMigrationConnection(config);
-    let operationError = null;
 
-    try {
-        if (statusOnly) {
-            return getMigrationStatus({
+    return runWithMigrationConnection({
+        connection,
+        operation: () => {
+            if (statusOnly) {
+                return getMigrationStatus({
+                    connection,
+                    migrations,
+                    databaseName: config.database,
+                    lockTimeoutSeconds: config.lockTimeoutSeconds,
+                });
+            }
+
+            return runMigrations({
                 connection,
                 migrations,
                 databaseName: config.database,
                 lockTimeoutSeconds: config.lockTimeoutSeconds,
+                environment,
             });
-        }
-
-        return runMigrations({
-            connection,
-            migrations,
-            databaseName: config.database,
-            lockTimeoutSeconds: config.lockTimeoutSeconds,
-            environment,
-        });
-    } catch (error) {
-        operationError = error;
-        throw error;
-    } finally {
-        await closeMigrationConnection({ connection, operationError });
-    }
+        },
+    });
 };
 
 module.exports = {
@@ -454,6 +468,7 @@ module.exports = {
     getMigrationStatus,
     runFromEnvironment,
     runMigrations,
+    runWithMigrationConnection,
     sha256,
     validateMigrationSql,
 };
