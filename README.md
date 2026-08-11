@@ -94,6 +94,37 @@ npm install
 npm run dev
 ```
 
+The files listed above are legacy bootstrap/manual SQL and are not replayed by
+production deployments.
+
+## Production database migrations
+
+Production-safe migrations live only in `sql/migrations/`. The backend startup
+process acquires a MySQL advisory lock, verifies the immutable migration history,
+applies every pending file in filename order, and starts the API only after all
+migrations succeed.
+
+```bash
+npm run migrate          # apply pending migrations
+npm run migrate:status   # show APPLIED/PENDING state
+npm start                # migrate first, then start the API
+```
+
+Coolify Dockerfile deployments require no Pre-deployment or Post-deployment
+command. Click **Deploy/Redeploy** on the backend application; the new container
+runs migrations before its health check can pass. Keep all `DB_*` variables
+available at runtime and use the MySQL resource's internal hostname for `DB_HOST`,
+not `127.0.0.1`.
+
+Do not edit, rename, or delete an applied migration. MySQL DDL may commit partially,
+so a failed migration deliberately prevents the new backend from starting until
+the schema and `schema_migrations` row have been inspected. See
+`sql/migrations/README.md` for the file rules.
+
+This runner does not build a blank database from scratch. Before moving to a fresh
+AWS database, restore a verified production backup (recommended) or apply the audited
+bootstrap schema, then start the backend so only newer managed migrations run.
+
 ## API Endpoints
 
 ### Health

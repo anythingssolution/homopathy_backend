@@ -4,8 +4,10 @@
   "description": "REST API with JWT authentication and MySQL connection pooling",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node scripts/startWithMigrations.js",
     "dev": "nodemon server.js",
+    "migrate": "node scripts/migrate.js",
+    "migrate:status": "node scripts/migrate.js --status",
     "check:live-queue": "node scripts/liveQueueProductionCheck.js",
     "import:utkarsh-gallery": "node scripts/importUtkarshGalleryToCms.js",
     "test": "node --test test/*.test.js"
