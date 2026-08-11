@@ -1,7 +1,6 @@
--- Migration: Configure Friday schedule rule for Branch 2 (Devendra Nagar / Pandri Branch)
--- Requirement: For Devendra Nagar location Pandri Branch (branch_id = 2), every Friday, the first available slot starts at 3:00 PM (15:00:00).
+-- Managed migration: configure the Branch 2 Friday first-slot start time.
+-- Safe whether the legacy 2026-08-09 script was already run manually or not.
 
--- 1. Create table for recurring branch slot schedule rules (day-of-week rules)
 CREATE TABLE IF NOT EXISTS `tbl_branch_recurring_schedule_rules` (
   `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   `fk_branch_id` bigint(20) unsigned NOT NULL,
@@ -15,10 +14,37 @@ CREATE TABLE IF NOT EXISTS `tbl_branch_recurring_schedule_rules` (
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_branch_day` (`fk_branch_id`, `day_of_week`, `is_active`),
-  CONSTRAINT `fk_recurring_rule_branch` FOREIGN KEY (`fk_branch_id`) REFERENCES `master_clinic_branches` (`id`) ON DELETE CASCADE
+  CONSTRAINT `fk_recurring_rule_branch` FOREIGN KEY (`fk_branch_id`)
+    REFERENCES `master_clinic_branches` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 2. Insert/Update recurring rule for Branch 2 (Devendra Nagar / Pandri Branch) on Fridays (day_of_week = 6, 3:00 PM = 15:00:00)
+SET @friday_column_exists = (
+  SELECT COUNT(*)
+  FROM `information_schema`.`COLUMNS`
+  WHERE `TABLE_SCHEMA` = DATABASE()
+    AND `TABLE_NAME` = 'master_slots'
+    AND `COLUMN_NAME` = 'friday_start_time'
+);
+SET @friday_column_ddl = IF(
+  @friday_column_exists = 0,
+  'ALTER TABLE `master_slots` ADD COLUMN `friday_start_time` TIME NULL AFTER `end_time`',
+  'SELECT 1'
+);
+PREPARE friday_column_statement FROM @friday_column_ddl;
+EXECUTE friday_column_statement;
+DEALLOCATE PREPARE friday_column_statement;
+
+DELETE duplicate_rule
+FROM `tbl_branch_recurring_schedule_rules` AS duplicate_rule
+INNER JOIN `tbl_branch_recurring_schedule_rules` AS keeper
+  ON keeper.`fk_branch_id` = duplicate_rule.`fk_branch_id`
+  AND keeper.`day_of_week` = duplicate_rule.`day_of_week`
+  AND keeper.`fk_slot_id` IS NULL
+  AND duplicate_rule.`fk_slot_id` IS NULL
+  AND keeper.`id` < duplicate_rule.`id`
+WHERE duplicate_rule.`fk_branch_id` = 2
+  AND duplicate_rule.`day_of_week` = 6;
+
 UPDATE `tbl_branch_recurring_schedule_rules`
 SET `override_start_time` = '15:00:00',
     `rule_description` = 'Devendra Nagar (Pandri Branch) Friday first slot starts at 3:00 PM',
@@ -45,11 +71,6 @@ WHERE NOT EXISTS (
     AND `day_of_week` = 6
 );
 
--- 3. Add column to master_slots if not present for direct fallback
-ALTER TABLE `master_slots`
-  ADD COLUMN IF NOT EXISTS `friday_start_time` TIME NULL AFTER `end_time`;
-
--- 4. Update the first slot for branch 2 to have friday_start_time = 15:00:00
 UPDATE `master_slots`
 SET `friday_start_time` = '15:00:00'
 WHERE `fk_branch_id` = 2
