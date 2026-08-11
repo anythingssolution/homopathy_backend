@@ -11,6 +11,7 @@ const liveQueueRoutes = require('./liveQueueRoutes');
 const publicRoutes = require('./publicRoutes');
 const reportRoutes = require('./reportRoutes');
 const patientRecordRoutes = require('./patientRecordRoutes');
+const previousManualPatientRoutes = require('./previousManualPatientRoutes');
 
 const router = express.Router();
 
@@ -26,5 +27,6 @@ router.use('/live-queue', liveQueueRoutes);
 router.use('/public', publicRoutes);
 router.use('/reports', reportRoutes);
 router.use('/patient-records', patientRecordRoutes);
+router.use('/previous-patients', previousManualPatientRoutes);
 
 module.exports = router;
