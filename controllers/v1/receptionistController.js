@@ -594,10 +594,23 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
     const search = req.query.search ? String(req.query.search).trim() : null;
     const gender = req.query.gender ? String(req.query.gender).trim().toLowerCase() : null;
+    const hasFamilyRaw = req.query.has_family !== undefined ? String(req.query.has_family).trim().toLowerCase() : null;
+    const hasFamily =
+        hasFamilyRaw === null || hasFamilyRaw === ''
+            ? null
+            : ['1', 'true', 'yes'].includes(hasFamilyRaw)
+              ? true
+              : ['0', 'false', 'no'].includes(hasFamilyRaw)
+                ? false
+                : null;
     const page = toPositiveInt(req.query.page) || 1;
     const requestedPageSize = toPositiveInt(req.query.page_size) || 20;
     const pageSize = Math.min(requestedPageSize, 100);
     const offset = (page - 1) * pageSize;
+
+    if (hasFamilyRaw && hasFamily === null) {
+        throw new AppError("has_family must be one of '1', '0', 'true' or 'false'", 400);
+    }
 
     const conditions = [`u.is_active = 1`, `u.role = 'PAT'`];
     const params = [];
@@ -624,6 +637,26 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
         }
         conditions.push('u.gender = ?');
         params.push(gender);
+    }
+
+    if (hasFamily === true) {
+        conditions.push(
+            `EXISTS (
+                SELECT 1
+                FROM tbl_patient_family_members fm_filter
+                WHERE fm_filter.fk_primary_patient_id = u.id
+                  AND fm_filter.is_active = 1
+             )`
+        );
+    } else if (hasFamily === false) {
+        conditions.push(
+            `NOT EXISTS (
+                SELECT 1
+                FROM tbl_patient_family_members fm_filter
+                WHERE fm_filter.fk_primary_patient_id = u.id
+                  AND fm_filter.is_active = 1
+             )`
+        );
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -667,14 +700,52 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
     const total = Number(countRows[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
+    const patientIds = rows.map((row) => Number(row.patient_id)).filter(Boolean);
+    let familyMembersByPatientId = {};
+
+    if (patientIds.length > 0) {
+        const placeholders = patientIds.map(() => '?').join(', ');
+        const familyRows = await query(
+            `SELECT
+                fm.id AS family_member_id,
+                fm.fk_primary_patient_id,
+                fm.full_name,
+                fm.age,
+                fm.gender,
+                fm.relationship,
+                fm.description,
+                fm.is_active,
+                fm.created_at,
+                fm.updated_at
+             FROM tbl_patient_family_members fm
+             WHERE fm.fk_primary_patient_id IN (${placeholders})
+               AND fm.is_active = 1
+             ORDER BY fm.created_at ASC, fm.id ASC`,
+            patientIds
+        );
+
+        familyMembersByPatientId = familyRows.reduce((acc, member) => {
+            const key = Number(member.fk_primary_patient_id);
+            if (!acc[key]) acc[key] = [];
+            acc[key].push(member);
+            return acc;
+        }, {});
+    }
+
+    const data = rows.map((row) => ({
+        ...row,
+        family_members: familyMembersByPatientId[Number(row.patient_id)] || [],
+    }));
+
     return res.status(200).json({
         success: true,
         message: 'Receptionist patients fetched successfully',
-        data: rows,
+        data,
         meta: {
             branch_id: branchId,
             search,
             gender,
+            has_family: hasFamily,
             page,
             page_size: pageSize,
             total,
@@ -685,16 +756,24 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
 
 const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const patientId = toPositiveInt(req.params.patient_id);
+    const familyMemberId = toPositiveInt(req.body?.family_member_id);
     const branchId = req.selectedBranchId || null;
     const fullName = req.body?.full_name !== undefined ? String(req.body.full_name).trim() : undefined;
     const mobileNo = req.body?.mobile_no !== undefined ? String(req.body.mobile_no).trim() : undefined;
     const gender = req.body?.gender !== undefined ? String(req.body.gender).trim().toLowerCase() : undefined;
+    const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    const relationship =
+        req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
     }
 
-    if (fullName === undefined && mobileNo === undefined && gender === undefined) {
+    if (familyMemberId) {
+        if (fullName === undefined && gender === undefined && age === undefined && relationship === undefined) {
+            throw new AppError('At least one of full_name, gender, age or relationship is required', 400);
+        }
+    } else if (fullName === undefined && mobileNo === undefined && gender === undefined) {
         throw new AppError('At least one of full_name, mobile_no or gender is required', 400);
     }
 
@@ -702,12 +781,20 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         throw new AppError('full_name must be between 1 and 100 characters', 400);
     }
 
-    if (mobileNo !== undefined && !validateMobile(mobileNo)) {
+    if (!familyMemberId && mobileNo !== undefined && !validateMobile(mobileNo)) {
         throw new AppError('mobile_no must be 10 to 15 digits', 400);
     }
 
     if (gender !== undefined && !validateGender(gender)) {
         throw new AppError("gender must be one of 'male', 'female' or 'other'", 400);
+    }
+
+    if (age !== undefined && (age === null || age < 1 || age > 120)) {
+        throw new AppError('age must be between 1 and 120', 400);
+    }
+
+    if (relationship !== undefined && (!relationship || relationship.length > 50)) {
+        throw new AppError('relationship must be between 1 and 50 characters', 400);
     }
 
     const actorIp = getClientIp(req);
@@ -716,7 +803,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, mobile_no, gender, role, is_active, updated_at
+            `SELECT id, uuid, full_name, mobile_no, gender, age, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -751,6 +838,100 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             if (branchRows.length === 0) {
                 throw new AppError('Patient is not available in the selected branch', 403);
             }
+        }
+
+        if (familyMemberId) {
+            const [fmRows] = await connection.execute(
+                `SELECT id, full_name, age, gender, relationship, description, is_active
+                 FROM tbl_patient_family_members
+                 WHERE id = ?
+                   AND fk_primary_patient_id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [familyMemberId, patientId]
+            );
+
+            if (fmRows.length === 0) {
+                throw new AppError('Family member not found', 404);
+            }
+
+            const fm = fmRows[0];
+            if (Number(fm.is_active) !== 1) {
+                throw new AppError('Selected family member is inactive', 409);
+            }
+
+            const fmChangedFields = [];
+            const fmOldValues = {};
+            const fmNewValues = {};
+            const fmRequestedValues = {
+                full_name: fullName,
+                gender,
+                age,
+                relationship,
+            };
+
+            for (const [field, value] of Object.entries(fmRequestedValues)) {
+                if (value !== undefined && String(value) !== String(fm[field] ?? '')) {
+                    fmChangedFields.push(field);
+                    fmOldValues[field] = fm[field];
+                    fmNewValues[field] = value;
+                }
+            }
+
+            if (fmChangedFields.length === 0) {
+                throw new AppError('No family member details were changed', 400);
+            }
+
+            const fmUpdateParts = [];
+            const fmUpdateValues = [];
+            for (const field of ['full_name', 'gender', 'age', 'relationship']) {
+                if (fmNewValues[field] !== undefined) {
+                    fmUpdateParts.push(`${field} = ?`);
+                    fmUpdateValues.push(fmNewValues[field]);
+                }
+            }
+
+            fmUpdateParts.push('updated_by = ?', 'updated_ip = ?');
+            fmUpdateValues.push(req.user.id, actorIp, familyMemberId, patientId);
+
+            await connection.execute(
+                `UPDATE tbl_patient_family_members
+                 SET ${fmUpdateParts.join(', ')}
+                 WHERE id = ?
+                   AND fk_primary_patient_id = ?`,
+                fmUpdateValues
+            );
+
+            await connection.execute(
+                `INSERT INTO log_user_profile_updates
+                 (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    patientId,
+                    req.user.id,
+                    actorRole,
+                    actorIp,
+                    actorUserAgent,
+                    JSON.stringify(fmChangedFields.map((f) => `family_member.${f}`)),
+                    JSON.stringify(fmOldValues),
+                    JSON.stringify(fmNewValues),
+                ]
+            );
+
+            return {
+                patient: {
+                    patient_id: patientId,
+                    patient_uuid: patient.uuid,
+                    family_member_id: familyMemberId,
+                    full_name: fmNewValues.full_name ?? fm.full_name,
+                    age: fmNewValues.age ?? fm.age,
+                    gender: fmNewValues.gender ?? fm.gender,
+                    relationship: fmNewValues.relationship ?? fm.relationship,
+                    mobile_no: patient.mobile_no,
+                },
+                changed_fields: fmChangedFields,
+                entity_type: 'FAMILY_MEMBER',
+            };
         }
 
         if (mobileNo !== undefined && mobileNo !== patient.mobile_no) {
@@ -829,12 +1010,15 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         return {
             patient: updatedRows[0],
             changed_fields: changedFields,
+            entity_type: 'SELF',
         };
     });
 
     return res.status(200).json({
         success: true,
-        message: 'Patient details updated successfully',
+        message: familyMemberId
+            ? 'Family member details updated successfully'
+            : 'Patient details updated successfully',
         data: result,
     });
 });
