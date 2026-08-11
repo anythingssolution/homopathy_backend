@@ -20,6 +20,7 @@ const {
     getBranchExtensionTokenLayout,
     updateBranchExtensionTokenLayout,
     bulkRejectReceptionistAppointments,
+    transferAppointmentByReceptionist,
 } = require('../../controllers/v1/receptionistController');
 const { getBookingTokenPlate } = require('../../controllers/v1/appointmentController');
 const {
@@ -65,6 +66,7 @@ router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdate
 router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
 router.post('/appointments/:appointment_id/not-available', authorizeAppointmentBranchScope, markAppointmentNotAvailable);
 router.post('/appointments/:appointment_id/reschedule', authorizeAppointmentBranchScope, rescheduleAppointmentByReceptionist);
+router.post('/appointments/:appointment_id/transfer', authorizeAppointmentBranchScope, transferAppointmentByReceptionist);
 router.get('/prescriptions', listReceptionistPrescriptions);
 router.get('/prescriptions/:consultation_id', authorizeConsultationBranchScope, getReceptionistPrescriptionDetail);
 router.get('/token-layout', getBranchTokenLayout);
