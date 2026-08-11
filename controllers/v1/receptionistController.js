@@ -3617,6 +3617,137 @@ const updateBranchExtensionTokenLayout = asyncHandler(async (req, res) => {
     });
 });
 
+const transferAppointmentByReceptionist = asyncHandler(async (req, res) => {
+    const appointmentId = toPositiveInt(req.params.appointment_id);
+    const newPatientId = toPositiveInt(req.body?.new_patient_id);
+
+    if (!appointmentId) {
+        throw new AppError('Valid appointment_id is required', 400);
+    }
+
+    if (!newPatientId) {
+        throw new AppError('Valid new_patient_id is required', 400);
+    }
+
+    const updatedAppointment = await withTransaction(async (connection) => {
+        // Fetch appointment details
+        const [appointmentRows] = await connection.execute(
+            `SELECT appointment_id, fk_patient_id, fk_branch_id, fk_slot_id, appointment_date, token_number, queue_status, status, is_active
+             FROM tbl_appointments
+             WHERE appointment_id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [appointmentId]
+        );
+
+        if (appointmentRows.length === 0) {
+            throw new AppError('Appointment not found', 404);
+        }
+
+        const current = appointmentRows[0];
+
+        if (Number(current.is_active) !== 1) {
+            throw new AppError('Only active appointments can be transferred', 409);
+        }
+
+        if (current.status === 'Completed' || current.status === 'Cancelled') {
+            throw new AppError('Completed or cancelled appointment cannot be transferred', 409);
+        }
+
+        if (Number(current.fk_patient_id) === newPatientId) {
+            throw new AppError('Appointment is already assigned to this patient', 409);
+        }
+
+        // Verify new patient exists and is active
+        const [newPatientRows] = await connection.execute(
+            `SELECT id, is_active
+             FROM master_users
+             WHERE id = ? AND role_code = 'PAT'
+             LIMIT 1`,
+            [newPatientId]
+        );
+
+        if (newPatientRows.length === 0) {
+            throw new AppError('New patient not found', 404);
+        }
+
+        if (Number(newPatientRows[0].is_active) !== 1) {
+            throw new AppError('New patient account is inactive', 409);
+        }
+
+        const bookingSubjectKey = getBookingSubjectKey({
+            bookedForType: 'SELF',
+            primaryPatientId: newPatientId,
+        });
+
+        // Update appointment
+        await connection.execute(
+            `UPDATE tbl_appointments
+             SET fk_patient_id = ?,
+                 fk_patient_family_member_id = NULL,
+                 booked_for_type = 'SELF',
+                 booking_subject_key = ?,
+                 transferred_from_patient_id = ?,
+                 updated_by = ?,
+                 updated_ip = ?,
+                 last_queue_event_at = NOW()
+             WHERE appointment_id = ?`,
+            [
+                newPatientId,
+                bookingSubjectKey,
+                current.fk_patient_id,
+                req.user.id,
+                getClientIp(req),
+                appointmentId,
+            ]
+        );
+
+        // Recalculate queue plan
+        await recalculateQueuePlan(connection, {
+            branchId: Number(current.fk_branch_id),
+            slotId: Number(current.fk_slot_id),
+            appointmentDate: current.appointment_date,
+            actorUserId: req.user.id,
+            actorIp: getClientIp(req),
+        });
+
+        // Log queue event
+        await logQueueEvent(connection, {
+            appointmentId,
+            branchId: Number(current.fk_branch_id),
+            slotId: Number(current.fk_slot_id),
+            appointmentDate: current.appointment_date,
+            tokenNumber: current.token_number,
+            eventType: 'PATIENT_TRANSFERRED',
+            oldQueueStatus: current.queue_status,
+            newQueueStatus: current.queue_status,
+            meta: {
+                old_patient_id: current.fk_patient_id,
+                new_patient_id: newPatientId,
+            },
+            createdBy: req.user.id,
+        });
+
+        return getAppointmentDetailsById(appointmentId);
+    });
+
+    // Emit live queue event
+    await emitLiveQueueEvent({
+        branchId: Number(updatedAppointment.fk_branch_id),
+        slotId: Number(updatedAppointment.fk_slot_id),
+        appointmentDate: updatedAppointment.appointment_date,
+        eventName: 'queue-updated',
+        reason: 'PATIENT_TRANSFERRED',
+        appointmentId,
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Patient transferred successfully',
+        data: updatedAppointment,
+    });
+});
+
 module.exports = {
     createAppointmentByReceptionist,
     listReceptionistAppointments,
@@ -3638,4 +3769,5 @@ module.exports = {
     getBranchExtensionTokenLayout,
     updateBranchExtensionTokenLayout,
     bulkRejectReceptionistAppointments,
+    transferAppointmentByReceptionist,
 };
