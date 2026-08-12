@@ -24,6 +24,8 @@ const getClientIp = (req) => {
 
 const normalizeCreatePayload = (body = {}) => {
     const fullName = String(body.full_name || '').trim();
+    const patientIdRaw =
+        body.patient_id !== undefined && body.patient_id !== null ? String(body.patient_id).trim() : '';
     const age = toPositiveInt(body.age);
     const gender = String(body.gender || '').trim().toLowerCase();
     const mobileNo = String(body.mobile_no || '').trim();
@@ -34,6 +36,10 @@ const normalizeCreatePayload = (body = {}) => {
 
     if (!fullName || fullName.length > 100) {
         throw new AppError('full_name must be between 1 and 100 characters', 400);
+    }
+
+    if (patientIdRaw && patientIdRaw.length > 50) {
+        throw new AppError('patient_id must be at most 50 characters', 400);
     }
 
     if (!age || age < 1 || age > 120) {
@@ -54,6 +60,7 @@ const normalizeCreatePayload = (body = {}) => {
 
     return {
         full_name: fullName,
+        patient_id: patientIdRaw || null,
         age,
         gender,
         mobile_no: mobileNo,
@@ -89,6 +96,22 @@ const assertMobileAvailable = async (connection, mobileNo) => {
     }
 };
 
+const assertPatientIdAvailable = async (connection, patientId) => {
+    if (!patientId) return;
+
+    const [previousRows] = await connection.execute(
+        `SELECT id
+         FROM tbl_previous_manual_patients
+         WHERE patient_id = ?
+         LIMIT 1`,
+        [patientId]
+    );
+
+    if (previousRows.length > 0) {
+        throw new AppError('Patient ID already exists in previous manual patient records', 409);
+    }
+};
+
 const createPreviousManualPatient = asyncHandler(async (req, res) => {
     const payload = normalizeCreatePayload(req.body);
     const actorIp = getClientIp(req);
@@ -106,14 +129,16 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
 
     const created = await withTransaction(async (connection) => {
         await assertMobileAvailable(connection, payload.mobile_no);
+        await assertPatientIdAvailable(connection, payload.patient_id);
 
         const [insertResult] = await connection.execute(
             `INSERT INTO tbl_previous_manual_patients
-             (full_name, age, gender, mobile_no, email, address, description, fk_branch_id,
+             (full_name, patient_id, age, gender, mobile_no, email, address, description, fk_branch_id,
               entered_by_user_id, entered_by_role, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 payload.full_name,
+                payload.patient_id,
                 payload.age,
                 payload.gender,
                 payload.mobile_no,
@@ -150,6 +175,7 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
             `SELECT
                 p.id AS previous_patient_id,
                 p.full_name,
+                p.patient_id,
                 p.age,
                 p.gender,
                 p.mobile_no,
@@ -191,8 +217,10 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
     const params = [];
 
     if (search) {
-        conditions.push('(p.full_name LIKE ? OR p.mobile_no LIKE ? OR p.email LIKE ?)');
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+        conditions.push(
+            '(p.full_name LIKE ? OR p.patient_id LIKE ? OR p.mobile_no LIKE ? OR p.email LIKE ?)'
+        );
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -208,6 +236,7 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
             `SELECT
                 p.id AS previous_patient_id,
                 p.full_name,
+                p.patient_id,
                 p.age,
                 p.gender,
                 p.mobile_no,
