@@ -3662,7 +3662,7 @@ const transferAppointmentByReceptionist = asyncHandler(async (req, res) => {
         const [newPatientRows] = await connection.execute(
             `SELECT id, is_active
              FROM master_users
-             WHERE id = ? AND role_code = 'PAT'
+             WHERE id = ? AND role = 'PAT'
              LIMIT 1`,
             [newPatientId]
         );
