@@ -3632,7 +3632,7 @@ const transferAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const updatedAppointment = await withTransaction(async (connection) => {
         // Fetch appointment details
         const [appointmentRows] = await connection.execute(
-            `SELECT appointment_id, fk_patient_id, fk_branch_id, fk_slot_id, appointment_date, token_number, queue_status, status, is_active
+            `SELECT appointment_id, fk_patient_id, fk_branch_id, fk_slot_id, appointment_date, token_number, queue_status, status, is_active, checked_in_at
              FROM tbl_appointments
              WHERE appointment_id = ?
              LIMIT 1
@@ -3654,6 +3654,10 @@ const transferAppointmentByReceptionist = asyncHandler(async (req, res) => {
             throw new AppError('Completed or cancelled appointment cannot be transferred', 409);
         }
 
+        if (current.checked_in_at || current.queue_status === 'CHECKED_IN') {
+            throw new AppError('Checked-in appointments cannot be transferred', 409);
+        }
+
         if (Number(current.fk_patient_id) === newPatientId) {
             throw new AppError('Appointment is already assigned to this patient', 409);
         }
@@ -3662,7 +3666,7 @@ const transferAppointmentByReceptionist = asyncHandler(async (req, res) => {
         const [newPatientRows] = await connection.execute(
             `SELECT id, is_active
              FROM master_users
-             WHERE id = ? AND role_code = 'PAT'
+             WHERE id = ? AND role = 'PAT'
              LIMIT 1`,
             [newPatientId]
         );
