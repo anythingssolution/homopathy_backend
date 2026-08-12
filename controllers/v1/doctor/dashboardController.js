@@ -41,9 +41,9 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
                 SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Completed' THEN 1 ELSE 0 END) AS today_completed,
                 SUM(CASE WHEN a.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_appointments,
                 COUNT(DISTINCT ${getBookingSubjectExpression('a')}) AS unique_patients,
-                (SELECT COUNT(*) FROM tbl_consultations c) AS total_consultations
+                (SELECT COUNT(*) FROM tbl_consultations c JOIN tbl_appointments ap ON ap.appointment_id = c.appointment_id WHERE ap.is_active = 1) AS total_consultations
              FROM tbl_appointments a
-             WHERE 1 = 1 ${branchWhere}`,
+             WHERE a.is_active = 1 ${branchWhere}`,
             [today, today, today, ...params]
         ),
         query(

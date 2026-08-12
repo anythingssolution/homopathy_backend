@@ -612,8 +612,8 @@ const enrichAppointmentChainWithConsultationData = async (chainRows = []) => Pro
     })
 );
 
-const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, toDate = null, patientSearch = null }) => {
-    const conditions = [];
+const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, toDate = null, patientSearch = null, status = null }) => {
+    const conditions = ['a.is_active = 1'];
     const params = [];
 
     if (branchId) {
@@ -629,6 +629,11 @@ const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, to
     if (toDate) {
         conditions.push('a.appointment_date <= ?');
         params.push(toDate);
+    }
+
+    if (status && status !== 'all') {
+        conditions.push('a.status = ?');
+        params.push(status);
     }
 
     if (patientSearch) {
@@ -683,9 +688,9 @@ const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, to
             a.created_at AS appointment_created_at,
             a.updated_at AS appointment_updated_at,
             ${getAppointmentPatientColumns()}
-         FROM tbl_consultations c
-         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-         JOIN master_users d ON d.id = c.doctor_id
+         FROM tbl_appointments a
+         LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
+         LEFT JOIN master_users d ON d.id = c.doctor_id
          JOIN master_clinic_branches b ON b.id = a.fk_branch_id
          JOIN master_treatments t ON t.id = a.fk_treatment_id
          JOIN master_slots s ON s.id = a.fk_slot_id
@@ -696,7 +701,7 @@ const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, to
           AND sto.status = 'ACTIVE'
          ${getAppointmentPatientJoin()}
          ${whereClause}
-         ORDER BY c.created_at DESC, c.id DESC`,
+         ORDER BY a.appointment_date DESC, a.appointment_id DESC`,
         params
     );
 };

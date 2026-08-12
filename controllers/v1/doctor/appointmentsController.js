@@ -254,6 +254,8 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     const toDate = req.query.to_date ? String(req.query.to_date).trim() : null;
     const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
 
+    const status = req.query.status ? String(req.query.status).trim() : null;
+
     if (req.query.branch_id !== undefined && !branchId) {
         throw new AppError('branch_id must be a positive integer', 400);
     }
@@ -269,6 +271,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
         fromDate,
         toDate,
         patientSearch,
+        status,
     });
 
     const data = await Promise.all(
