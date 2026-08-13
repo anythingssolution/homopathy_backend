@@ -51,6 +51,11 @@ const getBooleanEnv = (key, fallback = false) => {
     throw new Error(`Environment variable ${key} must be either true or false`);
 };
 
+const getCsvEnv = (key) => String(process.env[key] || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
 const validateOtpValue = (key, value) => {
     const normalizedValue = String(value ?? '').trim();
 
@@ -93,9 +98,19 @@ const validateEnv = () => {
     const otpMaxRequests = getNumberEnv('OTP_RATE_LIMIT_MAX', 10);
     const corsOrigin = getStringEnv('CORS_ORIGIN', '*');
     const filesystemDriver = getStringEnv('FILESYSTEM_DRIVER', 'local');
+    const enableBackendLogViewer = getBooleanEnv('ENABLE_BACKEND_LOG_VIEWER', false);
+    const enableSqlPanel = getBooleanEnv('ENABLE_SQL_PANEL', false);
+    const enableSqlExport = getBooleanEnv('ENABLE_SQL_EXPORT', false);
+    const allowedUserUuids = getCsvEnv('OPS_ALLOWED_USER_UUIDS').map((value) => value.toLowerCase());
 
     if (otpResendIntervalSec >= otpExpiresInSec) {
         throw new Error('OTP_RESEND_INTERVAL_SEC must be smaller than OTP_EXPIRES_IN_SEC');
+    }
+
+    if ((enableBackendLogViewer || enableSqlPanel) && allowedUserUuids.length === 0) {
+        throw new Error(
+            'OPS_ALLOWED_USER_UUIDS must contain at least one user UUID when an operations panel is enabled'
+        );
     }
 
     return {
@@ -153,6 +168,12 @@ const validateEnv = () => {
                 bucket: getStringEnv('DO_SPACES_BUCKET'),
             },
         },
+        ops: {
+            enableBackendLogViewer,
+            enableSqlPanel,
+            enableSqlExport,
+            allowedUserUuids,
+        },
         corsOrigin,
     };
 };
@@ -164,5 +185,6 @@ module.exports = {
     getStringEnv,
     getNumberEnv,
     getBooleanEnv,
+    getCsvEnv,
     validateOtpValue,
 };

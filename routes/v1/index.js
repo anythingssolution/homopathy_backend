@@ -12,6 +12,7 @@ const publicRoutes = require('./publicRoutes');
 const reportRoutes = require('./reportRoutes');
 const patientRecordRoutes = require('./patientRecordRoutes');
 const previousManualPatientRoutes = require('./previousManualPatientRoutes');
+const opsRoutes = require('./opsRoutes');
 
 const router = express.Router();
 
@@ -28,5 +29,6 @@ router.use('/public', publicRoutes);
 router.use('/reports', reportRoutes);
 router.use('/patient-records', patientRecordRoutes);
 router.use('/previous-patients', previousManualPatientRoutes);
+router.use('/ops', opsRoutes);
 
 module.exports = router;

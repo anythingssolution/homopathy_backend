@@ -321,9 +321,7 @@ app.get('/api/v1/health', (_req, res) => {
     });
 });
 
-if (env.nodeEnv !== 'production') {
-    app.use('/sql-panel', sqlPanelRoutes);
-}
+app.use('/sql-panel', sqlPanelRoutes);
 app.use('/api/v1', v1Routes);
 
 // Backward-compatible base URL; points to current v1 implementation.

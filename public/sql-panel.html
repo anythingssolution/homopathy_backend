@@ -316,25 +316,24 @@
             <section class="card hero">
                 <div>
                     <h1>SQL Panel</h1>
-                    <p>Backend-served SQL console. Query likho, yahi result dekho.</p>
+                    <p>Authenticated, read-only production SQL console.</p>
                 </div>
                 <div class="pill">Single-statement SQL mode</div>
             </section>
 
             <section class="card query-box">
                 <h2>Run query</h2>
-                <p class="muted">Allowed queries: <code>SELECT</code>, <code>SHOW</code>, <code>DESCRIBE</code>, <code>DESC</code>, <code>EXPLAIN</code>, <code>UPDATE</code>, <code>ALTER</code></p>
+                <p class="muted">Allowed queries: <code>SELECT</code>, <code>SHOW</code>, <code>DESCRIBE</code>, <code>DESC</code>, <code>EXPLAIN</code></p>
                 <textarea id="sqlInput" spellcheck="false">SHOW TABLES</textarea>
                 <div class="toolbar">
                     <button id="runQueryButton" class="primary">Run query</button>
-                    <button id="exportDatabaseButton" class="secondary">Export DB (.sql)</button>
                     <button id="resetQueryButton" class="secondary">Reset</button>
                 </div>
                 <div id="queryStatus" class="status"></div>
                 <div class="chips">
                     <div class="chip">Single statement only</div>
                     <div class="chip">10 second max execution time</div>
-                    <div class="chip">SELECT / UPDATE / ALTER supported</div>
+                    <div class="chip">Read-only production mode</div>
                 </div>
             </section>
 
@@ -355,9 +354,21 @@
             defaultQuery: 'SHOW TABLES',
         };
 
+        const getAuthHeaders = (includeJson = false) => {
+            const token = localStorage.getItem('token');
+
+            if (!token) {
+                throw new Error('Login to the clinic application before opening the SQL panel.');
+            }
+
+            return {
+                ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+                Authorization: `Bearer ${token}`,
+            };
+        };
+
         const sqlInput = document.getElementById('sqlInput');
         const runQueryButton = document.getElementById('runQueryButton');
-        const exportDatabaseButton = document.getElementById('exportDatabaseButton');
         const resetQueryButton = document.getElementById('resetQueryButton');
         const queryStatus = document.getElementById('queryStatus');
         const stats = document.getElementById('stats');
@@ -443,9 +454,7 @@
             try {
                 const response = await fetch('/sql-panel/query', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: getAuthHeaders(true),
                     body: JSON.stringify({ sql }),
                 });
                 const data = await response.json();
@@ -470,40 +479,6 @@
                 resultsContainer.innerHTML = '<div class="empty">No results to show.</div>';
             } finally {
                 runQueryButton.disabled = false;
-            }
-        };
-
-        const exportDatabase = async () => {
-            exportDatabaseButton.disabled = true;
-            setStatus('Preparing live database export...');
-
-            try {
-                const response = await fetch('/sql-panel/export');
-
-                if (!response.ok) {
-                    const message = await response.text();
-
-                    throw new Error(message || 'Database export failed.');
-                }
-
-                const blob = await response.blob();
-                const disposition = response.headers.get('Content-Disposition') || '';
-                const filenameMatch = disposition.match(/filename="([^"]+)"/i);
-                const filename = filenameMatch ? filenameMatch[1] : `database_export_${Date.now()}.sql`;
-                const downloadUrl = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-
-                link.href = downloadUrl;
-                link.download = filename;
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-                URL.revokeObjectURL(downloadUrl);
-                setStatus('Database export downloaded.');
-            } catch (error) {
-                setStatus(error.message || 'Database export failed.', true);
-            } finally {
-                exportDatabaseButton.disabled = false;
             }
         };
 
@@ -564,7 +539,9 @@
 
         const loadSchema = async () => {
             try {
-                const response = await fetch('/sql-panel/schema');
+                const response = await fetch('/sql-panel/schema', {
+                    headers: getAuthHeaders(),
+                });
                 const data = await response.json();
 
                 if (!response.ok || !data.success) {
@@ -582,7 +559,6 @@
         };
 
         runQueryButton.addEventListener('click', runQuery);
-        exportDatabaseButton.addEventListener('click', exportDatabase);
         resetQueryButton.addEventListener('click', () => {
             sqlInput.value = state.defaultQuery;
             setStatus('');

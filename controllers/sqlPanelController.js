@@ -4,7 +4,11 @@ const { pool } = require('../config/db');
 const { env } = require('../config/env');
 const AppError = require('../utils/AppError');
 
-const ALLOWED_QUERY_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'UPDATE', 'ALTER'];
+const READ_ONLY_QUERY_PREFIXES = ['SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN'];
+const BLOCKED_READ_ONLY_PATTERNS = [
+    /\b(?:LOAD_FILE|OUTFILE|DUMPFILE)\b/iu,
+    /\bEXPLAIN\s+ANALYZE\b/iu,
+];
 const MAX_EXECUTION_TIME_MS = 10000;
 const EXPORT_BATCH_SIZE = 500;
 
@@ -28,11 +32,17 @@ const assertAllowedQuery = (sql) => {
 
     const firstKeyword = getFirstKeyword(normalizedSql);
 
-    if (!ALLOWED_QUERY_PREFIXES.includes(firstKeyword)) {
+    const allowedPrefixes = READ_ONLY_QUERY_PREFIXES;
+
+    if (!allowedPrefixes.includes(firstKeyword)) {
         throw new AppError(
-            'Only these queries are allowed: SELECT, SHOW, DESCRIBE, DESC, EXPLAIN, UPDATE, ALTER.',
+            `Only these queries are allowed: ${allowedPrefixes.join(', ')}.`,
             400
         );
+    }
+
+    if (BLOCKED_READ_ONLY_PATTERNS.some((pattern) => pattern.test(normalizedSql))) {
+        throw new AppError('Server file access is not allowed from the SQL panel.', 400);
     }
 
     return normalizedSql;
@@ -215,6 +225,7 @@ const getSchemaOverview = async (_req, res, next) => {
 const executeSqlQuery = async (req, res, next) => {
     const sql = normalizeSql(req.body?.sql);
     let connection;
+    let transactionStarted = false;
 
     try {
         connection = await pool.getConnection();
@@ -227,7 +238,15 @@ const executeSqlQuery = async (req, res, next) => {
             // Ignore when the database engine does not support this session variable.
         }
 
+        await connection.query('START TRANSACTION READ ONLY');
+        transactionStarted = true;
+        await connection.query('SET SESSION sql_select_limit = 1000');
+
         const [rows, fields] = await connection.query(safeSql);
+        if (transactionStarted) {
+            await connection.commit();
+            transactionStarted = false;
+        }
         const durationMs = Date.now() - startedAt;
         const firstKeyword = getFirstKeyword(safeSql);
         const isTabularResult = Array.isArray(rows);
@@ -245,10 +264,19 @@ const executeSqlQuery = async (req, res, next) => {
             rows: isTabularResult ? rows : [],
         });
     } catch (error) {
+        if (connection && transactionStarted) {
+            try {
+                await connection.rollback();
+            } catch (_rollbackError) {
+                // Surface the original query error.
+            }
+        }
         next(error);
     } finally {
         if (connection) {
-            connection.release();
+            // A SQL console can mutate connection-scoped state (variables, locks,
+            // temporary tables). Destroy it instead of returning it to the app pool.
+            connection.destroy();
         }
     }
 };
@@ -258,4 +286,5 @@ module.exports = {
     getSchemaOverview,
     executeSqlQuery,
     exportDatabase,
+    assertAllowedQuery,
 };

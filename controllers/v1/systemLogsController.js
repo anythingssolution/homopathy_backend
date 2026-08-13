@@ -1,24 +1,11 @@
 const fs = require('fs/promises');
 const path = require('path');
-const { env } = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 
 const logsDirectory = path.join(__dirname, '..', '..', 'logs');
 const logFilePattern = /^error-(\d{4}-\d{2}-\d{2})\.log$/;
 const maxPreviewBytes = 250000;
-const staticLogsViewerPassword = 'vectre@logs';
-
-const ensureDevAccess = (req) => {
-    if (env.nodeEnv === 'production') {
-        throw new AppError('System logs viewer is available only outside production', 403);
-    }
-
-    const providedPassword = String(req.headers['x-log-viewer-password'] || '');
-    if (providedPassword !== staticLogsViewerPassword) {
-        throw new AppError('Invalid logs viewer password', 401);
-    }
-};
 
 const parseLogFileMeta = async (fileName) => {
     const filePath = path.join(logsDirectory, fileName);
@@ -35,7 +22,16 @@ const parseLogFileMeta = async (fileName) => {
 };
 
 const listRecentLogFiles = async (days = 10) => {
-    const entries = await fs.readdir(logsDirectory);
+    let entries;
+
+    try {
+        entries = await fs.readdir(logsDirectory);
+    } catch (error) {
+        if (error?.code === 'ENOENT') {
+            return [];
+        }
+        throw error;
+    }
     const now = new Date();
     const cutoff = new Date(now);
     cutoff.setDate(cutoff.getDate() - Math.max(days - 1, 0));
@@ -60,20 +56,28 @@ const readLogFilePreview = async (fileName) => {
     }
 
     const filePath = path.join(logsDirectory, safeFileName);
-    const fileBuffer = await fs.readFile(filePath);
+    const stats = await fs.stat(filePath);
+    const previewBytes = Math.min(stats.size, maxPreviewBytes);
+    const fileHandle = await fs.open(filePath, 'r');
+    const fileBuffer = Buffer.alloc(previewBytes);
+
+    try {
+        await fileHandle.read(fileBuffer, 0, previewBytes, Math.max(stats.size - previewBytes, 0));
+    } finally {
+        await fileHandle.close();
+    }
+
     const content = fileBuffer.toString('utf8');
 
     return {
         file_name: safeFileName,
         content,
-        preview_truncated: fileBuffer.length > maxPreviewBytes,
-        preview_content: content.slice(-maxPreviewBytes),
+        preview_truncated: stats.size > maxPreviewBytes,
+        preview_content: content,
     };
 };
 
 const getSystemLogsOverview = asyncHandler(async (_req, res) => {
-    ensureDevAccess(_req);
-
     const files = await listRecentLogFiles(10);
     const latestFile = files[0] || null;
     const latestPreview = latestFile ? await readLogFilePreview(latestFile.file_name) : null;
@@ -92,8 +96,6 @@ const getSystemLogsOverview = asyncHandler(async (_req, res) => {
 });
 
 const getSystemLogFile = asyncHandler(async (req, res) => {
-    ensureDevAccess(req);
-
     const { fileName } = req.params;
     const filePreview = await readLogFilePreview(fileName);
     const fileMeta = await parseLogFileMeta(filePreview.file_name);
