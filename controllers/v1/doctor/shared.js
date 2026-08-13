@@ -372,6 +372,8 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
                 medicine_type: medication.medicine_type,
                 medicine_value: medication.medicine_value,
                 remark: medication.remark,
+                remark_hi: medication.remark_hi || null,
+                is_manual_entry: Number(medication.is_manual_entry) === 1,
                 added_by_role: medication.added_by_role || 'DOCTOR',
                 doses: [],
             }, medication));
@@ -506,6 +508,8 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             cm.medicine_type,
             cm.medicine_value,
             cm.remark,
+            cm.remark_hi,
+            cm.is_manual_entry,
             cm.added_by_role,
             mppi.dispense_status,
             mppi.void_reason,
@@ -866,6 +870,12 @@ const validateConsultationPayload = (body) => {
         }
 
         const remark = medication?.remark ? String(medication.remark).trim() : null;
+        const remarkHi = medication?.remark_hi ? String(medication.remark_hi).trim() : null;
+        const isManualEntry = medicineType === 'TEXT' && (
+            medication?.is_manual_entry === true
+            || medication?.is_manual_entry === 1
+            || String(medication?.is_manual_entry || '').toLowerCase() === 'true'
+        );
         let dosesInput = Array.isArray(medication?.doses) ? medication.doses : null;
 
         if ((!dosesInput || dosesInput.length === 0) && medication?.dosage) {
@@ -912,6 +922,8 @@ const validateConsultationPayload = (body) => {
             medicine_type: medicineType,
             medicine_value: medicineValue,
             remark: medicineType === 'TEXT' ? remark : null,
+            remark_hi: medicineType === 'TEXT' ? remarkHi : null,
+            is_manual_entry: medicineType === 'TEXT' ? isManualEntry : false,
             doses,
             amount,
         };

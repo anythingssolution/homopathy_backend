@@ -8,6 +8,7 @@ const RULE_KEYS = {
     plainNumber: 'PLAIN_NUMBER',
     slashSingleNumeric: 'SLASH_SINGLE_NUMERIC',
     slashDoubleNumeric: 'SLASH_DOUBLE_NUMERIC',
+    slashPriceNumeric: 'SLASH_PRICE_NUMERIC',
 };
 
 const DEFAULT_TEMPLATE_DEFINITIONS = [
@@ -74,6 +75,13 @@ const DEFAULT_RULE_DEFINITIONS = {
         amount_strategy: 'MULTIPLY_SUFFIX',
         fixed_amount: null,
         multiplier_value: 10,
+        template_code: 'DEFAULT_444',
+    },
+    slash_price_numeric: {
+        rule_key: RULE_KEYS.slashPriceNumeric,
+        amount_strategy: 'SUFFIX_AS_PRICE',
+        fixed_amount: null,
+        multiplier_value: null,
         template_code: 'DEFAULT_444',
     },
 };
@@ -230,8 +238,8 @@ const normalizeFormulaPayload = (payload = {}) => {
 
     const normalizeRule = (input, label) => {
         const amountStrategy = String(input?.amount_strategy || '').trim().toUpperCase();
-        if (!['FIXED', 'MULTIPLY_SUFFIX'].includes(amountStrategy)) {
-            throw createValidationError(`${label} amount_strategy must be FIXED or MULTIPLY_SUFFIX`);
+        if (!['FIXED', 'MULTIPLY_SUFFIX', 'SUFFIX_AS_PRICE'].includes(amountStrategy)) {
+            throw createValidationError(`${label} amount_strategy must be FIXED, MULTIPLY_SUFFIX, or SUFFIX_AS_PRICE`);
         }
 
         const templateCode = String(input?.template_code || '').trim().toUpperCase();
@@ -250,6 +258,10 @@ const normalizeFormulaPayload = (payload = {}) => {
             throw createValidationError(`${label} multiplier_value is required for MULTIPLY_SUFFIX strategy`);
         }
 
+        if (amountStrategy === 'SUFFIX_AS_PRICE' && (fixedAmount !== null || multiplierValue !== null)) {
+            throw createValidationError(`${label} fixed_amount and multiplier_value must be empty for SUFFIX_AS_PRICE strategy`);
+        }
+
         return {
             amount_strategy: amountStrategy,
             fixed_amount: fixedAmount,
@@ -263,6 +275,7 @@ const normalizeFormulaPayload = (payload = {}) => {
         plain_number: normalizeRule(rulesInput.plain_number, 'plain_number'),
         slash_single_numeric: normalizeRule(rulesInput.slash_single_numeric, 'slash_single_numeric'),
         slash_double_numeric: normalizeRule(rulesInput.slash_double_numeric, 'slash_double_numeric'),
+        slash_price_numeric: normalizeRule(rulesInput.slash_price_numeric, 'slash_price_numeric'),
     };
 
     const alphaCodesInput = Array.isArray(payload?.alpha_codes) ? payload.alpha_codes : [];
@@ -490,6 +503,7 @@ const getFormulaSetDetail = async ({ doctorId, setId }) => {
         plain_number: findRule(RULE_KEYS.plainNumber),
         slash_single_numeric: findRule(RULE_KEYS.slashSingleNumeric),
         slash_double_numeric: findRule(RULE_KEYS.slashDoubleNumeric),
+        slash_price_numeric: findRule(RULE_KEYS.slashPriceNumeric),
     };
 
     const alpha_codes = alphaCodeRows.map((row) => ({
@@ -570,6 +584,7 @@ const buildFormulaSnapshotFromDetail = (detail) => {
             plain_number: buildRuleSnapshot(detail.rules?.plain_number),
             slash_single_numeric: buildRuleSnapshot(detail.rules?.slash_single_numeric),
             slash_double_numeric: buildRuleSnapshot(detail.rules?.slash_double_numeric),
+            slash_price_numeric: buildRuleSnapshot(detail.rules?.slash_price_numeric),
         },
         alpha_codes: alphaCodes,
         templates: Array.from(templatesByCode.values()),
@@ -837,6 +852,7 @@ const upsertFormulaSet = async ({ doctorId, actorUserId, setId = null, payload }
             { key: RULE_KEYS.plainNumber, value: normalizedPayload.rules.plain_number },
             { key: RULE_KEYS.slashSingleNumeric, value: normalizedPayload.rules.slash_single_numeric },
             { key: RULE_KEYS.slashDoubleNumeric, value: normalizedPayload.rules.slash_double_numeric },
+            { key: RULE_KEYS.slashPriceNumeric, value: normalizedPayload.rules.slash_price_numeric },
         ];
 
         for (const ruleEntry of rulesToInsert) {
@@ -1042,6 +1058,13 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
             return Number((Number(suffixNumeric) * Number(rule.multiplier_value || 0)).toFixed(2));
         }
 
+        if (rule.amount_strategy === 'SUFFIX_AS_PRICE') {
+            if (suffixNumeric === null || suffixNumeric === undefined) {
+                throw createValidationError('Numeric suffix is required for suffix-as-price rule');
+            }
+            return Number(Number(suffixNumeric).toFixed(2));
+        }
+
         throw createValidationError('Unsupported formula amount strategy');
     };
 
@@ -1094,11 +1117,8 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
                     resolvedRule = snapshot.rules?.slash_double_numeric || null;
                     suffixType = 'NUMERIC_DOUBLE';
                 } else {
-                    errors.push({
-                        raw_token: token,
-                        message: 'Only one-digit or two-digit numeric suffix is supported after /',
-                    });
-                    return;
+                    resolvedRule = snapshot.rules?.slash_price_numeric || null;
+                    suffixType = 'NUMERIC_PRICE';
                 }
 
                 amount = resolveAmountFromRule(resolvedRule, suffixNumber);

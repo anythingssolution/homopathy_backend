@@ -269,7 +269,7 @@ const createConsultation = asyncHandler(async (req, res) => {
         const pricingItems = [];
 
         for (const medication of medications) {
-            if (medication.medicine_type === 'TEXT') {
+            if (medication.medicine_type === 'TEXT' && !medication.is_manual_entry) {
                 const normalizedMedicineValue = normalizeMasterValue(medication.medicine_value);
                 const [existingMedicineMasters] = await connection.execute(
                     `SELECT id FROM master_text_medicines WHERE normalized_value = ? LIMIT 1`,
@@ -290,9 +290,16 @@ const createConsultation = asyncHandler(async (req, res) => {
 
             const [medicationResult] = await connection.execute(
                 `INSERT INTO tbl_consultation_medications
-                 (consultation_id, medicine_type, medicine_value, remark)
-                 VALUES (?, ?, ?, ?)`,
-                [createdConsultationId, medication.medicine_type, medication.medicine_value, medication.remark]
+                 (consultation_id, medicine_type, medicine_value, remark, remark_hi, is_manual_entry)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    createdConsultationId,
+                    medication.medicine_type,
+                    medication.medicine_value,
+                    medication.remark,
+                    medication.remark_hi || null,
+                    medication.is_manual_entry ? 1 : 0,
+                ]
             );
 
             pricingItems.push({
@@ -523,6 +530,8 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
                     medicine_type: medication.medicine_type,
                     medicine_value: medication.medicine_value,
                     remark: medication.remark,
+                    remark_hi: medication.remark_hi,
+                    is_manual_entry: medication.is_manual_entry,
                     doses: medication.doses,
                     amount: pricingByMedicationId.get(Number(medication.consultation_medication_id)) || 0,
                 })),
