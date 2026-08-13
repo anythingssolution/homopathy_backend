@@ -135,7 +135,21 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
  LEFT JOIN tbl_appointment_vitals v ON v.appointment_id = a.appointment_id
  ${getAppointmentPatientJoin()}`;
 
-const ALLOWED_DURATION_DAYS = new Set([7, 15, 30]);
+const ALLOWED_DURATION_DAYS = new Set([7, 15, 30, 45, 60, 90, 180]);
+
+const parseBooleanFlag = (body, ...keys) => {
+    for (const key of keys) {
+        const value = body?.[key];
+        if (value === true || value === 1 || String(value || '').trim().toLowerCase() === 'true') {
+            return true;
+        }
+        if (value === false || value === 0 || String(value || '').trim().toLowerCase() === 'false') {
+            return false;
+        }
+    }
+
+    return false;
+};
 const ALLOWED_MEDICINE_TYPES = new Set(['NUMERIC', 'TEXT']);
 const ALLOWED_CONSULTATION_MODES = new Set(['PHYSICAL_PRESENT', 'ON_CALL']);
 const normalizeMasterValue = (value) => String(value || '').trim().toLowerCase();
@@ -401,6 +415,8 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
         follow_up_chain_closed: consultationRow.follow_up_chain_closed,
         follow_up_after_days: consultationRow.follow_up_after_days,
         repeated_from_consultation_id: consultationRow.repeated_from_consultation_id,
+        is_repeat: Boolean(Number(consultationRow.is_repeat)),
+        is_same: Boolean(Number(consultationRow.is_same)),
         consultation_mode: consultationRow.consultation_mode,
         oxygen_saturation: consultationRow.oxygen_saturation,
         blood_pressure: consultationRow.blood_pressure,
@@ -458,6 +474,8 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.follow_up_chain_closed,
             c.follow_up_after_days,
             c.repeated_from_consultation_id,
+            c.is_repeat,
+            c.is_same,
             c.consultation_mode,
             COALESCE(NULLIF(c.oxygen_saturation, ''), v.oxygen_saturation) AS oxygen_saturation,
             COALESCE(NULLIF(c.blood_pressure, ''), v.blood_pressure) AS blood_pressure,
@@ -766,6 +784,8 @@ const validateConsultationPayload = (body) => {
             || body?.allowNoPrescription
             || ''
         ).trim().toLowerCase() === 'true';
+    const isRepeat = parseBooleanFlag(body, 'is_repeat', 'isRepeat');
+    const isSame = parseBooleanFlag(body, 'is_same', 'isSame');
     const oxygenSaturation = body?.oxygen_saturation ? String(body.oxygen_saturation).trim() : null;
     const bloodPressure = body?.blood_pressure ? String(body.blood_pressure).trim() : null;
     const patientHeight = body?.patient_height ? String(body.patient_height).trim() : null;
@@ -807,7 +827,11 @@ const validateConsultationPayload = (body) => {
     }
 
     if (!ALLOWED_DURATION_DAYS.has(medicationDurationDays)) {
-        throw new AppError('Please select medication duration (7, 15 or 30 days)', 400);
+        throw new AppError('Please select medication duration (7, 15, 30, 45, 60, 90 or 180 days)', 400);
+    }
+
+    if (isRepeat && isSame) {
+        throw new AppError('Repeat and Same cannot both be selected', 400);
     }
 
     if (!followUpAfterDays || followUpAfterDays > 365) {
@@ -991,6 +1015,8 @@ const validateConsultationPayload = (body) => {
         followUpChainClosed,
         consultationMode,
         hasNoAdvice,
+        isRepeat,
+        isSame,
         oxygenSaturation,
         bloodPressure,
         patientHeight,

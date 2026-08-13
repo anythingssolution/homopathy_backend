@@ -60,6 +60,8 @@ const createConsultation = asyncHandler(async (req, res) => {
         formulaVersionUsed,
         quickFormulaInput,
         followUpChainClosed,
+        isRepeat,
+        isSame,
         medications,
         tests,
         totalAmount,
@@ -168,6 +170,7 @@ const createConsultation = asyncHandler(async (req, res) => {
                 `UPDATE tbl_consultations
                  SET doctor_id = ?, symptoms = ?, treatment_advice = ?, medication_duration_days = ?,
                      follow_up_chain_closed = ?, follow_up_after_days = ?, repeated_from_consultation_id = ?,
+                     is_repeat = ?, is_same = ?,
                      consultation_mode = ?, oxygen_saturation = ?, blood_pressure = ?, patient_height = ?,
                      patient_weight = ?, occupation = ?, history_present_illness = ?, history_past_illness = ?,
                      family_history = ?, allergies_history = ?, gynecological_history = ?, personal_social_history = ?,
@@ -184,6 +187,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     followUpChainClosed ? 1 : 0,
                     followUpAfterDays,
                     repeatedFromConsultationId,
+                    isRepeat ? 1 : 0,
+                    isSame ? 1 : 0,
                     consultationMode,
                     oxygenSaturation,
                     bloodPressure,
@@ -226,8 +231,8 @@ const createConsultation = asyncHandler(async (req, res) => {
         } else {
             const [consultationResult] = await connection.execute(
                 `INSERT INTO tbl_consultations
-                 (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+                 (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, is_repeat, is_same, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
                 [
                     appointmentId,
                     req.user.id,
@@ -237,6 +242,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     followUpChainClosed ? 1 : 0,
                     followUpAfterDays,
                     repeatedFromConsultationId,
+                    isRepeat ? 1 : 0,
+                    isSame ? 1 : 0,
                     consultationMode,
                     oxygenSaturation,
                     bloodPressure,
