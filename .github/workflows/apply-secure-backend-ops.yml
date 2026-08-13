@@ -330,7 +330,7 @@ jobs:
             CisgICAgYXNzZXJ0LnRocm93cygoKSA9PiBhc3NlcnRBbGxvd2VkUXVlcnkoJ0VYUExBSU4gQU5BTFlaRSBTRUxFQ1QgMScpLCAv
             ZmlsZSBhY2Nlc3MvKTsKK30pOwo=
         run: |
-          printf '%s' "$PATCH_B64" | base64 --decode > /tmp/secure-backend-ops.patch
+          printf '%s' "$PATCH_B64" | base64 --decode --ignore-garbage > /tmp/secure-backend-ops.patch
           git apply --index /tmp/secure-backend-ops.patch
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
