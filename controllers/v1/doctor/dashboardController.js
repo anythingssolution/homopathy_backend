@@ -14,18 +14,22 @@ const {
 
 const getDoctorDashboard = asyncHandler(async (req, res) => {
     const today = req.query.date ? String(req.query.date).trim() : new Date().toISOString().slice(0, 10);
-    const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
+    let branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
+    if (branchId === null && req.user?.branch_id) {
+        branchId = toPositiveInt(req.user.branch_id);
+    }
 
     if (!isValidDateString(today)) {
         throw new AppError('date must be in YYYY-MM-DD format', 400);
     }
 
-    if (req.query.branch_id !== undefined && !branchId) {
+    if (req.query.branch_id !== undefined && !req.query.branch_id) {
         throw new AppError('branch_id must be a positive integer', 400);
     }
 
     const params = [];
     let branchWhere = '';
+    let subqueryBranchWhere = '';
 
     if (branchId) {
         branchWhere = ' AND a.fk_branch_id = ?';
@@ -41,7 +45,7 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
                 SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Completed' THEN 1 ELSE 0 END) AS today_completed,
                 SUM(CASE WHEN a.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_appointments,
                 COUNT(DISTINCT ${getBookingSubjectExpression('a')}) AS unique_patients,
-                (SELECT COUNT(*) FROM tbl_consultations c JOIN tbl_appointments ap ON ap.appointment_id = c.appointment_id WHERE ap.is_active = 1) AS total_consultations
+                SUM(CASE WHEN a.status = 'Completed' THEN 1 ELSE 0 END) AS total_consultations
              FROM tbl_appointments a
              WHERE a.is_active = 1 ${branchWhere}`,
             [today, today, today, ...params]
@@ -109,11 +113,14 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
 });
 
 const listPatientsForDoctor = asyncHandler(async (req, res) => {
-    const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
+    let branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
+    if (branchId === null && req.user?.branch_id) {
+        branchId = toPositiveInt(req.user.branch_id);
+    }
     const patientSearch = req.query.search ? String(req.query.search).trim() : null;
     const visitType = req.query.type ? String(req.query.type).trim().toLowerCase() : null;
 
-    if (req.query.branch_id !== undefined && !branchId) {
+    if (req.query.branch_id !== undefined && !req.query.branch_id) {
         throw new AppError('branch_id must be a positive integer', 400);
     }
 
