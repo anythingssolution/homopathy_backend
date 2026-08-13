@@ -1,5 +1,5 @@
 -- MySQL does not support a conditional ADD COLUMN clause in this form.
--- Use the same INFORMATION_SCHEMA guard as the other managed migrations so
+-- The same INFORMATION_SCHEMA guard as the other managed migrations keeps
 -- this remains safe when an existing database already has either column.
 SET @is_repeat_exists = (
   SELECT COUNT(*)
