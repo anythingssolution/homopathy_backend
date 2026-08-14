@@ -331,7 +331,7 @@ const getDoctorReports = asyncHandler(async (req, res) => {
 const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
     const [textMedicines, textMedicineRemarks, scopedTextMedicineRemarks, labTests] = await Promise.all([
         query(
-            `SELECT id, medicine_value, normalized_value, is_active, created_at, updated_at
+            `SELECT id, medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
              FROM master_text_medicines
              WHERE is_active = 1
              ORDER BY medicine_value ASC`

@@ -98,4 +98,4 @@ WHERE medicine_type = 'TEXT'
 - Unknown / rare words are left as typed (so they are not mangled).
 - We can keep expanding the dictionary when doctors use new common phrases.
 - If input is already Devanagari, it is kept as-is.
-- Manual entries do not auto-create `master_text_medicines` rows.
+- Manual doctor entries are also saved to `master_text_medicines` (`is_doctor_manual = 1`) so they appear in the dropdown next time. See `other-medications-master-manual-entry.md`.

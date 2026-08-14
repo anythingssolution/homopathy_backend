@@ -213,6 +213,104 @@ const queryOptionalMasterTable = async (sql, params = []) => {
     }
 };
 
+const parseTextMedicineDisplayParts = (medicineValue) => {
+    let remaining = String(medicineValue || '').trim();
+    let quantity = 1;
+
+    const suffixMatch = remaining.match(/^(.*?)\s*[*xX]\s*(\d+)$/);
+    const prefixMatch = remaining.match(/^(\d+)\s*[*xX]\s*(.*)$/);
+    if (suffixMatch) {
+        remaining = suffixMatch[1].trim();
+        quantity = Number(suffixMatch[2]) || 1;
+    } else if (prefixMatch) {
+        remaining = prefixMatch[2].trim();
+        quantity = Number(prefixMatch[1]) || 1;
+    }
+
+    const pair = parseTextMedicineVariantPair(remaining);
+    if (pair) {
+        return {
+            medicine_value: pair.medicine_value,
+            variant_value: pair.variant_value,
+            quantity,
+        };
+    }
+
+    return {
+        medicine_value: remaining,
+        variant_value: '',
+        quantity,
+    };
+};
+
+const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManual = false) => {
+    const trimmedValue = String(medicineValue || '').trim();
+    const normalizedValue = normalizeMasterValue(trimmedValue);
+    if (!trimmedValue || !normalizedValue) {
+        return null;
+    }
+
+    const [existingRows] = await connection.execute(
+        `SELECT id, is_doctor_manual
+         FROM master_text_medicines
+         WHERE normalized_value = ?
+         LIMIT 1`,
+        [normalizedValue]
+    );
+
+    if (existingRows.length > 0) {
+        if (!isDoctorManual && Number(existingRows[0].is_doctor_manual) === 1) {
+            await connection.execute(
+                `UPDATE master_text_medicines
+                 SET is_doctor_manual = 0, is_active = 1
+                 WHERE id = ?`,
+                [existingRows[0].id]
+            );
+        } else {
+            await connection.execute(
+                `UPDATE master_text_medicines SET is_active = 1 WHERE id = ?`,
+                [existingRows[0].id]
+            );
+        }
+
+        return existingRows[0].id;
+    }
+
+    const [insertResult] = await connection.execute(
+        `INSERT INTO master_text_medicines
+         (medicine_value, normalized_value, is_doctor_manual, is_active)
+         VALUES (?, ?, ?, 1)`,
+        [trimmedValue, normalizedValue, isDoctorManual ? 1 : 0]
+    );
+
+    return insertResult.insertId;
+};
+
+const upsertDoctorManualVariant = async (connection, medicineTextId, medicineValue, variantLabel, unitPrice) => {
+    const packing = String(variantLabel || '').trim();
+    if (!medicineTextId || !packing || packing.toUpperCase() === 'N/A') {
+        return;
+    }
+
+    const productName = String(medicineValue || packing).trim();
+    const normalizedProductName = normalizeMasterValue(productName);
+    const dedupeKey = [normalizedProductName, normalizeMasterValue(packing)].join('|');
+    const mrpRate = Number.isFinite(Number(unitPrice)) ? Number(Number(unitPrice).toFixed(2)) : null;
+
+    await connection.execute(
+        `INSERT INTO master_medical_products
+         (medicine_text_id, source_type, product_name, packing, mrp_rate,
+          normalized_product_name, dedupe_key, is_active)
+         VALUES (?, 'DOCTOR_MANUAL', ?, ?, ?, ?, ?, 1)
+         ON DUPLICATE KEY UPDATE
+             medicine_text_id = VALUES(medicine_text_id),
+             packing = VALUES(packing),
+             mrp_rate = COALESCE(VALUES(mrp_rate), mrp_rate),
+             is_active = 1`,
+        [medicineTextId, productName, packing, mrpRate, normalizedProductName, dedupeKey]
+    );
+};
+
 const saveTextMedicineRemarkSuggestion = async (connection, medication) => {
     if (medication?.medicine_type !== 'TEXT' || !medication?.remark) {
         return;
@@ -942,9 +1040,26 @@ const validateConsultationPayload = (body) => {
             };
         });
 
+        const masterMedicineValue = medicineType === 'TEXT'
+            ? (String(medication?.master_medicine_value || '').trim() || null)
+            : null;
+        const variantValue = medicineType === 'TEXT'
+            ? (String(medication?.variant_value || medication?.selected_variant || '').trim() || null)
+            : null;
+        const quantity = medicineType === 'TEXT'
+            ? (toPositiveInt(medication?.quantity) || 1)
+            : null;
+        const variantUnitPrice = medicineType === 'TEXT'
+            ? toNonNegativeAmount(medication?.variant_unit_price)
+            : null;
+
         return {
             medicine_type: medicineType,
             medicine_value: medicineValue,
+            master_medicine_value: masterMedicineValue,
+            variant_value: variantValue,
+            quantity,
+            variant_unit_price: variantUnitPrice,
             remark: medicineType === 'TEXT' ? remark : null,
             remark_hi: medicineType === 'TEXT' ? remarkHi : null,
             is_manual_entry: medicineType === 'TEXT' ? isManualEntry : false,
@@ -1069,6 +1184,9 @@ module.exports = {
     buildTextMedicineSuggestionKey,
     buildTextMedicineProductMasters,
     saveTextMedicineRemarkSuggestion,
+    parseTextMedicineDisplayParts,
+    upsertMasterTextMedicine,
+    upsertDoctorManualVariant,
     getDoctorAppointmentById,
     STAFF_ACCESS_ROLE_MAP,
     buildStaffAccessResponseRows,

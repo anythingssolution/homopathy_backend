@@ -36,13 +36,12 @@ Duration pills on the consultation form:
 | 15 | 15 |
 | 30 | 30 |
 | 45 | 45 |
-| 1 Mo | 30 |
 | 2 Mo | 60 |
 | 3 Mo | 90 |
 | 6 Mo | 180 |
 
 - Allowed backend values: `7, 15, 30, 45, 60, 90, 180`.
-- **30-day frequency** sub-options (2× / 3× per day) still appear when duration is **30 days**, including when **1 Mo** is selected.
+- **30-day frequency** sub-options (2× / 3× per day) still appear when duration is **30 days**.
 - Formula pricing scales by duration multiplier:
 
 | Days | Multiplier |
@@ -154,5 +153,4 @@ WHERE medication_duration_days IN (45, 60, 90, 180);
 ## Notes
 
 - **Repeat** is separate from **Repeat Previous Treatment** (follow-up draft loader). The toggle is a consultation label for print/reporting.
-- **1 Mo** and **30** both store `30` days; the UI distinguishes them by pill selection.
 - Repeat/Same flags are optional and default to `false`.

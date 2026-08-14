@@ -6,13 +6,15 @@ const {
     createNotificationsForRole,
     markAppointmentQueueCompleted,
     emitLiveQueueEvent,
-    normalizeMasterValue,
     getDoctorAppointmentById,
     getConsultationAggregateByAppointmentId,
     getMedicalPricingAggregateByConsultationId,
     enrichAppointmentChainWithConsultationData,
     validateConsultationPayload,
     saveTextMedicineRemarkSuggestion,
+    parseTextMedicineDisplayParts,
+    upsertMasterTextMedicine,
+    upsertDoctorManualVariant,
 } = require('./shared');
 const {
     createNextFollowUpIfNeeded,
@@ -231,8 +233,15 @@ const createConsultation = asyncHandler(async (req, res) => {
         } else {
             const [consultationResult] = await connection.execute(
                 `INSERT INTO tbl_consultations
-                 (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days, follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id, is_repeat, is_same, consultation_mode, oxygen_saturation, blood_pressure, patient_height, patient_weight, occupation, history_present_illness, history_past_illness, family_history, allergies_history, gynecological_history, personal_social_history, general_examination, systematic_examination, differential_diagnosis, follow_up, disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used, quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+                 (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days,
+                  follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id,
+                  is_repeat, is_same, consultation_mode, oxygen_saturation, blood_pressure,
+                  patient_height, patient_weight, occupation, history_present_illness, history_past_illness,
+                  family_history, allergies_history, gynecological_history, personal_social_history,
+                  general_examination, systematic_examination, differential_diagnosis, follow_up,
+                  disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used,
+                  quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
                 [
                     appointmentId,
                     req.user.id,
@@ -276,19 +285,29 @@ const createConsultation = asyncHandler(async (req, res) => {
         const pricingItems = [];
 
         for (const medication of medications) {
-            if (medication.medicine_type === 'TEXT' && !medication.is_manual_entry) {
-                const normalizedMedicineValue = normalizeMasterValue(medication.medicine_value);
-                const [existingMedicineMasters] = await connection.execute(
-                    `SELECT id FROM master_text_medicines WHERE normalized_value = ? LIMIT 1`,
-                    [normalizedMedicineValue]
+            if (medication.medicine_type === 'TEXT') {
+                const displayParts = parseTextMedicineDisplayParts(medication.medicine_value);
+                const masterMedicineValue = medication.master_medicine_value
+                    || displayParts.medicine_value;
+                const variantValue = medication.variant_value || displayParts.variant_value;
+                const medicineTextId = await upsertMasterTextMedicine(
+                    connection,
+                    masterMedicineValue,
+                    Boolean(medication.is_manual_entry)
                 );
 
-                if (existingMedicineMasters.length === 0) {
-                    await connection.execute(
-                        `INSERT INTO master_text_medicines
-                         (medicine_value, normalized_value)
-                         VALUES (?, ?)`,
-                        [medication.medicine_value, normalizedMedicineValue]
+                if (medicineTextId && variantValue) {
+                    const qty = medication.quantity || displayParts.quantity || 1;
+                    const unitPrice = medication.variant_unit_price != null
+                        ? medication.variant_unit_price
+                        : (qty > 0 ? Number((Number(medication.amount || 0) / qty).toFixed(2)) : medication.amount);
+
+                    await upsertDoctorManualVariant(
+                        connection,
+                        medicineTextId,
+                        masterMedicineValue,
+                        variantValue,
+                        unitPrice
                     );
                 }
             }

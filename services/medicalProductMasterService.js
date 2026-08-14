@@ -1,7 +1,7 @@
 const { query, withTransaction } = require('../config/db');
 const AppError = require('../utils/AppError');
 
-const SOURCE_TYPES = new Set(['REGULAR_PRODUCT', 'RADIENT_PHARMA', 'MEDICAL_PRODUCT_PRICE']);
+const SOURCE_TYPES = new Set(['REGULAR_PRODUCT', 'RADIENT_PHARMA', 'MEDICAL_PRODUCT_PRICE', 'DOCTOR_MANUAL']);
 
 const normalizeValue = (value) => String(value || '').trim().toLowerCase();
 
@@ -62,6 +62,13 @@ const buildDedupeKey = (product) => {
         ].join('|');
     }
 
+    if (product.source_type === 'DOCTOR_MANUAL') {
+        return [
+            product.normalized_product_name,
+            normalizeValue(product.packing),
+        ].join('|');
+    }
+
     return [
         normalizeValue(product.category),
         product.normalized_product_name,
@@ -78,7 +85,7 @@ const normalizeProductPayload = (payload) => {
     }
 
     if (!SOURCE_TYPES.has(sourceType)) {
-        throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA or MEDICAL_PRODUCT_PRICE', 400);
+        throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA, MEDICAL_PRODUCT_PRICE or DOCTOR_MANUAL', 400);
     }
 
     if (!productName) {
@@ -170,7 +177,7 @@ const listMedicalProducts = async ({
     const normalizedSourceType = String(sourceType || '').trim().toUpperCase();
     if (normalizedSourceType) {
         if (!SOURCE_TYPES.has(normalizedSourceType)) {
-            throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA or MEDICAL_PRODUCT_PRICE', 400);
+            throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA, MEDICAL_PRODUCT_PRICE or DOCTOR_MANUAL', 400);
         }
         where.push('mmp.source_type = ?');
         params.push(normalizedSourceType);
