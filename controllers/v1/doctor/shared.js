@@ -515,6 +515,8 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
         repeated_from_consultation_id: consultationRow.repeated_from_consultation_id,
         is_repeat: Boolean(Number(consultationRow.is_repeat)),
         is_same: Boolean(Number(consultationRow.is_same)),
+        repeat_months: Number(consultationRow.repeat_months || 0),
+        same_months: Number(consultationRow.same_months || 0),
         consultation_mode: consultationRow.consultation_mode,
         oxygen_saturation: consultationRow.oxygen_saturation,
         blood_pressure: consultationRow.blood_pressure,
@@ -537,6 +539,8 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
         formula_set_id: consultationRow.formula_set_id,
         formula_version_used: consultationRow.formula_version_used,
         quick_formula_input: consultationRow.quick_formula_input,
+        universal_remark: consultationRow.universal_remark || null,
+        universal_remark_hi: consultationRow.universal_remark_hi || null,
         workflow_status: consultationRow.workflow_status,
         doctor_finalized_at: consultationRow.doctor_finalized_at,
         reception_notified_at: consultationRow.reception_notified_at,
@@ -574,6 +578,8 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.repeated_from_consultation_id,
             c.is_repeat,
             c.is_same,
+            c.repeat_months,
+            c.same_months,
             c.consultation_mode,
             COALESCE(NULLIF(c.oxygen_saturation, ''), v.oxygen_saturation) AS oxygen_saturation,
             COALESCE(NULLIF(c.blood_pressure, ''), v.blood_pressure) AS blood_pressure,
@@ -596,6 +602,8 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.formula_set_id,
             c.formula_version_used,
             c.quick_formula_input,
+            c.universal_remark,
+            c.universal_remark_hi,
             c.workflow_status,
             c.doctor_finalized_at,
             c.reception_notified_at,
@@ -882,8 +890,8 @@ const validateConsultationPayload = (body) => {
             || body?.allowNoPrescription
             || ''
         ).trim().toLowerCase() === 'true';
-    const isRepeat = parseBooleanFlag(body, 'is_repeat', 'isRepeat');
-    const isSame = parseBooleanFlag(body, 'is_same', 'isSame');
+    const isRepeatFlag = parseBooleanFlag(body, 'is_repeat', 'isRepeat');
+    const isSameFlag = parseBooleanFlag(body, 'is_same', 'isSame');
     const oxygenSaturation = body?.oxygen_saturation ? String(body.oxygen_saturation).trim() : null;
     const bloodPressure = body?.blood_pressure ? String(body.blood_pressure).trim() : null;
     const patientHeight = body?.patient_height ? String(body.patient_height).trim() : null;
@@ -917,6 +925,8 @@ const validateConsultationPayload = (body) => {
     const formulaSetId = toPositiveInt(body?.formula_set_id ?? body?.formulaSetId);
     const formulaVersionUsed = toPositiveInt(body?.formula_version_used ?? body?.formulaVersionUsed);
     const quickFormulaInput = toNullableText(body?.quick_formula_input ?? body?.quickFormulaInput);
+    const universalRemark = toNullableVarchar(body?.universal_remark ?? body?.universalRemark, 255, 'Universal remark');
+    const universalRemarkHi = toNullableVarchar(body?.universal_remark_hi ?? body?.universalRemarkHi, 255, 'Universal remark Hindi');
     const medicationsInput = Array.isArray(body?.medications) ? body.medications : null;
     const testsInput = Array.isArray(body?.tests) ? body.tests : [];
 
@@ -928,7 +938,32 @@ const validateConsultationPayload = (body) => {
         throw new AppError('Please select medication duration (7, 15, 30, 45, 60, 90 or 180 days)', 400);
     }
 
-    if (isRepeat && isSame) {
+    const durationMonths = medicationDurationDays === 60
+        ? 2
+        : medicationDurationDays === 90
+            ? 3
+            : medicationDurationDays === 180
+                ? 6
+                : 0;
+    const parsedRepeatMonths = Number(body?.repeat_months ?? body?.repeatMonths ?? 0);
+    const parsedSameMonths = Number(body?.same_months ?? body?.sameMonths ?? 0);
+    const repeatMonths = Number.isInteger(parsedRepeatMonths) && parsedRepeatMonths >= 0
+        ? parsedRepeatMonths
+        : 0;
+    const sameMonths = Number.isInteger(parsedSameMonths) && parsedSameMonths >= 0
+        ? parsedSameMonths
+        : 0;
+
+    let isRepeat = isRepeatFlag;
+    let isSame = isSameFlag;
+
+    if (durationMonths > 0) {
+        if (repeatMonths + sameMonths > durationMonths) {
+            throw new AppError(`Repeat and Same months cannot exceed ${durationMonths} months`, 400);
+        }
+        isRepeat = repeatMonths > 0;
+        isSame = sameMonths > 0;
+    } else if (isRepeat && isSame) {
         throw new AppError('Repeat and Same cannot both be selected', 400);
     }
 
@@ -1114,6 +1149,8 @@ const validateConsultationPayload = (body) => {
         followUp,
         disease,
         mentalMindStatus,
+        universalRemark,
+        universalRemarkHi,
     ].some(Boolean);
 
     const hasMeaningfulStructuredData = medications.length > 0 || tests.length > 0;
@@ -1132,6 +1169,8 @@ const validateConsultationPayload = (body) => {
         hasNoAdvice,
         isRepeat,
         isSame,
+        repeatMonths: durationMonths > 0 ? repeatMonths : 0,
+        sameMonths: durationMonths > 0 ? sameMonths : 0,
         oxygenSaturation,
         bloodPressure,
         patientHeight,
@@ -1155,6 +1194,8 @@ const validateConsultationPayload = (body) => {
         formulaSetId,
         formulaVersionUsed,
         quickFormulaInput,
+        universalRemark,
+        universalRemarkHi,
         medications,
         tests,
         totalAmount: computedTotalAmount,

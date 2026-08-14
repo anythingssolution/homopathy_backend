@@ -8,11 +8,10 @@ The consultation form now supports **Repeat** and **Same** flags (mutually exclu
 
 ### Consultation Form (Frontend)
 
-- Added **Repeat** and **Same** pill toggles next to **No Prescription Mode** (same visual style).
-- **Repeat** and **Same** are **mutually exclusive** — checking one automatically unchecks the other.
-- Both can be left unchecked.
-- Values are persisted on the consultation as `is_repeat` and `is_same`.
-- Draft autosave includes both flags.
+- **7 / 15 / 30 / 45 days:** Repeat and Same are mutually exclusive checkboxes.
+- **2 / 3 / 6 months:** doctor splits months between Repeat and Same (both can be used). Example: 6 Mo → 4 Same + 2 Repeat, or 1 Same + 5 Repeat.
+- Month splits are stored as `repeat_months` and `same_months`.
+- `is_repeat` / `is_same` are still set when the matching months (or day toggle) are used.
 
 ### Prescription Print
 

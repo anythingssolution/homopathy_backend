@@ -1,0 +1,3 @@
+ALTER TABLE tbl_consultations
+  ADD COLUMN repeat_months TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER is_same,
+  ADD COLUMN same_months TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER repeat_months;

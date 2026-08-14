@@ -303,6 +303,8 @@ const buildMedicalPrescriptionListItemResponse = (row, detail) => {
         prescription: {
             medication_duration_days: row.medication_duration_days,
             quick_formula_input: detail?.quick_formula_input ?? null,
+            universal_remark: detail?.universal_remark ?? null,
+            universal_remark_hi: detail?.universal_remark_hi ?? null,
             symptoms: row.symptoms,
             treatment_advice: row.treatment_advice,
             created_at: row.created_at,
@@ -336,6 +338,8 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
             c.workflow_status,
             c.medication_duration_days,
             c.quick_formula_input,
+            c.universal_remark,
+            c.universal_remark_hi,
             c.symptoms,
             c.treatment_advice,
             c.created_at,

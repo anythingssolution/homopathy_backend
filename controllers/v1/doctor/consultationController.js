@@ -61,9 +61,13 @@ const createConsultation = asyncHandler(async (req, res) => {
         formulaSetId,
         formulaVersionUsed,
         quickFormulaInput,
+        universalRemark,
+        universalRemarkHi,
         followUpChainClosed,
         isRepeat,
         isSame,
+        repeatMonths,
+        sameMonths,
         medications,
         tests,
         totalAmount,
@@ -172,13 +176,14 @@ const createConsultation = asyncHandler(async (req, res) => {
                 `UPDATE tbl_consultations
                  SET doctor_id = ?, symptoms = ?, treatment_advice = ?, medication_duration_days = ?,
                      follow_up_chain_closed = ?, follow_up_after_days = ?, repeated_from_consultation_id = ?,
-                     is_repeat = ?, is_same = ?,
+                     is_repeat = ?, is_same = ?, repeat_months = ?, same_months = ?,
                      consultation_mode = ?, oxygen_saturation = ?, blood_pressure = ?, patient_height = ?,
                      patient_weight = ?, occupation = ?, history_present_illness = ?, history_past_illness = ?,
                      family_history = ?, allergies_history = ?, gynecological_history = ?, personal_social_history = ?,
                      general_examination = ?, systematic_examination = ?, differential_diagnosis = ?, follow_up = ?,
                      disease = ?, diagnosis = ?, mental_mind_status = ?, formula_set_id = ?, formula_version_used = ?,
-                     quick_formula_input = ?, workflow_status = ?, doctor_finalized_at = NOW(),
+                     quick_formula_input = ?, universal_remark = ?, universal_remark_hi = ?,
+                     workflow_status = ?, doctor_finalized_at = NOW(),
                      sent_to_medical_at = CASE WHEN ? = 1 THEN NOW() ELSE NULL END
                  WHERE id = ?`,
                 [
@@ -191,6 +196,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     repeatedFromConsultationId,
                     isRepeat ? 1 : 0,
                     isSame ? 1 : 0,
+                    repeatMonths || 0,
+                    sameMonths || 0,
                     consultationMode,
                     oxygenSaturation,
                     bloodPressure,
@@ -213,6 +220,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     formulaSetId,
                     formulaVersionUsed,
                     quickFormulaInput,
+                    universalRemark,
+                    universalRemarkHi,
                     consultationWorkflowStatus,
                     shouldSendToMedical ? 1 : 0,
                     createdConsultationId,
@@ -235,13 +244,14 @@ const createConsultation = asyncHandler(async (req, res) => {
                 `INSERT INTO tbl_consultations
                  (appointment_id, doctor_id, symptoms, treatment_advice, medication_duration_days,
                   follow_up_chain_closed, follow_up_after_days, repeated_from_consultation_id,
-                  is_repeat, is_same, consultation_mode, oxygen_saturation, blood_pressure,
+                  is_repeat, is_same, repeat_months, same_months, consultation_mode, oxygen_saturation, blood_pressure,
                   patient_height, patient_weight, occupation, history_present_illness, history_past_illness,
                   family_history, allergies_history, gynecological_history, personal_social_history,
                   general_examination, systematic_examination, differential_diagnosis, follow_up,
                   disease, diagnosis, mental_mind_status, formula_set_id, formula_version_used,
-                  quick_formula_input, workflow_status, doctor_finalized_at, sent_to_medical_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
+                  quick_formula_input, universal_remark, universal_remark_hi,
+                  workflow_status, doctor_finalized_at, sent_to_medical_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), CASE WHEN ? = 1 THEN NOW() ELSE NULL END)`,
                 [
                     appointmentId,
                     req.user.id,
@@ -253,6 +263,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     repeatedFromConsultationId,
                     isRepeat ? 1 : 0,
                     isSame ? 1 : 0,
+                    repeatMonths || 0,
+                    sameMonths || 0,
                     consultationMode,
                     oxygenSaturation,
                     bloodPressure,
@@ -275,6 +287,8 @@ const createConsultation = asyncHandler(async (req, res) => {
                     formulaSetId,
                     formulaVersionUsed,
                     quickFormulaInput,
+                    universalRemark,
+                    universalRemarkHi,
                     consultationWorkflowStatus,
                     shouldSendToMedical ? 1 : 0,
                 ]
@@ -550,6 +564,8 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
             source_consultation_id: sourceConsultation.consultation_id,
             source_appointment_id: sourceConsultation.appointment_id,
             medication_duration_days: sourceConsultation.medication_duration_days,
+            universal_remark: sourceConsultation.universal_remark || null,
+            universal_remark_hi: sourceConsultation.universal_remark_hi || null,
             medications: sourceConsultation.medications
                 .filter((medication) => String(medication.added_by_role || 'DOCTOR').toUpperCase() !== 'MEDICAL')
                 .map((medication) => ({
