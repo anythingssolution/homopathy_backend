@@ -27,6 +27,7 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
         throw new AppError('branch_id must be a positive integer', 400);
     }
 
+    const summaryOnly = String(req.query.summary_only || '').trim().toLowerCase() === 'true';
     const params = [];
     let branchWhere = '';
     let subqueryBranchWhere = '';
@@ -36,20 +37,38 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
         params.push(branchId);
     }
 
+    const summaryQuery = `
+        SELECT
+            COUNT(*) AS total_appointments,
+            SUM(CASE WHEN a.appointment_date = ? THEN 1 ELSE 0 END) AS today_appointments,
+            SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Pending' THEN 1 ELSE 0 END) AS today_pending,
+            SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Completed' THEN 1 ELSE 0 END) AS today_completed,
+            SUM(CASE WHEN a.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_appointments,
+            COUNT(DISTINCT ${getBookingSubjectExpression('a')}) AS unique_patients,
+            SUM(CASE WHEN a.status = 'Completed' THEN 1 ELSE 0 END) AS total_consultations
+         FROM tbl_appointments a
+         WHERE a.is_active = 1 ${branchWhere}`;
+
+    if (summaryOnly) {
+        const summaryRows = await query(summaryQuery, [today, today, today, ...params]);
+        return res.status(200).json({
+            success: true,
+            message: 'Doctor dashboard fetched successfully',
+            data: {
+                summary: summaryRows[0] || {},
+            },
+            meta: {
+                filters: {
+                    date: today,
+                    branch_id: branchId,
+                    summary_only: true,
+                },
+            },
+        });
+    }
+
     const [summaryRows, branchSummary, upcomingAppointments, recentConsultations] = await Promise.all([
-        query(
-            `SELECT
-                COUNT(*) AS total_appointments,
-                SUM(CASE WHEN a.appointment_date = ? THEN 1 ELSE 0 END) AS today_appointments,
-                SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Pending' THEN 1 ELSE 0 END) AS today_pending,
-                SUM(CASE WHEN a.appointment_date = ? AND a.status = 'Completed' THEN 1 ELSE 0 END) AS today_completed,
-                SUM(CASE WHEN a.status = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled_appointments,
-                COUNT(DISTINCT ${getBookingSubjectExpression('a')}) AS unique_patients,
-                SUM(CASE WHEN a.status = 'Completed' THEN 1 ELSE 0 END) AS total_consultations
-             FROM tbl_appointments a
-             WHERE a.is_active = 1 ${branchWhere}`,
-            [today, today, today, ...params]
-        ),
+        query(summaryQuery, [today, today, today, ...params]),
         query(
             `SELECT
                 b.id AS branch_id,
