@@ -680,20 +680,14 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             u.description,
             u.created_at,
             u.updated_at,
-            COUNT(DISTINCT fm.id) AS active_family_members,
-            COUNT(DISTINCT a.appointment_id) AS total_appointments,
-            MAX(a.appointment_date) AS last_appointment_date
+            (SELECT COUNT(*) FROM tbl_patient_family_members fm WHERE fm.fk_primary_patient_id = u.id AND fm.is_active = 1) AS active_family_members,
+            (SELECT COUNT(*) FROM tbl_appointments a WHERE a.fk_patient_id = u.id ${branchId ? `AND a.fk_branch_id = ${branchId}` : ''} AND a.is_active = 1) AS total_appointments,
+            (SELECT MAX(a.appointment_date) FROM tbl_appointments a WHERE a.fk_patient_id = u.id ${branchId ? `AND a.fk_branch_id = ${branchId}` : ''} AND a.is_active = 1) AS last_appointment_date
          FROM master_users u
-         LEFT JOIN tbl_patient_family_members fm
-           ON fm.fk_primary_patient_id = u.id
-          AND fm.is_active = 1
-         LEFT JOIN tbl_appointments a ON a.fk_patient_id = u.id
-          ${branchId ? 'AND a.fk_branch_id = ?' : ''}
          ${whereClause}
-         GROUP BY u.id, u.uuid, u.full_name, u.age, u.gender, u.email, u.mobile_no, u.description, u.created_at, u.updated_at
          ORDER BY u.full_name ASC
          LIMIT ${pageSize} OFFSET ${offset}`,
-            [...joinParams, ...params]
+            params
         ),
     ]);
 
