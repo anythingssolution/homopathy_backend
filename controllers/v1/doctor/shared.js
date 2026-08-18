@@ -13,6 +13,9 @@ const {
     getBookingSubjectExpression,
 } = require('../../../utils/patientFamily');
 
+const NUMERIC_MEDICINE_MIN = 3;
+const NUMERIC_MEDICINE_MAX = 200;
+
 const toPositiveInt = (value) => {
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -20,6 +23,26 @@ const toPositiveInt = (value) => {
     }
 
     return parsed;
+};
+
+const parseNumericMedicineValue = (rawValue) => {
+    const source = String(rawValue ?? '').trim();
+    const match = source.match(/^(\d{1,3})(?:\[(\d{1,4})\])?$/);
+    if (!match) {
+        return null;
+    }
+
+    const medicineNo = Number(match[1]);
+    if (!Number.isInteger(medicineNo) || medicineNo < NUMERIC_MEDICINE_MIN || medicineNo > NUMERIC_MEDICINE_MAX) {
+        return null;
+    }
+
+    const power = match[2] || null;
+    return {
+        medicineNo,
+        power,
+        storedValue: power ? `${medicineNo}[${power}]` : String(medicineNo),
+    };
 };
 
 const isValidDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
@@ -1011,13 +1034,13 @@ const validateConsultationPayload = (body) => {
         }
 
         if (medicineType === 'NUMERIC') {
-            const numericValue = toPositiveInt(rawMedicineValue);
+            const parsedNumericMedicine = parseNumericMedicineValue(rawMedicineValue);
 
-            if (!numericValue || numericValue < 3 || numericValue > 150) {
-                throw new AppError(`medications[${index}].medicine_value must be between 3 and 150 for NUMERIC type`, 400);
+            if (!parsedNumericMedicine) {
+                throw new AppError(`medications[${index}].medicine_value must be between 3 and 200 for NUMERIC type (optional [power] allowed, e.g. 12[14])`, 400);
             }
 
-            medicineValue = String(numericValue);
+            medicineValue = parsedNumericMedicine.storedValue;
         } else {
             medicineValue = String(rawMedicineValue || '').trim();
 

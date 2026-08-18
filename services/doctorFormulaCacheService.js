@@ -121,6 +121,9 @@ const DEFAULT_ALPHA_CODE_DEFINITIONS = [
     },
 ];
 
+const NUMERIC_MEDICINE_MIN = 3;
+const NUMERIC_MEDICINE_MAX = 200;
+
 const createValidationError = (message) => new AppError(message, 400);
 
 const toPositiveInt = (value) => {
@@ -1069,35 +1072,39 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
     };
 
     tokens.forEach((token) => {
-        const match = token.match(/^(\d{1,3})(?:\/([A-Za-z0-9]+))?$/);
+        const match = token.match(/^(\d{1,3})(?:\[(\d{1,4})\])?([A-Za-z]*)(?:\/([A-Za-z0-9]+))?$/);
         if (!match) {
             errors.push({
                 raw_token: token,
-                message: 'Token format is invalid. Use formats like 30, 200/2, 84/20, 10/BD',
+                message: 'Token format is invalid. Use formats like 30, 12[14], 200/2, 84/20, 10/BD',
             });
             return;
         }
 
         const medicineValueNumber = Number(match[1]);
-        if (!Number.isInteger(medicineValueNumber) || medicineValueNumber < 3 || medicineValueNumber > 150) {
+        const powerValue = match[2] || null;
+        const inlineAlphaCode = match[3] ? String(match[3]).trim().toUpperCase() : null;
+        if (!Number.isInteger(medicineValueNumber) || medicineValueNumber < NUMERIC_MEDICINE_MIN || medicineValueNumber > NUMERIC_MEDICINE_MAX) {
             errors.push({
                 raw_token: token,
-                message: 'Medicine number must be between 3 and 150',
+                message: `Medicine number must be between ${NUMERIC_MEDICINE_MIN} and ${NUMERIC_MEDICINE_MAX}`,
             });
             return;
         }
 
-        const medicineValue = String(medicineValueNumber);
-        if (seenMedicineValues.has(medicineValue)) {
+        const medicineValue = powerValue
+            ? `${medicineValueNumber}[${powerValue}]`
+            : String(medicineValueNumber);
+        if (seenMedicineValues.has(String(medicineValueNumber))) {
             errors.push({
                 raw_token: token,
-                message: `Duplicate medicine number ${medicineValue} is not allowed`,
+                message: `Duplicate medicine number ${medicineValueNumber} is not allowed`,
             });
             return;
         }
-        seenMedicineValues.add(medicineValue);
+        seenMedicineValues.add(String(medicineValueNumber));
 
-        const suffix = match[2] ? String(match[2]).trim() : null;
+        const suffix = match[4] ? String(match[4]).trim() : null;
         let resolvedRule = snapshot.rules?.plain_number || null;
         let suffixType = 'NONE';
         let suffixValue = null;
@@ -1149,6 +1156,23 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
                     message: 'Suffix after / must be only numbers or only letters',
                 });
                 return;
+            }
+        }
+
+        if (inlineAlphaCode) {
+            const inlineRule = snapshot.alpha_codes?.[inlineAlphaCode] || null;
+            if (!inlineRule) {
+                errors.push({
+                    raw_token: token,
+                    message: `Unknown inline alpha code: ${inlineAlphaCode}`,
+                });
+                return;
+            }
+
+            doses = cloneDeep(inlineRule.doses || []);
+            dosageTemplateCode = inlineRule.template_code || null;
+            if (inlineRule.duration_override_days) {
+                durationOverrideDays = inlineRule.duration_override_days;
             }
         }
 
