@@ -12,6 +12,13 @@ const buildRateLimiter = ({ windowMs, max, message }) => rateLimit({
     },
 });
 
+// Global Rate Limiter for general APIs
+const globalRateLimiter = buildRateLimiter({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 500, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP. Please try again after 15 minutes.',
+});
+
 const authRateLimiter = buildRateLimiter({
     windowMs: env.rateLimit.authWindowMs,
     max: env.rateLimit.authMaxRequests,
@@ -25,6 +32,7 @@ const otpRateLimiter = buildRateLimiter({
 });
 
 module.exports = {
+    globalRateLimiter,
     authRateLimiter,
     otpRateLimiter,
 };

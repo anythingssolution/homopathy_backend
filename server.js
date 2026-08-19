@@ -14,13 +14,17 @@ const { buildLiveQueueRoom, buildLiveQueueDateRoom, isValidDateString, toPositiv
 const { getDoctorSessionStatus } = require('./services/doctorSessionService');
 const { startPendingFollowUpNotifier } = require('./services/followupService');
 const { startLiveQueueDueJobWorker } = require('./services/liveQueueAutomationService');
+const { startWhatsAppScheduler } = require('./services/whatsappAutomationService');
 const { loadBranchLayoutsIntoCache } = require('./utils/appointmentTokens');
 const {
     notFound,
     globalErrorHandler,
 } = require('./middleware/errorMiddleware');
+const { globalRateLimiter } = require('./middleware/rateLimitMiddleware');
 
 const app = express();
+app.set('trust proxy', true);
+
 const PORT = env.port;
 const server = http.createServer(app);
 
@@ -322,10 +326,10 @@ app.get('/api/v1/health', (_req, res) => {
 });
 
 app.use('/sql-panel', sqlPanelRoutes);
-app.use('/api/v1', v1Routes);
+app.use('/api/v1', globalRateLimiter, v1Routes);
 
 // Backward-compatible base URL; points to current v1 implementation.
-app.use('/api', v1Routes);
+app.use('/api', globalRateLimiter, v1Routes);
 
 app.use(notFound);
 app.use(globalErrorHandler);
@@ -336,6 +340,7 @@ const startServer = async () => {
         await loadBranchLayoutsIntoCache();
         startPendingFollowUpNotifier();
         startLiveQueueDueJobWorker();
+        startWhatsAppScheduler();
         if (env.nodeEnv === 'production' && env.otp.useDefaultInProduction) {
             console.warn('[startup] WARNING: Production default OTP mode is enabled');
         }
