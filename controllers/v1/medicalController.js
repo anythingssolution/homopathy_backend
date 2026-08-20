@@ -30,6 +30,8 @@ const {
     validatePrescribedDispensingItems,
 } = require('../../services/dispensaryPricingService');
 
+const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
+
 const toPositiveInt = (value) => {
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -504,10 +506,27 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         params.push(`%${patientSearch}%`, `%${patientSearch}%`, `%${patientSearch}%`, `%${patientSearch}%`, `%${patientSearch}%`);
     }
 
+    const { page, pageSize } = parsePagination(req.query);
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const fromSql = `FROM tbl_consultations c
+         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         ${getAppointmentPatientJoin()}
+         JOIN master_users d ON d.id = c.doctor_id
+         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+         JOIN master_treatments t ON t.id = a.fk_treatment_id
+         JOIN master_slots s ON s.id = a.fk_slot_id
+         LEFT JOIN tbl_doctor_slot_time_overrides sto
+           ON sto.fk_branch_id = a.fk_branch_id
+          AND sto.fk_slot_id = a.fk_slot_id
+          AND sto.appointment_date = a.appointment_date
+          AND sto.status = 'ACTIVE'
+         ${pricingJoin}
+         ${whereClause}`;
 
-    const rows = await query(
-        `SELECT
+    const [countRows, rows] = await Promise.all([
+        query(`SELECT COUNT(*) AS total ${fromSql}`, params),
+        query(
+            `SELECT
             c.id AS consultation_id,
             c.appointment_id,
             c.workflow_status,
@@ -531,23 +550,18 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
             s.slot_name,
             COALESCE(sto.override_start_time, s.start_time) AS start_time,
             COALESCE(sto.override_end_time, s.end_time) AS end_time
-         FROM tbl_consultations c
-         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-         ${getAppointmentPatientJoin()}
-         JOIN master_users d ON d.id = c.doctor_id
-         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
-         JOIN master_treatments t ON t.id = a.fk_treatment_id
-         JOIN master_slots s ON s.id = a.fk_slot_id
-         LEFT JOIN tbl_doctor_slot_time_overrides sto
-           ON sto.fk_branch_id = a.fk_branch_id
-          AND sto.fk_slot_id = a.fk_slot_id
-          AND sto.appointment_date = a.appointment_date
-          AND sto.status = 'ACTIVE'
-         ${pricingJoin}
-         ${whereClause}
-         ORDER BY c.sent_to_medical_at DESC, c.id DESC`,
-        params
-    );
+         ${fromSql}
+         ORDER BY c.sent_to_medical_at DESC, c.id DESC
+         LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`,
+            params
+        ),
+    ]);
+
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
 
     const data = await Promise.all(rows.map(buildMedicalPrescriptionListItem));
 
@@ -556,7 +570,8 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         message: 'Medical prescriptions fetched successfully',
         data,
         meta: {
-            total: data.length,
+            ...buildPaginationMeta(pagination),
+            total: pagination.total,
             filters: {
                 pricing_status: pricingStatus,
                 branch_id: branchId,

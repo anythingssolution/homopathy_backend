@@ -3,6 +3,7 @@ const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { normalizeRole, normalizeRoleCode } = require('../../utils/roles');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
+const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 const {
     createConsultationBillForAppointment,
     PAYMENT_SETTLEMENT_TYPES,
@@ -941,10 +942,38 @@ const listMyAppointments = asyncHandler(async (req, res) => {
         'PROCESSED_BY_MEDICAL',
         'COMPLETED_NO_PRESCRIPTION',
     ];
+    const search = req.query.search ? String(req.query.search).trim() : null;
+    const branchName = req.query.branch_name ? String(req.query.branch_name).trim() : null;
+    const treatmentName = req.query.treatment_name ? String(req.query.treatment_name).trim() : null;
+    const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
+    const { page, pageSize } = parsePagination(req.query);
 
-    const appointments = await query(
-        `SELECT ${getAppointmentSelectColumns(familyBookingSchema.enabled)}
-         FROM tbl_appointments a
+    if (appointmentDate && appointmentDate !== 'all' && !isValidDateString(appointmentDate)) {
+        throw new AppError('appointment_date must be in YYYY-MM-DD format', 400);
+    }
+
+    const conditions = ['a.fk_patient_id = ?'];
+    const params = [req.user.id];
+
+    if (search) {
+        conditions.push('(t.treatment_name LIKE ? OR a.auid LIKE ? OR CAST(a.current_token_number AS CHAR) LIKE ? OR CAST(a.original_token_number AS CHAR) LIKE ?)');
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    if (branchName && branchName !== 'all') {
+        conditions.push('b.branch_name = ?');
+        params.push(branchName);
+    }
+    if (treatmentName && treatmentName !== 'all') {
+        conditions.push('t.treatment_name = ?');
+        params.push(treatmentName);
+    }
+    if (appointmentDate && appointmentDate !== 'all') {
+        conditions.push('a.appointment_date = ?');
+        params.push(appointmentDate);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const fromSql = `FROM tbl_appointments a
          JOIN master_clinic_branches b ON b.id = a.fk_branch_id
          JOIN master_treatments t ON t.id = a.fk_treatment_id
          JOIN master_slots s ON s.id = a.fk_slot_id
@@ -954,9 +983,32 @@ const listMyAppointments = asyncHandler(async (req, res) => {
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
          ${getAppointmentPatientJoinClause(familyBookingSchema.enabled)}
-         WHERE a.fk_patient_id = ?
-         ORDER BY a.appointment_date DESC, a.created_at DESC`,
-        [req.user.id]
+         ${whereClause}`;
+
+    const [countRows, filterOptionRows] = await Promise.all([
+        query(`SELECT COUNT(*) AS total ${fromSql}`, params),
+        query(
+            `SELECT DISTINCT b.branch_name, t.treatment_name, a.appointment_date
+             FROM tbl_appointments a
+             JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+             JOIN master_treatments t ON t.id = a.fk_treatment_id
+             WHERE a.fk_patient_id = ?
+             ORDER BY a.appointment_date DESC`,
+            [req.user.id]
+        ),
+    ]);
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
+    const appointments = await query(
+        `SELECT ${getAppointmentSelectColumns(familyBookingSchema.enabled)}
+         ${fromSql}
+         ORDER BY a.appointment_date DESC, a.created_at DESC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
+        params
     );
     const decoratedAppointments = appointments.map((appointment) => decorateTokenFields(appointment));
     const activeQueueDecorations = new Map();
@@ -1090,6 +1142,21 @@ const listMyAppointments = asyncHandler(async (req, res) => {
         success: true,
         message: 'Appointments fetched successfully',
         data: enrichedAppointments,
+        meta: {
+            ...buildPaginationMeta(pagination),
+            total: pagination.total,
+            filters: {
+                search,
+                branch_name: branchName || 'all',
+                treatment_name: treatmentName || 'all',
+                appointment_date: appointmentDate || 'all',
+            },
+            filter_options: {
+                branches: [...new Set(filterOptionRows.map((row) => row.branch_name).filter(Boolean))],
+                treatments: [...new Set(filterOptionRows.map((row) => row.treatment_name).filter(Boolean))],
+                dates: [...new Set(filterOptionRows.map((row) => String(row.appointment_date || '').split(/[ T]/)[0]).filter(Boolean))],
+            },
+        },
     });
 });
 

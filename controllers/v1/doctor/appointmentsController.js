@@ -15,6 +15,7 @@ const {
     enrichAppointmentChainWithConsultationData,
     getConsultationHistoryRows,
 } = require('./shared');
+    const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
 const { getAppointmentChain } = require('../../../services/followupService');
 const {
     buildPlateBlankTimelineRows,
@@ -266,12 +267,15 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
         throw new AppError('to_date must be in YYYY-MM-DD format', 400);
     }
 
-    const consultationRows = await getConsultationHistoryRows({
+    const { page, pageSize } = parsePagination(req.query);
+    const { rows: consultationRows, pagination } = await getConsultationHistoryRows({
         branchId,
         fromDate,
         toDate,
         patientSearch,
         status,
+        page,
+        pageSize,
     });
 
     const data = await Promise.all(
@@ -330,13 +334,15 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
         message: 'Doctor consultation history fetched successfully',
         data,
         meta: {
+            ...buildPaginationMeta(pagination),
             filters: {
                 branch_id: branchId,
                 from_date: fromDate,
                 to_date: toDate,
                 patient_search: patientSearch,
+                status: status || 'all',
             },
-            total: data.length,
+            total: pagination.total,
         },
     });
 });
@@ -377,6 +383,29 @@ const listBilledPrescriptionsForDoctor = asyncHandler(async (req, res) => {
         params.push(`%${patientSearch}%`, `%${patientSearch}%`, `%${patientSearch}%`);
     }
 
+    const { page, pageSize } = parsePagination(req.query);
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const fromSql = `FROM tbl_consultations c
+         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+         JOIN master_treatments t ON t.id = a.fk_treatment_id
+         JOIN master_slots s ON s.id = a.fk_slot_id
+         LEFT JOIN tbl_doctor_slot_time_overrides sto
+           ON sto.fk_branch_id = a.fk_branch_id
+          AND sto.fk_slot_id = a.fk_slot_id
+          AND sto.appointment_date = a.appointment_date
+          AND sto.status = 'ACTIVE'
+         ${getAppointmentPatientJoin()}
+         JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id
+         ${whereClause}`;
+
+    const countRows = await query(`SELECT COUNT(*) AS total ${fromSql}`, params);
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
     const rows = await query(
         `SELECT
             c.id AS consultation_id,
@@ -410,20 +439,9 @@ const listBilledPrescriptionsForDoctor = asyncHandler(async (req, res) => {
             mpp.remark AS pricing_remark,
             mpp.created_at AS pricing_created_at,
             mpp.updated_at AS pricing_updated_at
-         FROM tbl_consultations c
-         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
-         JOIN master_treatments t ON t.id = a.fk_treatment_id
-         JOIN master_slots s ON s.id = a.fk_slot_id
-         LEFT JOIN tbl_doctor_slot_time_overrides sto
-           ON sto.fk_branch_id = a.fk_branch_id
-          AND sto.fk_slot_id = a.fk_slot_id
-          AND sto.appointment_date = a.appointment_date
-          AND sto.status = 'ACTIVE'
-         ${getAppointmentPatientJoin()}
-         JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id
-         WHERE ${conditions.join(' AND ')}
-         ORDER BY mpp.updated_at DESC, c.id DESC`,
+         ${fromSql}
+         ORDER BY mpp.updated_at DESC, c.id DESC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );
 
@@ -470,13 +488,14 @@ const listBilledPrescriptionsForDoctor = asyncHandler(async (req, res) => {
         message: 'Doctor billed prescriptions fetched successfully',
         data,
         meta: {
+            ...buildPaginationMeta(pagination),
             filters: {
                 branch_id: branchId,
                 from_date: fromDate,
                 to_date: toDate,
                 patient_search: patientSearch,
             },
-            total: data.length,
+            total: pagination.total,
         },
     });
 });

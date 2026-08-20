@@ -12,6 +12,7 @@ const {
     getAppointmentPatientJoin,
     getBookingSubjectExpression,
 } = require('../../../utils/patientFamily');
+const { resolvePagination } = require('../../../utils/pagination');
 
 const NUMERIC_MEDICINE_MIN = 1;
 const NUMERIC_MEDICINE_MAX = 200;
@@ -787,7 +788,15 @@ const enrichAppointmentChainWithConsultationData = async (chainRows = []) => Pro
     })
 );
 
-const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, toDate = null, patientSearch = null, status = null }) => {
+const getConsultationHistoryRows = async ({
+    branchId = null,
+    fromDate = null,
+    toDate = null,
+    patientSearch = null,
+    status = null,
+    page = 1,
+    pageSize = 8,
+}) => {
     const conditions = ['a.is_active = 1'];
     const params = [];
 
@@ -817,8 +826,28 @@ const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, to
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const fromSql = `FROM tbl_appointments a
+         LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
+         LEFT JOIN master_users d ON d.id = c.doctor_id
+         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+         JOIN master_treatments t ON t.id = a.fk_treatment_id
+         JOIN master_slots s ON s.id = a.fk_slot_id
+         LEFT JOIN tbl_doctor_slot_time_overrides sto
+           ON sto.fk_branch_id = a.fk_branch_id
+          AND sto.fk_slot_id = a.fk_slot_id
+          AND sto.appointment_date = a.appointment_date
+          AND sto.status = 'ACTIVE'
+         ${getAppointmentPatientJoin()}
+         ${whereClause}`;
 
-    return query(
+    const countRows = await query(`SELECT COUNT(*) AS total ${fromSql}`, params);
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
+    const rows = await query(
         `SELECT
             c.id AS consultation_id,
             c.appointment_id,
@@ -863,22 +892,13 @@ const getConsultationHistoryRows = async ({ branchId = null, fromDate = null, to
             a.created_at AS appointment_created_at,
             a.updated_at AS appointment_updated_at,
             ${getAppointmentPatientColumns()}
-         FROM tbl_appointments a
-         LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
-         LEFT JOIN master_users d ON d.id = c.doctor_id
-         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
-         JOIN master_treatments t ON t.id = a.fk_treatment_id
-         JOIN master_slots s ON s.id = a.fk_slot_id
-         LEFT JOIN tbl_doctor_slot_time_overrides sto
-           ON sto.fk_branch_id = a.fk_branch_id
-          AND sto.fk_slot_id = a.fk_slot_id
-          AND sto.appointment_date = a.appointment_date
-          AND sto.status = 'ACTIVE'
-         ${getAppointmentPatientJoin()}
-         ${whereClause}
-         ORDER BY a.appointment_date DESC, a.appointment_id DESC`,
+         ${fromSql}
+         ORDER BY a.appointment_date DESC, a.appointment_id DESC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );
+
+    return { rows, pagination };
 };
 
 const validateConsultationPayload = (body) => {

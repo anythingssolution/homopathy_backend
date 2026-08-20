@@ -11,6 +11,7 @@ const {
     normalizeMasterValue,
     buildTextMedicineProductMasters,
 } = require('./shared');
+const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
 
 const getDoctorDashboard = asyncHandler(async (req, res) => {
     const today = req.query.date ? String(req.query.date).trim() : new Date().toISOString().slice(0, 10);
@@ -138,6 +139,8 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
     }
     const patientSearch = req.query.search ? String(req.query.search).trim() : null;
     const visitType = req.query.type ? String(req.query.type).trim().toLowerCase() : null;
+    const fromDate = req.query.from_date ? String(req.query.from_date).trim() : null;
+    const toDate = req.query.to_date ? String(req.query.to_date).trim() : null;
 
     if (req.query.branch_id !== undefined && !req.query.branch_id) {
         throw new AppError('branch_id must be a positive integer', 400);
@@ -145,6 +148,12 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
 
     if (visitType && !['all', 'recent', 'followup_pending'].includes(visitType)) {
         throw new AppError('type must be one of all, recent or followup_pending', 400);
+    }
+    if (fromDate && !isValidDateString(fromDate)) {
+        throw new AppError('from_date must be in YYYY-MM-DD format', 400);
+    }
+    if (toDate && !isValidDateString(toDate)) {
+        throw new AppError('to_date must be in YYYY-MM-DD format', 400);
     }
 
     const params = [];
@@ -174,9 +183,19 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    const patients = await query(
-        `SELECT
+    const havingParts = [];
+    const havingParams = [];
+    if (fromDate) {
+        havingParts.push('last_appointment_date >= ?');
+        havingParams.push(fromDate);
+    }
+    if (toDate) {
+        havingParts.push('last_appointment_date <= ?');
+        havingParams.push(toDate);
+    }
+    const havingClause = havingParts.length > 0 ? `HAVING ${havingParts.join(' AND ')}` : '';
+    const { page, pageSize } = parsePagination(req.query);
+    const groupedSql = `SELECT
             p.id AS patient_id,
             p.uuid AS patient_uuid,
             p.full_name,
@@ -194,8 +213,23 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
          JOIN tbl_appointments a ON a.fk_patient_id = p.id
          ${whereClause}
          GROUP BY p.id, p.uuid, p.full_name, p.age, p.gender, p.email, p.mobile_no, p.description
-         ORDER BY last_appointment_date DESC, p.full_name ASC`,
-        params
+         ${havingClause}`;
+
+    const countRows = await query(
+        `SELECT COUNT(*) AS total FROM (${groupedSql}) patient_list`,
+        [...params, ...havingParams]
+    );
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
+    const patients = await query(
+        `${groupedSql}
+         ORDER BY last_appointment_date DESC, p.full_name ASC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
+        [...params, ...havingParams]
     );
 
     return res.status(200).json({
@@ -203,12 +237,15 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
         message: 'Doctor patients fetched successfully',
         data: patients,
         meta: {
+            ...buildPaginationMeta(pagination),
+            total: pagination.total,
             filters: {
                 branch_id: branchId,
                 search: patientSearch,
                 type: visitType || 'all',
+                from_date: fromDate,
+                to_date: toDate,
             },
-            total: patients.length,
         },
     });
 });
