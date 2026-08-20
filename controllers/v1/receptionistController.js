@@ -55,6 +55,7 @@ const {
 } = require('../../utils/appointmentTokens');
 const { buildEffectiveSlotTokenPlate } = require('../../services/slotTokenExtensionService');
 const { resolveEffectiveSlotTiming } = require('../../services/slotTimeOverrideService');
+const { scheduleAppointmentReminders } = require('../../services/whatsappAutomationService');
 const APPOINTMENT_AUID_PREFIX = 'AUID';
 const PATIENT_ROLE = 'PAT';
 
@@ -1738,6 +1739,19 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
         appointmentId: result,
     });
 
+    // Schedule automated WhatsApp appointment reminders
+    try {
+        await scheduleAppointmentReminders({
+            appointmentId: result,
+            patientId: resolvedPatientId,
+            doctorId: 1,
+            branchId,
+            appointmentDate: appointment_date,
+        });
+    } catch (waErr) {
+        console.error('[WhatsApp Automation] Failed to schedule appointment reminders:', waErr);
+    }
+
     emitToRole('DOC', 'doctor.appointments.updated', {
         reason: 'APPOINTMENT_CREATED',
         source: 'RECEPTIONIST_BOOKING',
@@ -3147,6 +3161,12 @@ const rejectAndCleanupAppointmentsInternal = async (connection, appointmentIds, 
 
     await connection.query(
         `DELETE FROM tbl_pending_followups WHERE parent_appointment_id IN (?)`,
+        [appointmentIds]
+    );
+
+    // Cancel / Delete pending WhatsApp scheduled messages
+    await connection.query(
+        `DELETE FROM tbl_whatsapp_scheduled_messages WHERE fk_appointment_id IN (?)`,
         [appointmentIds]
     );
 

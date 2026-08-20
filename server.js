@@ -14,7 +14,7 @@ const { buildLiveQueueRoom, buildLiveQueueDateRoom, isValidDateString, toPositiv
 const { getDoctorSessionStatus } = require('./services/doctorSessionService');
 const { startPendingFollowUpNotifier } = require('./services/followupService');
 const { startLiveQueueDueJobWorker } = require('./services/liveQueueAutomationService');
-// const { startWhatsAppScheduler } = require('./services/whatsappAutomationService');
+const { startWhatsAppScheduler } = require('./services/whatsappAutomationService');
 const { loadBranchLayoutsIntoCache } = require('./utils/appointmentTokens');
 const {
     notFound,

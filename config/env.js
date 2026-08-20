@@ -138,6 +138,9 @@ const validateEnv = () => {
         whatsapp: {
             accessToken: getStringEnv('WHATSAPP_ACCESS_TOKEN'),
             phoneNumberId: getStringEnv('WHATSAPP_PHONE_NUMBER_ID'),
+            businessAccountId: getStringEnv('WHATSAPP_BUSINESS_ACCOUNT_ID'),
+            appSecret: getStringEnv('WHATSAPP_APP_SECRET'),
+            webhookVerifyToken: getStringEnv('WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'homopathy_clinic_whatsapp_verify_token_2026'),
             apiVersion: getStringEnv('WHATSAPP_API_VERSION', 'v22.0'),
             defaultCountryCode: getStringEnv('WHATSAPP_DEFAULT_COUNTRY_CODE', '91'),
             requestTimeoutMs: getNumberEnv('WHATSAPP_REQUEST_TIMEOUT_MS', 10000),

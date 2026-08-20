@@ -29,6 +29,10 @@ const {
     QUEUE_STATUS,
     formatDateTimeForSql,
 } = require('../../../services/liveQueueService');
+const {
+    scheduleFollowUpReminders,
+    cancelScheduledReminders,
+} = require('../../../services/whatsappAutomationService');
 
 const createConsultation = asyncHandler(async (req, res) => {
     const {
@@ -448,6 +452,29 @@ const createConsultation = asyncHandler(async (req, res) => {
                 message: 'Prescription ready for medical processing',
             },
         });
+    }
+
+    // Schedule automated WhatsApp follow-up reminders
+    try {
+        if (!followUpChainClosed && Number(followUpAfterDays) > 0) {
+            await scheduleFollowUpReminders({
+                consultationId: createdConsultationId || consultation?.consultation_id,
+                appointmentId,
+                doctorId: req.user.id,
+                patientId: appointment?.fk_patient_id || consultation?.patient_id,
+                branchId: appointment?.fk_branch_id || req.selectedBranchId || null,
+                appointmentDate: appointment?.appointment_date,
+                followUpAfterDays: Number(followUpAfterDays),
+            });
+        } else if (followUpChainClosed) {
+            await cancelScheduledReminders({
+                consultationId: createdConsultationId || consultation?.consultation_id,
+                appointmentId,
+                reason: 'FOLLOW_UP_CHAIN_CLOSED',
+            });
+        }
+    } catch (waErr) {
+        console.error('[WhatsApp Automation] Failed to schedule follow-up reminders:', waErr);
     }
 
     let autoCallNextDueAt = null;

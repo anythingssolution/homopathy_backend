@@ -13,6 +13,9 @@ const reportRoutes = require('./reportRoutes');
 const patientRecordRoutes = require('./patientRecordRoutes');
 const previousManualPatientRoutes = require('./previousManualPatientRoutes');
 const opsRoutes = require('./opsRoutes');
+const whatsappRoutes = require('./whatsappRoutes');
+const whatsappMockRoutes = require('./whatsappMockRoutes');
+const webhookRoutes = require('./webhookRoutes');
 
 const router = express.Router();
 
@@ -30,5 +33,8 @@ router.use('/reports', reportRoutes);
 router.use('/patient-records', patientRecordRoutes);
 router.use('/previous-patients', previousManualPatientRoutes);
 router.use('/ops', opsRoutes);
+router.use('/whatsapp/mock', whatsappMockRoutes);
+router.use('/whatsapp', whatsappRoutes);
+router.use('/webhooks', webhookRoutes);
 
 module.exports = router;
