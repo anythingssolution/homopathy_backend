@@ -28,6 +28,7 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
         throw new AppError('branch_id must be a positive integer', 400);
     }
 
+    const requestedSlotId = req.query.slot_id !== undefined && req.query.slot_id !== '' ? toPositiveInt(req.query.slot_id) : null;
     const summaryOnly = String(req.query.summary_only || '').trim().toLowerCase() === 'true';
     const params = [];
     let branchWhere = '';
@@ -50,26 +51,76 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
          FROM tbl_appointments a
          WHERE a.is_active = 1 ${branchWhere}`;
 
+    const slotSummaryQuery = `
+        SELECT 
+            s.id AS slot_id,
+            s.slot_name,
+            COUNT(*) AS slot_total,
+            SUM(CASE WHEN a.status = 'Pending' THEN 1 ELSE 0 END) AS slot_pending,
+            SUM(CASE WHEN a.status = 'Completed' THEN 1 ELSE 0 END) AS slot_completed
+         FROM tbl_appointments a
+         JOIN master_slots s ON s.id = a.fk_slot_id
+         WHERE a.is_active = 1 AND a.appointment_date = ? ${branchWhere}
+         GROUP BY s.id, s.slot_name, s.start_time
+         ORDER BY s.start_time ASC`;
+
+    const resolveActiveSlotSummary = async (baseSummary, slotRows) => {
+        let activeSlot = null;
+        if (requestedSlotId) {
+            activeSlot = slotRows.find((s) => Number(s.slot_id) === requestedSlotId) || null;
+            if (!activeSlot) {
+                const requestedSlotDetails = await query(`SELECT id AS slot_id, slot_name FROM master_slots WHERE id = ?`, [requestedSlotId]);
+                if (requestedSlotDetails[0]) {
+                    activeSlot = {
+                        slot_id: requestedSlotDetails[0].slot_id,
+                        slot_name: requestedSlotDetails[0].slot_name,
+                        slot_total: 0,
+                        slot_pending: 0,
+                        slot_completed: 0,
+                    };
+                }
+            }
+        }
+        if (!activeSlot) {
+            activeSlot = slotRows.find((s) => Number(s.slot_pending) > 0) || slotRows[slotRows.length - 1] || null;
+        }
+
+        return {
+            ...(baseSummary || {}),
+            slot_id: activeSlot ? activeSlot.slot_id : null,
+            slot_name: activeSlot ? activeSlot.slot_name : null,
+            today_appointments: activeSlot ? Number(activeSlot.slot_total) : Number(baseSummary?.today_appointments || 0),
+            today_pending: activeSlot ? Number(activeSlot.slot_pending) : Number(baseSummary?.today_pending || 0),
+            today_completed: activeSlot ? Number(activeSlot.slot_completed) : Number(baseSummary?.today_completed || 0),
+        };
+    };
+
     if (summaryOnly) {
-        const summaryRows = await query(summaryQuery, [today, today, today, ...params]);
+        const [summaryRows, slotRows] = await Promise.all([
+            query(summaryQuery, [today, today, today, ...params]),
+            query(slotSummaryQuery, [today, ...params]),
+        ]);
+        const summary = await resolveActiveSlotSummary(summaryRows[0], slotRows);
         return res.status(200).json({
             success: true,
             message: 'Doctor dashboard fetched successfully',
             data: {
-                summary: summaryRows[0] || {},
+                summary,
             },
             meta: {
                 filters: {
                     date: today,
                     branch_id: branchId,
+                    slot_id: requestedSlotId,
                     summary_only: true,
                 },
             },
         });
     }
 
-    const [summaryRows, branchSummary, upcomingAppointments, recentConsultations] = await Promise.all([
+    const [summaryRows, slotRows, branchSummary, upcomingAppointments, recentConsultations] = await Promise.all([
         query(summaryQuery, [today, today, today, ...params]),
+        query(slotSummaryQuery, [today, ...params]),
         query(
             `SELECT
                 b.id AS branch_id,
@@ -114,11 +165,13 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
         ),
     ]);
 
+    const summary = await resolveActiveSlotSummary(summaryRows[0], slotRows);
+
     return res.status(200).json({
         success: true,
         message: 'Doctor dashboard fetched successfully',
         data: {
-            summary: summaryRows[0] || {},
+            summary,
             branch_summary: branchSummary,
             upcoming_appointments: upcomingAppointments.map((appointment) => decorateTokenFields(appointment)),
             recent_consultations: recentConsultations,
@@ -127,6 +180,7 @@ const getDoctorDashboard = asyncHandler(async (req, res) => {
             filters: {
                 date: today,
                 branch_id: branchId,
+                slot_id: requestedSlotId,
             },
         },
     });
