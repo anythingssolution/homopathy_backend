@@ -13,8 +13,9 @@ const {
     getBookingSubjectExpression,
 } = require('../../../utils/patientFamily');
 
-const NUMERIC_MEDICINE_MIN = 3;
+const NUMERIC_MEDICINE_MIN = 1;
 const NUMERIC_MEDICINE_MAX = 200;
+const NUMERIC_MEDICINE_VALUE_RE = /^(\d{1,3})(?:\[(\d{1,4}(?:\s*,\s*\d{1,4})*)\])?([A-Za-z]*)(?:\[(\d{1,4}(?:\s*,\s*\d{1,4})*)\])?$/;
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -25,9 +26,30 @@ const toPositiveInt = (value) => {
     return parsed;
 };
 
+const normalizeNumericMedicinePower = (power) => {
+    if (!power) {
+        return null;
+    }
+
+    const parts = String(power)
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+            const parsed = Number(part);
+            return Number.isInteger(parsed) ? String(parsed) : null;
+        });
+
+    if (parts.length === 0 || parts.some((part) => part == null)) {
+        return null;
+    }
+
+    return parts.join(',');
+};
+
 const parseNumericMedicineValue = (rawValue) => {
     const source = String(rawValue ?? '').trim();
-    const match = source.match(/^(\d{1,3})(?:\[(\d{1,4})\])?$/);
+    const match = source.match(NUMERIC_MEDICINE_VALUE_RE);
     if (!match) {
         return null;
     }
@@ -37,11 +59,13 @@ const parseNumericMedicineValue = (rawValue) => {
         return null;
     }
 
-    const power = match[2] || null;
+    const power = normalizeNumericMedicinePower(match[2] || match[4] || null);
+    const alpha = String(match[3] || '').trim();
     return {
         medicineNo,
         power,
-        storedValue: power ? `${medicineNo}[${power}]` : String(medicineNo),
+        alpha: alpha || null,
+        storedValue: `${medicineNo}${power ? `[${power}]` : ''}${alpha}`,
     };
 };
 
@@ -1037,7 +1061,7 @@ const validateConsultationPayload = (body) => {
             const parsedNumericMedicine = parseNumericMedicineValue(rawMedicineValue);
 
             if (!parsedNumericMedicine) {
-                throw new AppError(`medications[${index}].medicine_value must be between 3 and 200 for NUMERIC type (optional [power] allowed, e.g. 12[14])`, 400);
+                throw new AppError(`medications[${index}].medicine_value must be between ${NUMERIC_MEDICINE_MIN} and ${NUMERIC_MEDICINE_MAX} for NUMERIC type (optional [power] and alpha allowed, e.g. 12[14], 2[5,12,34], 57q)`, 400);
             }
 
             medicineValue = parsedNumericMedicine.storedValue;

@@ -121,8 +121,9 @@ const DEFAULT_ALPHA_CODE_DEFINITIONS = [
     },
 ];
 
-const NUMERIC_MEDICINE_MIN = 3;
+const NUMERIC_MEDICINE_MIN = 1;
 const NUMERIC_MEDICINE_MAX = 200;
+const NUMERIC_MEDICINE_TOKEN_RE = /^(\d{1,3})(?:\[(\d{1,4}(?:\s*,\s*\d{1,4})*)\])?([A-Za-z]*)(?:\/([A-Za-z0-9]+))?$/;
 
 const createValidationError = (message) => new AppError(message, 400);
 
@@ -157,6 +158,59 @@ const safeJsonStringify = (value) => {
 };
 
 const cloneDeep = (value) => JSON.parse(JSON.stringify(value));
+
+const normalizeNumericMedicinePower = (power) => {
+    if (!power) {
+        return null;
+    }
+
+    const parts = String(power)
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+            const parsed = Number(part);
+            return Number.isInteger(parsed) ? String(parsed) : null;
+        });
+
+    if (parts.length === 0 || parts.some((part) => part == null)) {
+        return null;
+    }
+
+    return parts.join(',');
+};
+
+const splitQuickFormulaCommaItems = (source) => {
+    const items = [];
+    let current = '';
+    let bracketDepth = 0;
+
+    for (const ch of String(source || '')) {
+        if (ch === '[') {
+            bracketDepth += 1;
+        } else if (ch === ']') {
+            bracketDepth = Math.max(0, bracketDepth - 1);
+        }
+
+        if (ch === ',' && bracketDepth === 0) {
+            const trimmed = current.trim();
+            if (trimmed) {
+                items.push(trimmed);
+            }
+            current = '';
+            continue;
+        }
+
+        current += ch;
+    }
+
+    const trimmed = current.trim();
+    if (trimmed) {
+        items.push(trimmed);
+    }
+
+    return items;
+};
 
 const buildDefaultPayload = () => ({
     set_name: 'Default Quick Formula',
@@ -1035,10 +1089,7 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
         throw new AppError('Formula snapshot is not available for parsing', 409);
     }
 
-    const tokens = source
-        .split(',')
-        .map((token) => token.trim())
-        .filter(Boolean);
+    const tokens = splitQuickFormulaCommaItems(source);
 
     const entries = [];
     const warnings = [];
@@ -1072,18 +1123,19 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
     };
 
     tokens.forEach((token) => {
-        const match = token.match(/^(\d{1,3})(?:\[(\d{1,4})\])?([A-Za-z]*)(?:\/([A-Za-z0-9]+))?$/);
+        const match = token.match(NUMERIC_MEDICINE_TOKEN_RE);
         if (!match) {
             errors.push({
                 raw_token: token,
-                message: 'Token format is invalid. Use formats like 30, 12[14], 200/2, 84/20, 10/BD',
+                message: 'Token format is invalid. Use formats like 30, 12[14], 2[5,12,34], 200/2, 84/20, 10/BD',
             });
             return;
         }
 
         const medicineValueNumber = Number(match[1]);
-        const powerValue = match[2] || null;
-        const inlineAlphaCode = match[3] ? String(match[3]).trim().toUpperCase() : null;
+        const powerValue = normalizeNumericMedicinePower(match[2] || null);
+        const inlineAlphaRaw = match[3] ? String(match[3]).trim() : '';
+        const inlineAlphaCode = inlineAlphaRaw ? inlineAlphaRaw.toUpperCase() : null;
         if (!Number.isInteger(medicineValueNumber) || medicineValueNumber < NUMERIC_MEDICINE_MIN || medicineValueNumber > NUMERIC_MEDICINE_MAX) {
             errors.push({
                 raw_token: token,
@@ -1092,9 +1144,7 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
             return;
         }
 
-        const medicineValue = powerValue
-            ? `${medicineValueNumber}[${powerValue}]`
-            : String(medicineValueNumber);
+        const medicineValue = `${medicineValueNumber}${powerValue ? `[${powerValue}]` : ''}${inlineAlphaRaw}`;
         if (seenMedicineValues.has(String(medicineValueNumber))) {
             errors.push({
                 raw_token: token,
