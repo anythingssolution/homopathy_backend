@@ -22,7 +22,7 @@ const getRevenueByConsultantController = asyncHandler(async (req, res) => {
         success: true,
         message: 'Revenue by consultant report fetched successfully',
         data: report,
-        meta: buildReportResponseMeta({ filters, report }),
+        meta: buildReportResponseMeta({ filters, reports: report }),
     });
 });
 
@@ -34,7 +34,7 @@ const getRevenueByMedicineController = asyncHandler(async (req, res) => {
         success: true,
         message: 'Revenue by medicine report fetched successfully',
         data: report,
-        meta: buildReportResponseMeta({ filters, report }),
+        meta: buildReportResponseMeta({ filters, reports: report }),
     });
 });
 
