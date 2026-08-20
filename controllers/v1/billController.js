@@ -9,6 +9,7 @@ const {
     getAppointmentBillingSummaryByAppointmentId,
 } = require('../../services/billingService');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
+const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -266,6 +267,24 @@ const listBills = asyncHandler(async (req, res) => {
         },
     });
 
+    const { page, pageSize } = parsePagination(req.query);
+    const countRows = await query(
+        `SELECT COUNT(*) AS total
+         FROM tbl_bills b
+         LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
+         LEFT JOIN tbl_consultations c ON c.appointment_id = b.appointment_id
+         LEFT JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN tbl_patient_family_members fm
+           ON fm.id = a.fk_patient_family_member_id
+         ${whereClause}`,
+        params
+    );
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
     const rows = await query(
         `SELECT
             b.id AS bill_id,
@@ -316,7 +335,8 @@ const listBills = asyncHandler(async (req, res) => {
          LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
          LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
          ${whereClause}
-         ORDER BY b.created_at DESC, b.id DESC`,
+         ORDER BY b.created_at DESC, b.id DESC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );
 
@@ -325,7 +345,8 @@ const listBills = asyncHandler(async (req, res) => {
         message: 'Bills fetched successfully',
         data: rows.map((row) => decorateTokenFields(row)),
         meta: {
-            total: rows.length,
+            ...buildPaginationMeta(pagination),
+            total: pagination.total,
             filters: {
                 type,
                 payment_status: paymentStatus,
