@@ -29,6 +29,11 @@ const buildBillListQuery = ({ actor, filters }) => {
         params.push(filters.type);
     }
 
+    if (filters.paymentMode) {
+        conditions.push('EXISTS (SELECT 1 FROM tbl_bill_payments bp_filter WHERE bp_filter.bill_id = b.id AND UPPER(bp_filter.payment_mode) = ? AND bp_filter.status = \'SUCCESS\')');
+        params.push(filters.paymentMode);
+    }
+
     if (filters.appointmentId) {
         conditions.push('b.appointment_id = ?');
         params.push(filters.appointmentId);
@@ -218,6 +223,12 @@ const listBills = asyncHandler(async (req, res) => {
         : paymentStatusRaw === null
             ? null
             : undefined;
+    const rawPaymentMode = req.query.payment_mode ? String(req.query.payment_mode).trim().toUpperCase() : null;
+    const paymentMode = rawPaymentMode && ['CASH', 'ONLINE'].includes(rawPaymentMode)
+        ? rawPaymentMode
+        : rawPaymentMode === null
+            ? null
+            : undefined;
     const fromDate = req.query.from_date ? String(req.query.from_date).trim() : null;
     const toDate = req.query.to_date ? String(req.query.to_date).trim() : null;
     const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
@@ -231,6 +242,10 @@ const listBills = asyncHandler(async (req, res) => {
 
     if (paymentStatusRaw && paymentStatus === undefined) {
         throw new AppError('payment_status must be UNPAID, PAID or PARTIAL', 400);
+    }
+
+    if (rawPaymentMode && paymentMode === undefined) {
+        throw new AppError('payment_mode must be CASH or ONLINE', 400);
     }
 
     if (req.query.appointment_id !== undefined && !appointmentId) {
@@ -258,6 +273,7 @@ const listBills = asyncHandler(async (req, res) => {
         filters: {
             type,
             paymentStatus,
+            paymentMode,
             fromDate,
             toDate,
             patientSearch,
@@ -267,7 +283,7 @@ const listBills = asyncHandler(async (req, res) => {
         },
     });
 
-    const { page, pageSize } = parsePagination(req.query);
+    const { page, pageSize } = parsePagination(req.query, { defaultPageSize: 50, maxPageSize: 1000 });
     const countRows = await query(
         `SELECT COUNT(*) AS total
          FROM tbl_bills b
@@ -299,6 +315,11 @@ const listBills = asyncHandler(async (req, res) => {
             b.pending_amount,
             b.payment_status,
             b.payment_settlement_type,
+            COALESCE(
+                (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1),
+                NULL
+            ) AS payment_mode,
+            COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at) AS consultation_completed_at,
             b.status,
             b.remark,
             b.created_at,
@@ -335,7 +356,9 @@ const listBills = asyncHandler(async (req, res) => {
          LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
          LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
          ${whereClause}
-         ORDER BY b.created_at DESC, b.id DESC
+         ORDER BY 
+            COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, b.created_at) DESC,
+            b.id DESC
          LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );
@@ -350,6 +373,7 @@ const listBills = asyncHandler(async (req, res) => {
             filters: {
                 type,
                 payment_status: paymentStatus,
+                payment_mode: paymentMode,
                 from_date: fromDate,
                 to_date: toDate,
                 patient_search: patientSearch,

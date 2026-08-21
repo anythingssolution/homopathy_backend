@@ -8,6 +8,7 @@ const getRevenueByConsultantReport = async (filters) => {
             c.doctor_id,
             COALESCE(d.full_name, 'Unassigned Doctor') AS doctor_name,
             d.uuid AS doctor_uuid,
+            COALESCE(UPPER(bp.payment_mode), 'UNPAID') AS payment_mode,
             COUNT(DISTINCT b.id) AS total_bills,
             COUNT(DISTINCT c.id) AS total_consultations,
             COALESCE(SUM(CASE WHEN b.bill_type = 'CONSULTATION' THEN b.total_amount ELSE 0 END), 0) AS consultation_revenue,
@@ -24,14 +25,14 @@ const getRevenueByConsultantReport = async (filters) => {
                 ELSE 'evening'
             END AS session_type
          FROM tbl_bills b
+         LEFT JOIN tbl_bill_payments bp ON bp.bill_id = b.id AND bp.status = 'SUCCESS'
          LEFT JOIN tbl_consultations c ON (c.id = b.consultation_id OR c.appointment_id = b.appointment_id)
          LEFT JOIN master_users d ON d.id = c.doctor_id
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN master_slots s ON s.id = a.fk_slot_id
          ${whereClause}
            AND b.status = 'ACTIVE'
-           AND c.doctor_id IS NOT NULL
-         GROUP BY c.doctor_id, d.full_name, d.uuid, session_type
+         GROUP BY c.doctor_id, d.full_name, d.uuid, payment_mode, session_type
          ORDER BY total_gross_revenue DESC, doctor_name ASC`,
         params
     );

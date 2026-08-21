@@ -6,6 +6,7 @@ const getRevenueByMedicineReport = async (filters) => {
     const rows = await query(
         `SELECT
             bi.item_name AS medicine_name,
+            COALESCE(UPPER(bp.payment_mode), 'UNPAID') AS payment_mode,
             COUNT(DISTINCT bi.bill_id) AS total_bills,
             COALESCE(SUM(bi.quantity), 0) AS total_quantity_sold,
             ROUND(AVG(bi.unit_price), 2) AS average_unit_price,
@@ -18,12 +19,13 @@ const getRevenueByMedicineReport = async (filters) => {
             END AS session_type
          FROM tbl_bill_items bi
          JOIN tbl_bills b ON b.id = bi.bill_id
+         LEFT JOIN tbl_bill_payments bp ON bp.bill_id = b.id AND bp.status = 'SUCCESS'
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN master_slots s ON s.id = a.fk_slot_id
          ${whereClause}
            AND b.status = 'ACTIVE'
            AND (UPPER(bi.item_type) LIKE '%MEDIC%' OR (bi.item_type IS NOT NULL AND UPPER(bi.item_type) NOT IN ('TEST')))
-         GROUP BY bi.item_name, session_type
+         GROUP BY bi.item_name, payment_mode, session_type
          ORDER BY gross_revenue DESC, total_quantity_sold DESC`,
         params
     );
