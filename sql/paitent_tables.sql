@@ -2,11 +2,17 @@
 CREATE TABLE IF NOT EXISTS `master_users` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `uuid` CHAR(36) NOT NULL,
+  `clinic_patient_no` VARCHAR(50) NULL,
   `full_name` VARCHAR(100) NOT NULL,
   `age` TINYINT UNSIGNED NOT NULL DEFAULT 18,
   `gender` ENUM('male', 'female', 'other') NOT NULL DEFAULT 'other',
   `email` VARCHAR(255) NULL,
   `address` TEXT NULL,
+  `area_name` VARCHAR(150) NULL,
+  `ward_no` VARCHAR(50) NULL,
+  `vidhan_sabha` VARCHAR(150) NULL,
+  `pincode` VARCHAR(10) NULL,
+  `city` VARCHAR(100) NULL,
   `description` TEXT NULL,
   `mobile_no` VARCHAR(15) NOT NULL,
   `password` VARCHAR(255) NOT NULL, -- Hashed password
@@ -21,6 +27,10 @@ CREATE TABLE IF NOT EXISTS `master_users` (
   `updated_ip` VARCHAR(45) NULL,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `idx_patient_uuid` (`uuid`),
+  INDEX `idx_master_users_clinic_patient_no` (`clinic_patient_no`),
+  INDEX `idx_master_users_area_name` (`area_name`),
+  INDEX `idx_master_users_pincode` (`pincode`),
+  INDEX `idx_master_users_city` (`city`),
   UNIQUE INDEX `idx_patient_mobile` (`mobile_no`),
   UNIQUE INDEX `idx_patient_email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

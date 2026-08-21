@@ -1,6 +1,17 @@
+const bcrypt = require('bcryptjs');
+const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
+
+const PATIENT_ROLE = 'PAT';
+
+const formatPatientRegistrationDate = (date = new Date()) => {
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = String(date.getFullYear());
+    return `${day}${month}${year}`;
+};
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -13,6 +24,41 @@ const toPositiveInt = (value) => {
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
 const validateMobile = (mobileNo) => /^[6-9]\d{9}$/.test(String(mobileNo || '').trim());
 const validateEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
+
+const generateTodayPatientUuid = async (connection, date = new Date()) => {
+    const datePart = formatPatientRegistrationDate(date);
+    const prefix = `PAT${datePart}`;
+    const lockName = `patient_uuid_${datePart}`;
+
+    const [lockRows] = await connection.execute('SELECT GET_LOCK(?, 10) AS acquired_lock', [lockName]);
+
+    if (!lockRows[0]?.acquired_lock) {
+        throw new AppError('Unable to generate patient ID right now. Please try again.', 503);
+    }
+
+    try {
+        const [existingRows] = await connection.execute(
+            `SELECT uuid
+             FROM master_users
+             WHERE uuid LIKE ?
+             ORDER BY uuid DESC
+             LIMIT 1`,
+            [`${prefix}%`]
+        );
+
+        const lastUuid = existingRows[0]?.uuid || null;
+        const lastSerial = lastUuid ? Number(String(lastUuid).slice(prefix.length)) : 0;
+        const nextSerial = lastSerial + 1;
+
+        if (nextSerial > 9999) {
+            throw new AppError('Daily patient registration limit exceeded for PAT ID generation', 409);
+        }
+
+        return `${prefix}${String(nextSerial).padStart(4, '0')}`;
+    } finally {
+        await connection.execute('DO RELEASE_LOCK(?)', [lockName]);
+    }
+};
 
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -31,6 +77,10 @@ const normalizeCreatePayload = (body = {}) => {
     const mobileNo = String(body.mobile_no || '').trim();
     const emailRaw = body.email !== undefined && body.email !== null ? String(body.email).trim() : '';
     const addressRaw = body.address !== undefined && body.address !== null ? String(body.address).trim() : '';
+    const wardNoRaw = body.ward_no !== undefined && body.ward_no !== null ? String(body.ward_no).trim() : '';
+    const vidhanSabhaRaw = body.vidhan_sabha !== undefined && body.vidhan_sabha !== null ? String(body.vidhan_sabha).trim() : '';
+    const pincodeRaw = body.pincode !== undefined && body.pincode !== null ? String(body.pincode).trim() : '';
+    const cityRaw = body.city !== undefined && body.city !== null ? String(body.city).trim() : '';
     const descriptionRaw =
         body.description !== undefined && body.description !== null ? String(body.description).trim() : '';
 
@@ -58,6 +108,18 @@ const normalizeCreatePayload = (body = {}) => {
         throw new AppError('email must be a valid email address', 400);
     }
 
+    if (pincodeRaw && !/^\d{6}$/.test(pincodeRaw)) {
+        throw new AppError('pincode must be a valid 6-digit number', 400);
+    }
+
+    const combinedAddress = [
+        addressRaw || null,
+        wardNoRaw ? `Ward ${wardNoRaw}` : null,
+        vidhanSabhaRaw || null,
+        pincodeRaw || null,
+        cityRaw || null,
+    ].filter(Boolean).join(', ');
+
     return {
         full_name: fullName,
         patient_id: patientIdRaw || null,
@@ -65,59 +127,20 @@ const normalizeCreatePayload = (body = {}) => {
         gender,
         mobile_no: mobileNo,
         email: emailRaw || null,
-        address: addressRaw || null,
+        address: combinedAddress || null,
+        area_name: addressRaw || null,
+        ward_no: wardNoRaw || null,
+        vidhan_sabha: vidhanSabhaRaw || null,
+        pincode: pincodeRaw || null,
+        city: cityRaw || null,
         description: descriptionRaw || null,
     };
-};
-
-const assertMobileAvailable = async (connection, mobileNo) => {
-    const [masterRows] = await connection.execute(
-        `SELECT id
-         FROM master_users
-         WHERE mobile_no = ?
-         LIMIT 1`,
-        [mobileNo]
-    );
-
-    if (masterRows.length > 0) {
-        throw new AppError('Mobile number already registered in the system for an existing user', 409);
-    }
-
-    const [previousRows] = await connection.execute(
-        `SELECT id
-         FROM tbl_previous_manual_patients
-         WHERE mobile_no = ?
-         LIMIT 1`,
-        [mobileNo]
-    );
-
-    if (previousRows.length > 0) {
-        throw new AppError('Mobile number already exists in previous manual patient records', 409);
-    }
-};
-
-const assertPatientIdAvailable = async (connection, patientId) => {
-    if (!patientId) return;
-
-    const [previousRows] = await connection.execute(
-        `SELECT id
-         FROM tbl_previous_manual_patients
-         WHERE patient_id = ?
-         LIMIT 1`,
-        [patientId]
-    );
-
-    if (previousRows.length > 0) {
-        throw new AppError('Patient ID already exists in previous manual patient records', 409);
-    }
 };
 
 const createPreviousManualPatient = asyncHandler(async (req, res) => {
     const payload = normalizeCreatePayload(req.body);
     const actorIp = getClientIp(req);
     const actorRole = req.user?.role_code || req.user?.role || null;
-    const actorUserAgent = req.headers['user-agent'] || null;
-    const branchId = req.selectedBranchId || null;
 
     if (!req.user?.id) {
         throw new AppError('Authenticated user is required', 401);
@@ -127,73 +150,125 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
         throw new AppError('Unable to determine actor role for audit log', 400);
     }
 
-    const created = await withTransaction(async (connection) => {
-        await assertMobileAvailable(connection, payload.mobile_no);
-        await assertPatientIdAvailable(connection, payload.patient_id);
+    if (!payload.patient_id) {
+        throw new AppError('patient_id is required for previous patient registration', 400);
+    }
 
-        const [insertResult] = await connection.execute(
-            `INSERT INTO tbl_previous_manual_patients
-             (full_name, patient_id, age, gender, mobile_no, email, address, description, fk_branch_id,
-              entered_by_user_id, entered_by_role, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-            [
-                payload.full_name,
-                payload.patient_id,
-                payload.age,
-                payload.gender,
-                payload.mobile_no,
-                payload.email,
-                payload.address,
-                payload.description,
-                branchId,
-                req.user.id,
-                actorRole,
-                req.user.id,
-                req.user.id,
-                actorIp,
-                actorIp,
-            ]
+    const saved = await withTransaction(async (connection) => {
+        const [matchedRows] = await connection.execute(
+            `SELECT id, role
+             FROM master_users
+             WHERE mobile_no = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [payload.mobile_no]
         );
 
-        const previousPatientId = insertResult.insertId;
+        let patientId;
+        let action;
 
-        await connection.execute(
-            `INSERT INTO log_previous_manual_patient_entries
-             (previous_patient_id, action, entered_by_user_id, entered_by_role, ip_address, user_agent, payload_json)
-             VALUES (?, 'CREATE', ?, ?, ?, ?, ?)`,
-            [
-                previousPatientId,
-                req.user.id,
-                actorRole,
-                actorIp,
-                actorUserAgent,
-                JSON.stringify(payload),
-            ]
-        );
+        if (matchedRows.length > 0) {
+            const matched = matchedRows[0];
+            if (String(matched.role || '').toUpperCase() !== PATIENT_ROLE) {
+                throw new AppError('Mobile number already belongs to a non-patient user', 409);
+            }
+
+            await connection.execute(
+                `UPDATE master_users
+                 SET clinic_patient_no = ?,
+                     area_name = ?,
+                     ward_no = ?,
+                     vidhan_sabha = ?,
+                     pincode = ?,
+                     city = ?,
+                     address = ?,
+                     updated_by = ?,
+                     updated_ip = ?
+                 WHERE id = ?`,
+                [
+                    payload.patient_id,
+                    payload.area_name,
+                    payload.ward_no,
+                    payload.vidhan_sabha,
+                    payload.pincode,
+                    payload.city,
+                    payload.address,
+                    req.user.id,
+                    actorIp,
+                    matched.id,
+                ]
+            );
+
+            patientId = matched.id;
+            action = 'LINK_EXISTING';
+        } else {
+            const generatedPatientUuid = await generateTodayPatientUuid(connection);
+            const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
+
+            const [insertResult] = await connection.execute(
+                `INSERT INTO master_users
+                 (uuid, clinic_patient_no, full_name, age, gender, email, address, area_name, ward_no,
+                  vidhan_sabha, pincode, city, description, mobile_no, password,
+                  role, is_active, created_by, updated_by, created_ip, updated_ip)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                [
+                    generatedPatientUuid,
+                    payload.patient_id,
+                    payload.full_name,
+                    payload.age,
+                    payload.gender,
+                    payload.email,
+                    payload.address,
+                    payload.area_name,
+                    payload.ward_no,
+                    payload.vidhan_sabha,
+                    payload.pincode,
+                    payload.city,
+                    payload.description,
+                    payload.mobile_no,
+                    generatedPasswordHash,
+                    PATIENT_ROLE,
+                    req.user.id,
+                    req.user.id,
+                    actorIp,
+                    actorIp,
+                ]
+            );
+
+            patientId = insertResult.insertId;
+            action = 'CREATE_PATIENT';
+        }
 
         const [rows] = await connection.execute(
             `SELECT
-                p.id AS previous_patient_id,
-                p.full_name,
-                p.patient_id,
-                p.age,
-                p.gender,
-                p.mobile_no,
-                p.email,
-                p.address,
-                p.description,
-                p.fk_branch_id,
-                p.entered_by_user_id,
-                p.entered_by_role,
+                u.id AS previous_patient_id,
+                u.id AS linked_patient_id,
+                u.full_name,
+                u.clinic_patient_no AS patient_id,
+                u.age,
+                u.gender,
+                u.mobile_no,
+                u.email,
+                u.address,
+                u.area_name,
+                u.ward_no,
+                u.vidhan_sabha,
+                u.pincode,
+                u.city,
+                u.description,
+                NULL AS fk_branch_id,
+                COALESCE(u.updated_by, u.created_by) AS entered_by_user_id,
+                ? AS entered_by_role,
                 actor.full_name AS entered_by_name,
-                p.is_active,
-                p.created_at,
-                p.updated_at
-             FROM tbl_previous_manual_patients p
-             LEFT JOIN master_users actor ON actor.id = p.entered_by_user_id
-             WHERE p.id = ?
+                u.is_active,
+                u.updated_at AS created_at,
+                u.updated_at,
+                ? AS import_action
+             FROM master_users u
+             LEFT JOIN master_users actor ON actor.id = COALESCE(u.updated_by, u.created_by)
+             WHERE u.id = ?
              LIMIT 1`,
-            [previousPatientId]
+            [actorRole, action, patientId]
         );
 
         return rows[0];
@@ -201,8 +276,10 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
 
     return res.status(201).json({
         success: true,
-        message: 'Previous patient recorded successfully',
-        data: created,
+        message: saved.import_action === 'LINK_EXISTING'
+            ? 'Previous patient ID linked to existing patient successfully'
+            : 'Previous patient registered successfully',
+        data: saved,
     });
 });
 
@@ -213,14 +290,14 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
     const pageSize = Math.min(requestedPageSize, 100);
     const offset = (page - 1) * pageSize;
 
-    const conditions = ['p.is_active = 1'];
+    const conditions = ["u.role = 'PAT'", 'u.is_active = 1', 'u.clinic_patient_no IS NOT NULL'];
     const params = [];
 
     if (search) {
         conditions.push(
-            '(p.full_name LIKE ? OR p.patient_id LIKE ? OR p.mobile_no LIKE ? OR p.email LIKE ?)'
+            '(u.full_name LIKE ? OR u.clinic_patient_no LIKE ? OR u.mobile_no LIKE ? OR u.email LIKE ? OR u.uuid LIKE ?)'
         );
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -228,32 +305,38 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
     const [countRows, rows] = await Promise.all([
         query(
             `SELECT COUNT(*) AS total
-             FROM tbl_previous_manual_patients p
+             FROM master_users u
              ${whereClause}`,
             params
         ),
         query(
             `SELECT
-                p.id AS previous_patient_id,
-                p.full_name,
-                p.patient_id,
-                p.age,
-                p.gender,
-                p.mobile_no,
-                p.email,
-                p.address,
-                p.description,
-                p.fk_branch_id,
-                p.entered_by_user_id,
-                p.entered_by_role,
+                u.id AS previous_patient_id,
+                u.id AS linked_patient_id,
+                u.full_name,
+                u.clinic_patient_no AS patient_id,
+                u.age,
+                u.gender,
+                u.mobile_no,
+                u.email,
+                u.address,
+                u.area_name,
+                u.ward_no,
+                u.vidhan_sabha,
+                u.pincode,
+                u.city,
+                u.description,
+                NULL AS fk_branch_id,
+                COALESCE(u.updated_by, u.created_by) AS entered_by_user_id,
+                actor.role AS entered_by_role,
                 actor.full_name AS entered_by_name,
-                p.is_active,
-                p.created_at,
-                p.updated_at
-             FROM tbl_previous_manual_patients p
-             LEFT JOIN master_users actor ON actor.id = p.entered_by_user_id
+                u.is_active,
+                u.updated_at AS created_at,
+                u.updated_at
+             FROM master_users u
+             LEFT JOIN master_users actor ON actor.id = COALESCE(u.updated_by, u.created_by)
              ${whereClause}
-             ORDER BY p.created_at DESC, p.id DESC
+             ORDER BY u.updated_at DESC, u.id DESC
              LIMIT ${pageSize} OFFSET ${offset}`,
             params
         ),
@@ -283,8 +366,10 @@ const getPreviousManualPatientEntryLogs = asyncHandler(async (req, res) => {
 
     const patients = await query(
         `SELECT id
-         FROM tbl_previous_manual_patients
+         FROM master_users
          WHERE id = ?
+           AND role = 'PAT'
+           AND clinic_patient_no IS NOT NULL
          LIMIT 1`,
         [previousPatientId]
     );
@@ -293,46 +378,13 @@ const getPreviousManualPatientEntryLogs = asyncHandler(async (req, res) => {
         throw new AppError('Previous patient not found', 404);
     }
 
-    const logs = await query(
-        `SELECT
-            l.id,
-            l.previous_patient_id,
-            l.action,
-            l.entered_by_user_id,
-            l.entered_by_role,
-            actor.full_name AS entered_by_name,
-            l.ip_address,
-            l.payload_json,
-            l.created_at
-         FROM log_previous_manual_patient_entries l
-         LEFT JOIN master_users actor ON actor.id = l.entered_by_user_id
-         WHERE l.previous_patient_id = ?
-         ORDER BY l.created_at DESC, l.id DESC`,
-        [previousPatientId]
-    );
-
-    const data = logs.map((row) => ({
-        ...row,
-        payload:
-            typeof row.payload_json === 'string'
-                ? (() => {
-                      try {
-                          return JSON.parse(row.payload_json);
-                      } catch {
-                          return null;
-                      }
-                  })()
-                : row.payload_json || null,
-        payload_json: undefined,
-    }));
-
     return res.status(200).json({
         success: true,
-        message: 'Previous patient entry logs fetched successfully',
-        data,
+        message: 'Previous patient entry logs are not enabled for this flow',
+        data: [],
         meta: {
             previous_patient_id: previousPatientId,
-            total: data.length,
+            total: 0,
         },
     });
 });

@@ -635,6 +635,10 @@ const registerUser = asyncHandler(async (req, res) => {
         gender,
         email = null,
         address,
+        ward_no,
+        vidhan_sabha,
+        pincode,
+        city,
         mobile_no,
         password,
         registration_token,
@@ -685,7 +689,31 @@ const registerUser = asyncHandler(async (req, res) => {
     const ip = getClientIp(req);
     const normalizedMobileNo = String(mobile_no).trim();
     const normalizedEmail = normalizeOptionalText(email);
-    const normalizedAddress = normalizeOptionalText(address);
+    const normalizedArea = normalizeOptionalText(address);
+    const normalizedWardNo = normalizeOptionalText(ward_no);
+    const normalizedVidhanSabha = normalizeOptionalText(vidhan_sabha);
+    const normalizedPincode = normalizeOptionalText(pincode);
+    const normalizedCity = normalizeOptionalText(city);
+
+    if (!normalizedArea) {
+        throw new AppError('area / mohalla / colony is required', 400);
+    }
+
+    if (!normalizedPincode || !/^\d{6}$/.test(normalizedPincode)) {
+        throw new AppError('pincode must be a valid 6-digit number', 400);
+    }
+
+    if (!normalizedCity) {
+        throw new AppError('city is required', 400);
+    }
+
+    const normalizedAddress = [
+        normalizedArea,
+        normalizedWardNo ? `Ward ${normalizedWardNo}` : null,
+        normalizedVidhanSabha,
+        normalizedPincode,
+        normalizedCity,
+    ].filter(Boolean).join(', ');
 
     const result = await withTransaction(async (connection) => {
         const [existingPatients] = await connection.execute(
@@ -712,8 +740,8 @@ const registerUser = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, gender, email, address, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
+             (uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
             [
                 patientUuid,
                 String(full_name).trim(),
@@ -721,6 +749,11 @@ const registerUser = asyncHandler(async (req, res) => {
                 String(gender).toLowerCase(),
                 normalizedEmail,
                 normalizedAddress,
+                normalizedArea,
+                normalizedWardNo,
+                normalizedVidhanSabha,
+                normalizedPincode,
+                normalizedCity,
                 normalizedMobileNo,
                 hashedPassword,
                 ip,
@@ -732,7 +765,7 @@ const registerUser = asyncHandler(async (req, res) => {
     });
 
     const patientRows = await query(
-        `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, role,
+        `SELECT id, uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
          FROM master_users
