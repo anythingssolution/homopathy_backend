@@ -173,25 +173,11 @@ const getRowValue = (row, headerMap, key) => {
 };
 
 const buildDedupeKey = (sourceType, row) => {
-    if (sourceType === 'REGULAR_PRODUCT') {
-        return [
-            row.normalized_product_name,
-            normalizeValue(row.packing),
-            normalizeValue(row.product_type),
-        ].join('|');
-    }
-
-    if (sourceType === 'RADIENT_PHARMA') {
-        return [
-            row.normalized_product_name,
-            normalizeValue(row.size_or_weight),
-            normalizeValue(row.category),
-        ].join('|');
-    }
-
+    // Standard dedupe key combination: product_name + packing + size_or_weight
     return [
-        normalizeValue(row.category),
         row.normalized_product_name,
+        normalizeValue(row.packing),
+        normalizeValue(row.size_or_weight),
     ].join('|');
 };
 
@@ -214,7 +200,7 @@ const parseImportRows = (sheet) => {
 
     const parsedRows = [];
     const skippedRows = [];
-    const currentImportProductNames = new Map();
+    const currentImportKeys = new Map();
 
     sheet.eachRow((row, rowNumber) => {
         if (rowNumber === 1) {
@@ -281,16 +267,22 @@ const parseImportRows = (sheet) => {
             return;
         }
 
-        if (currentImportProductNames.has(normalizedProductName)) {
+        const compositeKey = [
+            normalizedProductName,
+            normalizeValue(rowPayload.packing),
+            normalizeValue(rowPayload.size_or_weight),
+        ].join('|');
+
+        if (currentImportKeys.has(compositeKey)) {
             skippedRows.push({
                 row_number: rowNumber,
                 product_name: productName,
-                reason: `Duplicate product_name in current import; already present at row ${currentImportProductNames.get(normalizedProductName)}`,
+                reason: `Duplicate combination of product_name, packing, and size_or_weight in current import; already present at row ${currentImportKeys.get(compositeKey)}`,
             });
             return;
         }
 
-        currentImportProductNames.set(normalizedProductName, rowNumber);
+        currentImportKeys.set(compositeKey, rowNumber);
         rowPayload.dedupe_key = buildDedupeKey(sourceType, rowPayload);
         parsedRows.push(rowPayload);
     });
@@ -301,20 +293,20 @@ const parseImportRows = (sheet) => {
     };
 };
 
-const getExistingProductNames = async (normalizedProductNames) => {
+const getExistingProductsByName = async (normalizedProductNames) => {
     if (normalizedProductNames.length === 0) {
-        return new Map();
+        return [];
     }
 
     const placeholders = normalizedProductNames.map(() => '?').join(', ');
     const rows = await query(
-        `SELECT id, product_name, normalized_product_name
+        `SELECT id, product_name, normalized_product_name, packing, size_or_weight, dedupe_key
          FROM master_medical_products
          WHERE normalized_product_name IN (${placeholders})`,
         normalizedProductNames
     );
 
-    return new Map(rows.map((row) => [row.normalized_product_name, row]));
+    return rows;
 };
 
 const upsertMedicineMaster = async (connection, row) => {
@@ -344,20 +336,31 @@ const importMedicalProductsFromWorkbook = async (buffer) => {
     }
 
     const parsed = parseImportRows(sheet);
-    const existingProducts = await getExistingProductNames([
+    const existingProducts = await getExistingProductsByName([
         ...new Set(parsed.rows.map((row) => row.normalized_product_name)),
     ]);
+
+    const existingKeys = new Set(
+        existingProducts.map((p) =>
+            [p.normalized_product_name, normalizeValue(p.packing), normalizeValue(p.size_or_weight)].join('|')
+        )
+    );
 
     const insertableRows = [];
     const skippedRows = [...parsed.skippedRows];
 
     parsed.rows.forEach((row) => {
-        const existingProduct = existingProducts.get(row.normalized_product_name);
-        if (existingProduct) {
+        const rowKey = [
+            row.normalized_product_name,
+            normalizeValue(row.packing),
+            normalizeValue(row.size_or_weight),
+        ].join('|');
+
+        if (existingKeys.has(rowKey)) {
             skippedRows.push({
                 row_number: row.row_number,
                 product_name: row.product_name,
-                reason: `Product name already exists in master_medical_products as "${existingProduct.product_name}"`,
+                reason: `Product with same product_name, packing, and size_or_weight already exists in master_medical_products`,
             });
             return;
         }
