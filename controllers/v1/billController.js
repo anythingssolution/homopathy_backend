@@ -50,12 +50,12 @@ const buildBillListQuery = ({ actor, filters }) => {
     }
 
     if (filters.fromDate) {
-        conditions.push('a.appointment_date >= ?');
+        conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) >= ?');
         params.push(filters.fromDate);
     }
 
     if (filters.toDate) {
-        conditions.push('a.appointment_date <= ?');
+        conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) <= ?');
         params.push(filters.toDate);
     }
 
@@ -289,7 +289,7 @@ const listBills = asyncHandler(async (req, res) => {
          FROM tbl_bills b
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN tbl_consultations c ON c.appointment_id = b.appointment_id
-         LEFT JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
          LEFT JOIN tbl_patient_family_members fm
            ON fm.id = a.fk_patient_family_member_id
          ${whereClause}`,
@@ -319,13 +319,18 @@ const listBills = asyncHandler(async (req, res) => {
                 (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1),
                 NULL
             ) AS payment_mode,
-            COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at) AS consultation_completed_at,
+            CASE
+                WHEN b.appointment_id IS NULL THEN b.created_at
+                ELSE COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at)
+            END AS consultation_completed_at,
             b.status,
             b.remark,
+            b.delivery_mode,
+            b.delivery_details_json,
             b.created_at,
             b.updated_at,
             a.auid,
-            a.appointment_date,
+            COALESCE(a.appointment_date, DATE(b.created_at)) AS appointment_date,
             a.current_token_number AS token_number,
             s.slot_name,
             COALESCE(sto.override_start_time, s.start_time) AS start_time,
@@ -350,14 +355,17 @@ const listBills = asyncHandler(async (req, res) => {
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
          LEFT JOIN tbl_consultations c ON c.appointment_id = b.appointment_id
-         LEFT JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
          LEFT JOIN tbl_patient_family_members fm
            ON fm.id = a.fk_patient_family_member_id
          LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
          LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
          ${whereClause}
          ORDER BY 
-            COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, b.created_at) DESC,
+            CASE
+                WHEN b.appointment_id IS NULL THEN b.created_at
+                ELSE COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, b.created_at)
+            END DESC,
             b.id DESC
          LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params

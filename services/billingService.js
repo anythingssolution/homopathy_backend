@@ -326,10 +326,12 @@ const getBillSummaryById = async (billId) => {
             b.payment_settlement_type,
             b.status,
             b.remark,
+            b.delivery_mode,
+            b.delivery_details_json,
             b.created_at,
             b.updated_at,
             a.auid,
-            a.appointment_date,
+            COALESCE(a.appointment_date, DATE(b.created_at)) AS appointment_date,
             a.current_token_number AS token_number,
             s.slot_name,
             COALESCE(sto.override_start_time, s.start_time) AS start_time,
@@ -351,7 +353,7 @@ const getBillSummaryById = async (billId) => {
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
          LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
-         LEFT JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
          LEFT JOIN tbl_patient_family_members fm
            ON fm.id = a.fk_patient_family_member_id
          LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
@@ -463,7 +465,7 @@ const getAppointmentBillingSummaryByAppointmentId = async (appointmentId) => {
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
          LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
-         LEFT JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
          LEFT JOIN tbl_patient_family_members fm
            ON fm.id = a.fk_patient_family_member_id
          LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
@@ -828,6 +830,101 @@ const createMedicationBillFromConsultation = async ({
     };
 };
 
+const createRepeatMedicineBill = async ({
+    connection,
+    patientId,
+    branchId,
+    sourceConsultationId,
+    prescribedItems,
+    additionalItems = [],
+    courierCharge = 0,
+    deliveryMode = 'HAND_DELIVERY',
+    deliveryDetails = null,
+    createdByUserId,
+    remark = null,
+}) => {
+    const normalizedPrescribedItems = Array.isArray(prescribedItems) ? prescribedItems : [];
+    const normalizedAdditionalItems = Array.isArray(additionalItems) ? additionalItems : [];
+    const normalizedCourierCharge = normalizeAmount(courierCharge) ?? 0;
+    const totalAmount = normalizeAmount(
+        normalizedPrescribedItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+        + normalizedAdditionalItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+        + normalizedCourierCharge
+    ) ?? 0;
+
+    if (totalAmount <= 0) {
+        throw new AppError('Repeat medicine total amount must be greater than 0', 400);
+    }
+
+    const billNumber = await generateBillNumber(connection);
+    const extraReasonText = normalizedAdditionalItems
+        .map((item) => `${item.medicine_value}: ${item.reason}`)
+        .join('; ');
+    const billRemark = [
+        'Repeat Medicine',
+        remark,
+        extraReasonText ? `Medical Added Reason: ${extraReasonText}` : null,
+        deliveryMode === 'COURIER' ? 'Delivery: Courier' : 'Delivery: Hand',
+    ].filter(Boolean).join(' | ').slice(0, 255);
+    const detailsJson = deliveryDetails ? JSON.stringify(deliveryDetails).slice(0, 2000) : null;
+
+    const [insertResult] = await connection.execute(
+        `INSERT INTO tbl_bills
+         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, total_amount, paid_amount, pending_amount, payment_status, status, remark, delivery_mode, delivery_details_json, created_by, updated_by)
+         VALUES (?, 'MEDICATION', NULL, ?, ?, ?, ?, 0, ?, 'UNPAID', 'ACTIVE', ?, ?, ?, ?, ?)`,
+        [
+            billNumber,
+            sourceConsultationId,
+            patientId,
+            branchId,
+            totalAmount,
+            totalAmount,
+            billRemark,
+            deliveryMode,
+            detailsJson,
+            createdByUserId,
+            createdByUserId,
+        ]
+    );
+
+    const billId = insertResult.insertId;
+
+    for (const item of normalizedPrescribedItems) {
+        const itemAmount = normalizeAmount(item.amount) ?? 0;
+        await connection.execute(
+            `INSERT INTO tbl_bill_items
+             (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
+             VALUES (?, ?, NULL, 'MEDICATION', ?, 1, ?, ?)`,
+            [billId, item.consultation_medication_id, item.medicine_value, itemAmount, itemAmount]
+        );
+    }
+
+    for (const item of normalizedAdditionalItems) {
+        const itemAmount = normalizeAmount(item.amount) ?? 0;
+        const itemName = `${item.medicine_value} (Reason: ${item.reason})`.slice(0, 255);
+        await connection.execute(
+            `INSERT INTO tbl_bill_items
+             (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
+             VALUES (?, NULL, NULL, 'ADDITIONAL_MEDICATION', ?, 1, ?, ?)`,
+            [billId, itemName, itemAmount, itemAmount]
+        );
+    }
+
+    if (normalizedCourierCharge > 0) {
+        await connection.execute(
+            `INSERT INTO tbl_bill_items
+             (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
+             VALUES (?, NULL, NULL, 'ADDITIONAL_MEDICATION', 'Courier Charge', 1, ?, ?)`,
+            [billId, normalizedCourierCharge, normalizedCourierCharge]
+        );
+    }
+
+    return {
+        billId,
+        created: true,
+    };
+};
+
 module.exports = {
     PAYMENT_MODES,
     PAYMENT_SETTLEMENT_TYPES,
@@ -836,6 +933,7 @@ module.exports = {
     collectConsultationBillPayment,
     collectMedicationBillPayment,
     createMedicationBillFromConsultation,
+    createRepeatMedicineBill,
     getBillSummaryById,
     getBillDetailById,
     getAppointmentBillingSummaryByAppointmentId,
