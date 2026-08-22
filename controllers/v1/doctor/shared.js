@@ -846,6 +846,13 @@ const getConsultationHistoryRows = async ({
         pageSize,
         total: Number(countRows[0]?.total || 0),
     });
+    const orderByClause = status === 'Completed'
+        ? `ORDER BY a.actual_completed_at DESC,
+             a.appointment_date DESC,
+             COALESCE(sto.override_start_time, s.start_time) ASC,
+             a.current_token_number ASC,
+             a.appointment_id DESC`
+        : 'ORDER BY a.appointment_date DESC, a.appointment_id DESC';
 
     const rows = await query(
         `SELECT
@@ -893,7 +900,7 @@ const getConsultationHistoryRows = async ({
             a.updated_at AS appointment_updated_at,
             ${getAppointmentPatientColumns()}
          ${fromSql}
-         ORDER BY a.appointment_date DESC, a.appointment_id DESC
+         ${orderByClause}
          LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );

@@ -321,7 +321,7 @@ const listBills = asyncHandler(async (req, res) => {
             ) AS payment_mode,
             CASE
                 WHEN b.appointment_id IS NULL THEN b.created_at
-                ELSE COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at)
+                ELSE a.actual_completed_at
             END AS consultation_completed_at,
             b.status,
             b.remark,
@@ -364,8 +364,11 @@ const listBills = asyncHandler(async (req, res) => {
          ORDER BY 
             CASE
                 WHEN b.appointment_id IS NULL THEN b.created_at
-                ELSE COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, b.created_at)
+                ELSE a.actual_completed_at
             END DESC,
+            COALESCE(a.appointment_date, DATE(b.created_at)) DESC,
+            COALESCE(sto.override_start_time, s.start_time) ASC,
+            a.current_token_number ASC,
             b.id DESC
          LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
