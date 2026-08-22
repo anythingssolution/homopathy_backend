@@ -116,8 +116,8 @@ const normalizeProductPayload = (payload) => {
     return normalizedProduct;
 };
 
-const assertUniqueProductName = async (normalizedProductName, excludeId = null) => {
-    const params = [normalizedProductName];
+const assertUniqueProductVariant = async (product, excludeId = null) => {
+    const params = [product.source_type, product.dedupe_key];
     let excludeCondition = '';
 
     if (excludeId) {
@@ -126,15 +126,17 @@ const assertUniqueProductName = async (normalizedProductName, excludeId = null) 
     }
 
     const rows = await query(
-        `SELECT id, product_name
+        `SELECT id, product_name, packing, size_or_weight, source_type
          FROM master_medical_products
-         WHERE normalized_product_name = ?${excludeCondition}
+         WHERE source_type = ?
+           AND dedupe_key = ?${excludeCondition}
          LIMIT 1`,
         params
     );
 
     if (rows.length > 0) {
-        throw new AppError(`Product name already exists as "${rows[0].product_name}"`, 409);
+        const variant = rows[0].packing || rows[0].size_or_weight || rows[0].source_type;
+        throw new AppError(`Product variant already exists as "${rows[0].product_name}"${variant ? ` (${variant})` : ''}`, 409);
     }
 };
 
@@ -273,7 +275,7 @@ const getMedicalProductById = async (id) => {
 
 const createMedicalProduct = async (payload) => {
     const product = normalizeProductPayload(payload);
-    await assertUniqueProductName(product.normalized_product_name);
+    await assertUniqueProductVariant(product);
 
     let productId = null;
     await withTransaction(async (connection) => {
@@ -318,7 +320,7 @@ const updateMedicalProduct = async (id, payload) => {
     }
 
     const product = normalizeProductPayload(payload);
-    await assertUniqueProductName(product.normalized_product_name, id);
+    await assertUniqueProductVariant(product, id);
 
     await withTransaction(async (connection) => {
         const medicineTextId = await upsertMedicineMaster(connection, product);
