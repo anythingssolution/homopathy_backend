@@ -2,6 +2,7 @@ const express = require('express');
 const {
     createPreviousManualPatient,
     listPreviousManualPatients,
+    updatePreviousManualPatient,
     getPreviousManualPatientEntryLogs,
 } = require('../../controllers/v1/previousManualPatientController');
 const {
@@ -16,6 +17,7 @@ router.use(authenticate, authorizeRoles('doctor', 'receptionist'), enforceSelect
 
 router.get('/', listPreviousManualPatients);
 router.post('/', createPreviousManualPatient);
+router.put('/:previous_patient_id', updatePreviousManualPatient);
 router.get('/:previous_patient_id/entry-logs', getPreviousManualPatientEntryLogs);
 
 module.exports = router;

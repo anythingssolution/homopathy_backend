@@ -283,6 +283,147 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
     });
 });
 
+const updatePreviousManualPatient = asyncHandler(async (req, res) => {
+    const previousPatientId = toPositiveInt(req.params.previous_patient_id);
+    const payload = normalizeCreatePayload(req.body);
+    const actorIp = getClientIp(req);
+
+    if (!previousPatientId) {
+        throw new AppError('Valid previous_patient_id is required', 400);
+    }
+
+    if (!req.user?.id) {
+        throw new AppError('Authenticated user is required', 401);
+    }
+
+    if (!payload.patient_id) {
+        throw new AppError('patient_id is required for previous patient registration', 400);
+    }
+
+    const saved = await withTransaction(async (connection) => {
+        const [patientRows] = await connection.execute(
+            `SELECT id
+             FROM master_users
+             WHERE id = ?
+               AND role = ?
+               AND is_active = 1
+               AND clinic_patient_no IS NOT NULL
+             LIMIT 1
+             FOR UPDATE`,
+            [previousPatientId, PATIENT_ROLE]
+        );
+
+        if (patientRows.length === 0) {
+            throw new AppError('Previous patient not found', 404);
+        }
+
+        const [mobileRows] = await connection.execute(
+            `SELECT id, role
+             FROM master_users
+             WHERE mobile_no = ?
+               AND id <> ?
+             LIMIT 1
+             FOR UPDATE`,
+            [payload.mobile_no, previousPatientId]
+        );
+
+        if (mobileRows.length > 0) {
+            throw new AppError('Mobile number already belongs to another user', 409);
+        }
+
+        const [patientIdRows] = await connection.execute(
+            `SELECT id
+             FROM master_users
+             WHERE clinic_patient_no = ?
+               AND id <> ?
+             LIMIT 1
+             FOR UPDATE`,
+            [payload.patient_id, previousPatientId]
+        );
+
+        if (patientIdRows.length > 0) {
+            throw new AppError('Patient ID already belongs to another patient', 409);
+        }
+
+        await connection.execute(
+            `UPDATE master_users
+             SET clinic_patient_no = ?,
+                 full_name = ?,
+                 age = ?,
+                 gender = ?,
+                 email = ?,
+                 address = ?,
+                 area_name = ?,
+                 ward_no = ?,
+                 vidhan_sabha = ?,
+                 pincode = ?,
+                 city = ?,
+                 description = ?,
+                 mobile_no = ?,
+                 updated_by = ?,
+                 updated_ip = ?
+             WHERE id = ?`,
+            [
+                payload.patient_id,
+                payload.full_name,
+                payload.age,
+                payload.gender,
+                payload.email,
+                payload.address,
+                payload.area_name,
+                payload.ward_no,
+                payload.vidhan_sabha,
+                payload.pincode,
+                payload.city,
+                payload.description,
+                payload.mobile_no,
+                req.user.id,
+                actorIp,
+                previousPatientId,
+            ]
+        );
+
+        const [rows] = await connection.execute(
+            `SELECT
+                u.id AS previous_patient_id,
+                u.id AS linked_patient_id,
+                u.full_name,
+                u.clinic_patient_no AS patient_id,
+                u.age,
+                u.gender,
+                u.mobile_no,
+                u.email,
+                u.address,
+                u.area_name,
+                u.ward_no,
+                u.vidhan_sabha,
+                u.pincode,
+                u.city,
+                u.description,
+                NULL AS fk_branch_id,
+                COALESCE(u.updated_by, u.created_by) AS entered_by_user_id,
+                actor.role AS entered_by_role,
+                actor.full_name AS entered_by_name,
+                u.is_active,
+                u.updated_at AS created_at,
+                u.updated_at
+             FROM master_users u
+             LEFT JOIN master_users actor ON actor.id = COALESCE(u.updated_by, u.created_by)
+             WHERE u.id = ?
+             LIMIT 1`,
+            [previousPatientId]
+        );
+
+        return rows[0];
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Previous patient updated successfully',
+        data: saved,
+    });
+});
+
 const listPreviousManualPatients = asyncHandler(async (req, res) => {
     const search = req.query.search ? String(req.query.search).trim() : null;
     const page = toPositiveInt(req.query.page) || 1;
@@ -391,6 +532,7 @@ const getPreviousManualPatientEntryLogs = asyncHandler(async (req, res) => {
 
 module.exports = {
     createPreviousManualPatient,
+    updatePreviousManualPatient,
     listPreviousManualPatients,
     getPreviousManualPatientEntryLogs,
 };
