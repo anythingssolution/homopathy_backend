@@ -356,6 +356,7 @@ const generateTodayAppointmentAuid = async (connection, date = new Date()) => {
 
 const appointmentSelectColumns = `
     a.appointment_id, a.auid, a.fk_patient_id, a.parent_appointment_id, a.fk_branch_id, b.branch_name,
+    (SELECT c.id FROM tbl_consultations c WHERE c.appointment_id = a.appointment_id ORDER BY c.id DESC LIMIT 1) AS consultation_id,
     a.fk_treatment_id, t.treatment_name, t.consultation_fee, a.fk_slot_id, s.slot_name,
     COALESCE(sto.override_start_time, s.start_time) AS start_time, COALESCE(sto.override_end_time, s.end_time) AS end_time, s.default_consult_minutes, a.current_token_number AS token_number, a.original_token_number, a.current_token_number,
     a.is_shifted, a.shift_reason, a.not_available_at, a.booked_by_type, a.booked_by_user_id,
@@ -1743,7 +1744,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     try {
         await scheduleAppointmentReminders({
             appointmentId: result,
-            patientId: resolvedPatientId,
+            patientId: appointment?.fk_patient_id,
             doctorId: 1,
             branchId,
             appointmentDate: appointment_date,

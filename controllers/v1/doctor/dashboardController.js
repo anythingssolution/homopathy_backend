@@ -10,6 +10,7 @@ const {
     DOCTOR_APPOINTMENT_SELECT,
     normalizeMasterValue,
     buildTextMedicineProductMasters,
+    UNIVERSAL_REMARK_SELECTION_VALUE,
 } = require('./shared');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
 
@@ -497,6 +498,8 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
 
     const productMasters = await buildTextMedicineProductMasters(textMedicines);
     const scopedRemarksBySelectionValue = new Map();
+    const universalRemarkSelectionKey = normalizeMasterValue(UNIVERSAL_REMARK_SELECTION_VALUE);
+    const universalRemarkRows = [];
 
     scopedTextMedicineRemarks.forEach((remark) => {
         const key = String(remark.normalized_selection_value || '').trim();
@@ -504,16 +507,29 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             return;
         }
 
-        if (!scopedRemarksBySelectionValue.has(key)) {
-            scopedRemarksBySelectionValue.set(key, []);
-        }
-
-        scopedRemarksBySelectionValue.get(key).push({
+        const mappedRemark = {
             id: remark.id,
             remark_value: remark.remark_value,
             created_at: remark.created_at,
             updated_at: remark.updated_at,
-        });
+        };
+
+        if (key === universalRemarkSelectionKey) {
+            universalRemarkRows.push(mappedRemark);
+            return;
+        }
+
+        if (!scopedRemarksBySelectionValue.has(key)) {
+            scopedRemarksBySelectionValue.set(key, []);
+        }
+
+        scopedRemarksBySelectionValue.get(key).push(mappedRemark);
+    });
+
+    universalRemarkRows.sort((left, right) => {
+        const rightTime = new Date(right.updated_at || 0).getTime();
+        const leftTime = new Date(left.updated_at || 0).getTime();
+        return rightTime - leftTime;
     });
 
     const textMedicineRows = textMedicines.map(({ normalized_value: normalizedMedicineValue, ...medicine }) => ({
@@ -560,11 +576,13 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
         data: {
             text_medicines: textMedicineRows,
             text_medicine_remarks: textMedicineRemarkRows,
+            universal_remarks: universalRemarkRows,
             lab_tests: labTestRows,
         },
         meta: {
             total_text_medicines: textMedicineRows.length,
             total_text_medicine_remarks: textMedicineRemarkRows.length,
+            total_universal_remarks: universalRemarkRows.length,
             total_lab_tests: labTestRows.length,
             total_medical_products: textMedicineRows.reduce((sum, medicine) => sum + medicine.medical_products.length, 0),
             total_products: textMedicineRows.reduce((sum, medicine) => sum + medicine.products.length, 0),

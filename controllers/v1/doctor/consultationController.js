@@ -12,6 +12,7 @@ const {
     enrichAppointmentChainWithConsultationData,
     validateConsultationPayload,
     saveTextMedicineRemarkSuggestion,
+    saveUniversalRemarkSuggestion,
     parseTextMedicineDisplayParts,
     upsertMasterTextMedicine,
     upsertDoctorManualVariant,
@@ -299,6 +300,8 @@ const createConsultation = asyncHandler(async (req, res) => {
             );
             createdConsultationId = consultationResult.insertId;
         }
+
+        await saveUniversalRemarkSuggestion(connection, universalRemark);
 
         const pricingItems = [];
 

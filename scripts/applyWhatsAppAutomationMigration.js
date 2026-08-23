@@ -46,9 +46,13 @@ async function ensureColumnsAndTables() {
             const sql = fs.readFileSync(sqlPath, 'utf8');
 
             const statements = sql
-                .split(/;\s*$/m)
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0 && !s.startsWith('--') && !s.includes('ADD COLUMN IF NOT EXISTS'));
+                .split(';')
+                .map((statement) => statement
+                    .split('\n')
+                    .filter((line) => !line.trim().startsWith('--'))
+                    .join('\n')
+                    .trim())
+                .filter((statement) => statement.length > 0 && !statement.includes('ADD COLUMN IF NOT EXISTS'));
 
             for (const statement of statements) {
                 try {

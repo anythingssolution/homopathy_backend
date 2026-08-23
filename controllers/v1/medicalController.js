@@ -6,9 +6,17 @@ const { createNotificationsForRole, createNotificationForUser } = require('../..
 const {
     createMedicationBillFromConsultation,
     createRepeatMedicineBill,
-    collectMedicationBillPayment,
     getBillDetailById,
 } = require('../../services/billingService');
+const {
+    ALLOCATION_ORDERS,
+    applyMedicationReceipt,
+    ensureValidAllocationOrder,
+    filterOutstandingBills,
+    getMedicationOutstandingMap,
+    getPatientMedicationOutstanding,
+    summarizeOutstandingBills,
+} = require('../../services/patientCreditService');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { getAppointmentPatientColumns, getAppointmentPatientJoin } = require('../../utils/patientFamily');
 const {
@@ -58,7 +66,7 @@ const normalizeMedicalPaymentPayload = (value) => {
         return null;
     }
 
-    const hasAnyPaymentField = ['payment_mode', 'amount', 'transaction_reference', 'remark']
+    const hasAnyPaymentField = ['payment_mode', 'amount', 'transaction_reference', 'remark', 'allocation_order']
         .some((field) => value[field] !== undefined && value[field] !== null && String(value[field]).trim() !== '');
 
     if (!hasAnyPaymentField) {
@@ -69,20 +77,24 @@ const normalizeMedicalPaymentPayload = (value) => {
     const amount = toPositiveAmount(value.amount);
     const transactionReference = value.transaction_reference ? String(value.transaction_reference).trim() : null;
     const remark = value.remark ? String(value.remark).trim() : null;
+    const allocationOrder = value.allocation_order
+        ? ensureValidAllocationOrder(value.allocation_order)
+        : ALLOCATION_ORDERS.CURRENT_FIRST;
 
-    if (!paymentMode) {
+    if (amount === null) {
+        throw new AppError('payment.amount must be a valid non-negative number', 400);
+    }
+
+    if (amount > 0 && !paymentMode) {
         throw new AppError('payment.payment_mode is required', 400);
     }
 
-    if (amount === null || amount <= 0) {
-        throw new AppError('payment.amount must be a valid number greater than 0', 400);
-    }
-
     return {
-        payment_mode: paymentMode,
+        payment_mode: paymentMode || 'CASH',
         amount,
         transaction_reference: transactionReference,
         remark,
+        allocation_order: allocationOrder,
     };
 };
 
@@ -130,9 +142,15 @@ const finalizeMedicalPrescription = async ({
     payment = null,
 }) => {
     const [rows] = await connection.execute(
-        `SELECT id, doctor_id, workflow_status
-         FROM tbl_consultations
-         WHERE id = ?
+        `SELECT
+            c.id,
+            c.doctor_id,
+            c.workflow_status,
+            a.fk_patient_id AS patient_id,
+            a.fk_branch_id AS branch_id
+         FROM tbl_consultations c
+         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         WHERE c.id = ?
          LIMIT 1
          FOR UPDATE`,
         [consultationId]
@@ -155,16 +173,19 @@ const finalizeMedicalPrescription = async ({
     let paymentResult = null;
 
     if (payment) {
-        paymentResult = await collectMedicationBillPayment({
+        paymentResult = await applyMedicationReceipt({
             connection,
-            billId: billResult.billId,
-            consultationId,
-            amount: payment.amount,
+            patientId: rows[0].patient_id,
+            currentBillId: billResult.billId,
+            receivedAmount: payment.amount,
             paymentMode: payment.payment_mode,
             transactionReference: payment.transaction_reference,
             remark: payment.remark,
             collectedByUserId: medicalUserId,
             collectedByRole: 'MED',
+            allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
+            branchId: rows[0].branch_id,
+            sourceConsultationId: consultationId,
         });
     }
 
@@ -181,7 +202,10 @@ const finalizeMedicalPrescription = async ({
         doctorId: rows[0].doctor_id,
         billId: billResult.billId,
         billCreated: billResult.created,
-        paymentStatus: paymentResult?.paymentStatus || null,
+        paymentStatus: paymentResult
+            ? (paymentResult.current_remaining <= 0 ? 'PAID' : paymentResult.current_applied > 0 ? 'PARTIAL' : 'UNPAID')
+            : null,
+        paymentAllocation: paymentResult,
     };
 };
 
@@ -287,6 +311,7 @@ const buildMedicalPrescriptionListItemResponse = (row, detail) => {
             end_time: row.end_time,
         },
         patient: {
+            patient_id: row.patient_id || null,
             patient_uuid: row.patient_uuid,
             full_name: row.patient_full_name,
             mobile_no: row.patient_mobile_no,
@@ -322,6 +347,38 @@ const buildMedicalPrescriptionListItemResponse = (row, detail) => {
 const buildMedicalPrescriptionListItem = async (row) => {
     const detail = await getMedicalPrescriptionDetail(row.consultation_id, row.fk_branch_id || null);
     return buildMedicalPrescriptionListItemResponse(row, detail);
+};
+
+const attachAccountDuesToItems = async (items, rows, { branchId = null } = {}) => {
+    const patientIds = rows
+        .map((row) => Number(row.patient_id || row.fk_patient_id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+    if (items.length === 0 || patientIds.length === 0) {
+        return items.map((item) => ({
+            ...item,
+            account_dues: summarizeOutstandingBills([]),
+        }));
+    }
+
+    const outstandingMap = await getMedicationOutstandingMap({
+        patientIds,
+        branchId,
+    });
+
+    return items.map((item, index) => {
+        const row = rows[index] || {};
+        const patientId = Number(row.patient_id || row.fk_patient_id || item?.patient?.patient_id);
+        const bills = filterOutstandingBills(outstandingMap.get(patientId) || [], {
+            excludeConsultationIds: [row.consultation_id || item.consultation_id],
+            excludeBillIds: [row.bill_id || item.bill_id],
+        });
+
+        return {
+            ...item,
+            account_dues: summarizeOutstandingBills(bills),
+        };
+    });
 };
 
 const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => {
@@ -471,10 +528,18 @@ const listRepeatMedicinePatients = asyncHandler(async (req, res) => {
         [`%${search}%`, `%${search}%`, `%${search}%`]
     );
 
+    const outstandingMap = await getMedicationOutstandingMap({
+        patientIds: rows.map((row) => row.patient_id),
+        branchId: req.selectedBranchId || null,
+    });
+
     return res.status(200).json({
         success: true,
         message: 'Patients fetched successfully',
-        data: rows,
+        data: rows.map((row) => ({
+            ...row,
+            account_dues: summarizeOutstandingBills(outstandingMap.get(Number(row.patient_id)) || []),
+        })),
     });
 });
 
@@ -563,11 +628,17 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
         [consultation.consultation_id]
     );
 
+    const accountDues = await getPatientMedicationOutstanding({
+        patientId,
+        branchId,
+    });
+
     return res.status(200).json({
         success: true,
         message: 'Last prescription fetched successfully',
         data: {
             patient: patientRows[0],
+            account_dues: accountDues,
             prescription: decorateTokenFields({
                 ...consultation,
                 medications: medicationRows.map((row) => ({
@@ -650,6 +721,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     });
 
     let billId = null;
+    let paymentAllocation = null;
 
     await withTransaction(async (connection) => {
         const [consultationRows] = await connection.execute(
@@ -732,16 +804,19 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
         billId = billResult.billId;
 
         if (payment) {
-            await collectMedicationBillPayment({
+            paymentAllocation = await applyMedicationReceipt({
                 connection,
-                billId,
-                consultationId: sourceConsultationId,
-                amount: payment.amount,
+                patientId,
+                currentBillId: billId,
+                receivedAmount: payment.amount,
                 paymentMode: payment.payment_mode,
                 transactionReference: payment.transaction_reference,
                 remark: payment.remark,
                 collectedByUserId: req.user.id,
                 collectedByRole: req.user.role_code,
+                allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
+                branchId,
+                sourceConsultationId,
             });
         }
     });
@@ -751,7 +826,10 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     return res.status(201).json({
         success: true,
         message: 'Repeat medicine bill created successfully',
-        data: bill,
+        data: {
+            ...bill,
+            payment_allocation: paymentAllocation,
+        },
     });
 });
 
@@ -876,7 +954,11 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         total: Number(countRows[0]?.total || 0),
     });
 
-    const data = await Promise.all(rows.map(buildMedicalPrescriptionListItem));
+    const data = await attachAccountDuesToItems(
+        await Promise.all(rows.map(buildMedicalPrescriptionListItem)),
+        rows,
+        { branchId: req.selectedBranchId || branchId }
+    );
 
     return res.status(200).json({
         success: true,
@@ -1026,6 +1108,8 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 b.patient_id,
                 b.fk_branch_id,
                 b.total_amount,
+                b.paid_amount,
+                b.pending_amount,
                 b.payment_status,
                 b.remark,
                 b.delivery_mode,
@@ -1075,7 +1159,39 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     const total = Number(countRows[0]?.total || 0) + Number(repeatCountRows[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-    const prescriptionData = await Promise.all(rows.map(buildMedicalPrescriptionListItem));
+    const prescriptionData = await attachAccountDuesToItems(
+        await Promise.all(rows.map(buildMedicalPrescriptionListItem)),
+        rows,
+        { branchId: req.selectedBranchId || branchId }
+    );
+    const consultationIds = rows.map((row) => Number(row.consultation_id)).filter(Boolean);
+    const medicationBillRows = consultationIds.length > 0
+        ? await query(
+            `SELECT
+                consultation_id,
+                id AS bill_id,
+                bill_number,
+                total_amount,
+                paid_amount,
+                pending_amount,
+                payment_status
+             FROM tbl_bills
+             WHERE bill_type = 'MEDICATION'
+               AND status = 'ACTIVE'
+               AND consultation_id IN (${consultationIds.map(() => '?').join(',')})`,
+            consultationIds
+        )
+        : [];
+    const medicationBillsByConsultationId = new Map(
+        medicationBillRows.map((bill) => [Number(bill.consultation_id), bill])
+    );
+    prescriptionData.forEach((item) => {
+        const bill = medicationBillsByConsultationId.get(Number(item.consultation_id));
+        if (bill) {
+            item.medication_bill = bill;
+        }
+    });
+
     const repeatData = repeatRows.map((row) => {
         const billItems = repeatItemsByBillId.get(row.bill_id) || [];
         const medicineItems = billItems.filter((item) => String(item.item_name || '').toLowerCase() !== 'courier charge');
@@ -1097,6 +1213,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
             doctor_name: row.doctor_name,
             doctor_id: row.doctor_id,
             patient: {
+                patient_id: row.patient_id,
                 full_name: row.patient_full_name,
                 mobile_no: row.patient_mobile_no,
                 uuid: row.patient_uuid,
@@ -1133,12 +1250,25 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 delivery_mode: row.delivery_mode,
                 delivery_details: deliveryDetails,
                 payment_status: row.payment_status,
+                paid_amount: row.paid_amount,
+                pending_amount: row.pending_amount,
+            },
+            medication_bill: {
+                bill_id: row.bill_id,
+                bill_number: row.bill_number,
+                total_amount: row.total_amount,
+                paid_amount: row.paid_amount,
+                pending_amount: row.pending_amount,
+                payment_status: row.payment_status,
             },
             updated_at: row.updated_at,
             created_at: row.created_at,
         };
     });
-    const data = [...prescriptionData, ...repeatData]
+    const repeatWithDues = await attachAccountDuesToItems(repeatData, repeatRows, {
+        branchId: req.selectedBranchId || branchId,
+    });
+    const data = [...prescriptionData, ...repeatWithDues]
         .sort((a, b) => new Date(b.updated_at || b.created_at || b.appointment?.appointment_date || 0).getTime()
             - new Date(a.updated_at || a.created_at || a.appointment?.appointment_date || 0).getTime())
         .slice(0, pageSize);
@@ -1173,10 +1303,21 @@ const getMedicalPrescription = asyncHandler(async (req, res) => {
         throw new AppError('Prescription not found', 404);
     }
 
+    const accountDues = detail.patient_id
+        ? await getPatientMedicationOutstanding({
+            patientId: detail.patient_id,
+            branchId: req.selectedBranchId || detail.fk_branch_id || null,
+            excludeConsultationIds: [consultationId],
+        })
+        : summarizeOutstandingBills([]);
+
     return res.status(200).json({
         success: true,
         message: 'Medical prescription fetched successfully',
-        data: detail,
+        data: {
+            ...detail,
+            account_dues: accountDues,
+        },
     });
 });
 
@@ -1226,6 +1367,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
 
     let finalizedBillId = null;
     let finalizedPaymentStatus = null;
+    let finalizedPaymentAllocation = null;
     let replayedRequest = false;
 
     await withTransaction(async (connection) => {
@@ -1526,6 +1668,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
 
             finalizedBillId = finalized.billId;
             finalizedPaymentStatus = finalized.paymentStatus;
+            finalizedPaymentAllocation = finalized.paymentAllocation || null;
         }
     });
 
@@ -1560,6 +1703,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             ...detail,
             bill,
             payment_status: finalizedPaymentStatus,
+            payment_allocation: finalizedPaymentAllocation,
         },
     });
 });

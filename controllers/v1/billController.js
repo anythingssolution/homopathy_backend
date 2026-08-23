@@ -4,10 +4,17 @@ const asyncHandler = require('../../utils/asyncHandler');
 const {
     createConsultationBillForAppointment,
     collectConsultationBillPayment,
+    collectMedicationBillPayment,
     createMedicationBillFromConsultation,
     getBillDetailById,
     getAppointmentBillingSummaryByAppointmentId,
 } = require('../../services/billingService');
+const {
+    ALLOCATION_ORDERS,
+    applyMedicationReceipt,
+    ensureValidAllocationOrder,
+    getPatientMedicationOutstanding,
+} = require('../../services/patientCreditService');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 
@@ -49,14 +56,18 @@ const buildBillListQuery = ({ actor, filters }) => {
         params.push(filters.branchId);
     }
 
-    if (filters.fromDate) {
-        conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) >= ?');
-        params.push(filters.fromDate);
-    }
+    if (filters.outstanding) {
+        conditions.push('b.pending_amount > 0');
+    } else {
+        if (filters.fromDate) {
+            conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) >= ?');
+            params.push(filters.fromDate);
+        }
 
-    if (filters.toDate) {
-        conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) <= ?');
-        params.push(filters.toDate);
+        if (filters.toDate) {
+            conditions.push('COALESCE(a.appointment_date, DATE(b.created_at)) <= ?');
+            params.push(filters.toDate);
+        }
     }
 
     if (actor.role === 'patient') {
@@ -235,6 +246,8 @@ const listBills = asyncHandler(async (req, res) => {
     const appointmentId = req.query.appointment_id !== undefined ? toPositiveInt(req.query.appointment_id) : null;
     const patientId = req.query.patient_id !== undefined ? toPositiveInt(req.query.patient_id) : null;
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
+    const outstandingRaw = req.query.outstanding !== undefined ? String(req.query.outstanding).trim().toLowerCase() : null;
+    const outstanding = outstandingRaw === '1' || outstandingRaw === 'true';
 
     if (rawType && type === undefined) {
         throw new AppError('type must be CONSULTATION or MEDICATION', 400);
@@ -280,6 +293,7 @@ const listBills = asyncHandler(async (req, res) => {
             appointmentId,
             patientId,
             branchId,
+            outstanding,
         },
     });
 
@@ -391,6 +405,7 @@ const listBills = asyncHandler(async (req, res) => {
                 branch_id: branchId,
                 appointment_id: appointmentId,
                 patient_id: req.user.role === 'patient' ? req.user.id : patientId,
+                outstanding,
             },
             role_scope: req.user.role,
         },
@@ -468,11 +483,135 @@ const getAppointmentBillingSummary = asyncHandler(async (req, res) => {
     });
 });
 
+const getPatientOutstanding = asyncHandler(async (req, res) => {
+    const patientId = toPositiveInt(req.params.patient_id);
+
+    if (!patientId) {
+        throw new AppError('Valid patient_id is required', 400);
+    }
+
+    if (req.user.role === 'patient' && Number(req.user.id) !== patientId) {
+        throw new AppError('You can only view your own outstanding dues', 403);
+    }
+
+    const excludeConsultationId = req.query.exclude_consultation_id !== undefined
+        ? toPositiveInt(req.query.exclude_consultation_id)
+        : null;
+    const excludeBillId = req.query.exclude_bill_id !== undefined
+        ? toPositiveInt(req.query.exclude_bill_id)
+        : null;
+
+    if (req.query.exclude_consultation_id !== undefined && !excludeConsultationId) {
+        throw new AppError('exclude_consultation_id must be a positive integer', 400);
+    }
+
+    if (req.query.exclude_bill_id !== undefined && !excludeBillId) {
+        throw new AppError('exclude_bill_id must be a positive integer', 400);
+    }
+
+    const outstanding = await getPatientMedicationOutstanding({
+        patientId,
+        branchId: req.selectedBranchId || null,
+        excludeConsultationIds: excludeConsultationId ? [excludeConsultationId] : [],
+        excludeBillIds: excludeBillId ? [excludeBillId] : [],
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Patient outstanding dues fetched successfully',
+        data: {
+            patient_id: patientId,
+            ...outstanding,
+        },
+    });
+});
+
+const collectMedicationPayment = asyncHandler(async (req, res) => {
+    const billId = toPositiveInt(req.params.bill_id);
+
+    if (!billId) {
+        throw new AppError('Valid bill_id is required', 400);
+    }
+
+    const { payment_mode, amount, transaction_reference = null, remark = null } = req.body || {};
+
+    const result = await withTransaction(async (connection) => collectMedicationBillPayment({
+        connection,
+        billId,
+        amount,
+        paymentMode: payment_mode,
+        transactionReference: transaction_reference,
+        remark: remark ? String(remark).trim() : null,
+        collectedByUserId: req.user.id,
+        collectedByRole: req.user.role_code,
+    }));
+
+    const bill = await getBillDetailById(result.billId);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Medication payment collected successfully',
+        data: bill,
+    });
+});
+
+const collectPatientDues = asyncHandler(async (req, res) => {
+    const patientId = toPositiveInt(req.params.patient_id);
+
+    if (!patientId) {
+        throw new AppError('Valid patient_id is required', 400);
+    }
+
+    const {
+        payment_mode,
+        amount,
+        transaction_reference = null,
+        remark = null,
+        allocation_order = ALLOCATION_ORDERS.PREVIOUS_FIRST,
+    } = req.body || {};
+
+    const normalizedAmount = Number(amount);
+    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+        throw new AppError('amount must be a valid number greater than 0', 400);
+    }
+
+    const result = await withTransaction(async (connection) => applyMedicationReceipt({
+        connection,
+        patientId,
+        receivedAmount: amount,
+        paymentMode: payment_mode,
+        transactionReference: transaction_reference,
+        remark: remark ? String(remark).trim() : null,
+        collectedByUserId: req.user.id,
+        collectedByRole: req.user.role_code,
+        allocationOrder: ensureValidAllocationOrder(allocation_order || ALLOCATION_ORDERS.PREVIOUS_FIRST),
+        branchId: req.selectedBranchId || null,
+    }));
+
+    const outstanding = await getPatientMedicationOutstanding({
+        patientId,
+        branchId: req.selectedBranchId || null,
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Patient medication dues collected successfully',
+        data: {
+            patient_id: patientId,
+            payment_allocation: result,
+            outstanding,
+        },
+    });
+});
+
 module.exports = {
     createConsultationBill,
     collectConsultationPayment,
+    collectMedicationPayment,
+    collectPatientDues,
     createMedicationBill,
     listBills,
     getBillById,
     getAppointmentBillingSummary,
+    getPatientOutstanding,
 };

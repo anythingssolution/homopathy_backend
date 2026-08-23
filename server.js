@@ -23,7 +23,9 @@ const {
 const { globalRateLimiter } = require('./middleware/rateLimitMiddleware');
 
 const app = express();
-app.set('trust proxy', true);
+// Trust only the first reverse-proxy hop. Boolean `true` is too permissive
+// and express-rate-limit refuses to use IP keys (ERR_ERL_PERMISSIVE_TRUST_PROXY).
+app.set('trust proxy', 1);
 
 const PORT = env.port;
 const server = http.createServer(app);

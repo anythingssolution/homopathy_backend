@@ -22,8 +22,13 @@ test('medical prescription list exposes quick formula input inside prescription'
     assert.equal(item.prescription.quick_formula_input, '3 + 5 + 6');
 });
 
-test('medical prescription list returns null when quick formula input is absent', () => {
-    const item = buildMedicalPrescriptionListItemResponse(prescriptionRow, null);
+test('medical prescription list includes patient id for dues tracking', () => {
+    const item = buildMedicalPrescriptionListItemResponse({
+        ...prescriptionRow,
+        patient_id: 44,
+        patient_uuid: 'pat-44',
+        patient_full_name: 'Test Patient',
+    }, null);
 
-    assert.equal(item.prescription.quick_formula_input, null);
+    assert.equal(item.patient.patient_id, 44);
 });

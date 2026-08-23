@@ -17,6 +17,15 @@ const DEFAULT_DOCTOR_SETTINGS = {
 
 let schedulerIntervalTimer = null;
 let isProcessingQueue = false;
+let missingScheduledMessagesTableLogged = false;
+
+const isMissingScheduledMessagesTable = (error) => {
+    if (!error || error.code !== 'ER_NO_SUCH_TABLE') {
+        return false;
+    }
+
+    return String(error.sqlMessage || error.message || '').includes('tbl_whatsapp_scheduled_messages');
+};
 
 const dbExecute = async (sql, params = [], connection = null) => {
     if (connection) {
@@ -683,6 +692,14 @@ const processDueScheduledMessages = async () => {
             }
         }
     } catch (queueErr) {
+        if (isMissingScheduledMessagesTable(queueErr)) {
+            if (!missingScheduledMessagesTableLogged) {
+                console.warn('[WhatsApp Automation] tbl_whatsapp_scheduled_messages is missing. Run npm run migrate to create WhatsApp tables.');
+                missingScheduledMessagesTableLogged = true;
+            }
+            return;
+        }
+
         console.error('[WhatsApp Automation Worker Error]:', queueErr);
     } finally {
         isProcessingQueue = false;

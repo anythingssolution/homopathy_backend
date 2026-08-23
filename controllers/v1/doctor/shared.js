@@ -359,6 +359,36 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
     );
 };
 
+const UNIVERSAL_REMARK_SELECTION_VALUE = '__UNIVERSAL_REMARK__';
+
+const saveUniversalRemarkSuggestion = async (connection, remarkValue) => {
+    const trimmedRemark = String(remarkValue || '').trim();
+    if (!trimmedRemark) {
+        return;
+    }
+
+    const normalizedRemark = normalizeMasterValue(trimmedRemark);
+    if (!normalizedRemark) {
+        return;
+    }
+
+    await connection.execute(
+        `INSERT INTO master_text_medicine_remarks
+         (remark_value, normalized_value, selection_value, normalized_selection_value,
+          medicine_value, variant_value, normalized_medicine_value, normalized_variant_value)
+         VALUES (?, ?, ?, ?, '', '', '', '')
+         ON DUPLICATE KEY UPDATE
+             remark_value = VALUES(remark_value),
+             is_active = 1`,
+        [
+            trimmedRemark,
+            normalizedRemark,
+            UNIVERSAL_REMARK_SELECTION_VALUE,
+            normalizeMasterValue(UNIVERSAL_REMARK_SELECTION_VALUE),
+        ]
+    );
+};
+
 const saveTextMedicineRemarkSuggestion = async (connection, medication) => {
     if (medication?.medicine_type !== 'TEXT' || !medication?.remark) {
         return;
@@ -1299,6 +1329,8 @@ module.exports = {
     buildTextMedicineSuggestionKey,
     buildTextMedicineProductMasters,
     saveTextMedicineRemarkSuggestion,
+    saveUniversalRemarkSuggestion,
+    UNIVERSAL_REMARK_SELECTION_VALUE,
     parseTextMedicineDisplayParts,
     upsertMasterTextMedicine,
     upsertDoctorManualVariant,
