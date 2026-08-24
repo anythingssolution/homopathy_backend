@@ -1,7 +1,7 @@
 const { buildBillingReportScope, query } = require('./shared');
 
 const getTotalRevenueReport = async (filters) => {
-    const { whereClause, params } = buildBillingReportScope(filters);
+    const { appointmentJoin, whereClause, params } = buildBillingReportScope(filters);
 
     return query(
         `SELECT
@@ -13,6 +13,7 @@ const getTotalRevenueReport = async (filters) => {
             COALESCE(SUM(b.pending_amount), 0) AS pending_amount,
             COALESCE(SUM(CASE WHEN b.paid_amount <= 0 THEN b.pending_amount ELSE 0 END), 0) AS unpaid_amount
          FROM tbl_bills b
+         ${appointmentJoin}
          ${whereClause}
            AND b.status = 'ACTIVE'`,
         params

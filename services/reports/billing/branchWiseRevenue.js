@@ -1,7 +1,7 @@
 const { buildBillingReportScope, query } = require('./shared');
 
 const getBranchWiseRevenueReport = async (filters) => {
-    const { whereClause, params } = buildBillingReportScope(filters);
+    const { appointmentJoin, whereClause, params } = buildBillingReportScope(filters);
 
     return query(
         `SELECT
@@ -12,6 +12,7 @@ const getBranchWiseRevenueReport = async (filters) => {
             COALESCE(SUM(b.paid_amount), 0) AS paid_amount,
             COALESCE(SUM(b.pending_amount), 0) AS pending_amount
          FROM tbl_bills b
+         ${appointmentJoin}
          JOIN master_clinic_branches br ON br.id = b.fk_branch_id
          ${whereClause}
            AND b.status = 'ACTIVE'

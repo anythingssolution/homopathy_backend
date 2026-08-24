@@ -1,9 +1,10 @@
 const { buildBillingReportScope, query } = require('./shared');
 
 const getPaymentModeCollectionReport = async (filters) => {
-    const { whereClause, params } = buildBillingReportScope(filters);
+    const { appointmentJoin, whereClause, params } = buildBillingReportScope(filters);
     const scopedBills = `SELECT b.id, b.bill_type, b.paid_amount
          FROM tbl_bills b
+         ${appointmentJoin}
          ${whereClause}
            AND b.status = 'ACTIVE'`;
 
