@@ -35,6 +35,118 @@ const {
     cancelScheduledReminders,
 } = require('../../../services/whatsappAutomationService');
 
+const executeRows = async (executor, sql, params = []) => {
+    const result = await executor(sql, params);
+    return Array.isArray(result?.[0]) ? result[0] : result;
+};
+
+const getConsultationEditAccess = async (executor, consultationId) => {
+    const [consultation] = await executeRows(
+        executor,
+        `SELECT id, workflow_status
+         FROM tbl_consultations
+         WHERE id = ?
+         LIMIT 1`,
+        [consultationId]
+    );
+
+    if (!consultation) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Consultation not found',
+        };
+    }
+
+    if (!['READY_FOR_MEDICAL', 'COMPLETED_NO_PRESCRIPTION'].includes(consultation.workflow_status)) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Medical has already processed this prescription',
+            workflow_status: consultation.workflow_status,
+        };
+    }
+
+    const paidBillRows = await executeRows(
+        executor,
+        `SELECT id
+         FROM tbl_bills
+         WHERE consultation_id = ?
+           AND bill_type = 'MEDICATION'
+           AND status = 'ACTIVE'
+           AND (payment_status = 'PAID' OR paid_amount > 0)
+         LIMIT 1`,
+        [consultationId]
+    );
+
+    if (paidBillRows.length > 0) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Medication bill payment has already started',
+            workflow_status: consultation.workflow_status,
+        };
+    }
+
+    const dispensingRequestRows = await executeRows(
+        executor,
+        `SELECT id
+         FROM tbl_medical_dispensing_requests
+         WHERE consultation_id = ?
+           AND request_type IN ('SAVE', 'PROCESS')
+         LIMIT 1`,
+        [consultationId]
+    );
+
+    if (dispensingRequestRows.length > 0) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Medical dispensing changes have already been saved',
+            workflow_status: consultation.workflow_status,
+        };
+    }
+
+    const dispensingEventRows = await executeRows(
+        executor,
+        `SELECT e.id
+         FROM tbl_medical_dispensing_item_events e
+         JOIN tbl_medical_prescription_pricing_items i ON i.id = e.pricing_item_id
+         JOIN tbl_medical_prescription_pricing p ON p.id = i.pricing_id
+         WHERE p.consultation_id = ?
+         LIMIT 1`,
+        [consultationId]
+    );
+
+    if (dispensingEventRows.length > 0) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Medical dispensing status has already changed',
+            workflow_status: consultation.workflow_status,
+        };
+    }
+
+    const medicalAddedRows = await executeRows(
+        executor,
+        `SELECT id
+         FROM tbl_consultation_medications
+         WHERE consultation_id = ?
+           AND added_by_role = 'MEDICAL'
+         LIMIT 1`,
+        [consultationId]
+    );
+
+    if (medicalAddedRows.length > 0) {
+        return {
+            can_edit_before_dispense: false,
+            edit_lock_reason: 'Medical has already added medicines',
+            workflow_status: consultation.workflow_status,
+        };
+    }
+
+    return {
+        can_edit_before_dispense: true,
+        edit_lock_reason: null,
+        workflow_status: consultation.workflow_status,
+    };
+};
+
 const createConsultation = asyncHandler(async (req, res) => {
     const {
         appointmentId,
@@ -81,6 +193,7 @@ const createConsultation = asyncHandler(async (req, res) => {
     let createdConsultationId = null;
     let pendingFollowUp = null;
     let shouldNotifyMedical = false;
+    let updatedExistingConsultation = false;
 
     const queueCompletionContext = await withTransaction(async (connection) => {
         const [appointmentRows] = await connection.execute(
@@ -141,6 +254,7 @@ const createConsultation = asyncHandler(async (req, res) => {
         );
 
         const isUpdating = existingConsultationRows.length > 0;
+        updatedExistingConsultation = isUpdating;
 
         if (repeatedFromConsultationId) {
             const currentVisitType = getVisitTypeCode({
@@ -172,10 +286,20 @@ const createConsultation = asyncHandler(async (req, res) => {
         const consultationWorkflowStatus = shouldSendToMedical
             ? 'READY_FOR_MEDICAL'
             : 'COMPLETED_NO_PRESCRIPTION';
-        shouldNotifyMedical = shouldSendToMedical;
+        shouldNotifyMedical = shouldSendToMedical && !isUpdating;
 
         if (isUpdating) {
             createdConsultationId = existingConsultationRows[0].id;
+            const editAccess = await getConsultationEditAccess(
+                (sql, params) => connection.execute(sql, params),
+                createdConsultationId
+            );
+
+            if (!editAccess.can_edit_before_dispense) {
+                throw new AppError(editAccess.edit_lock_reason || 'This consultation can no longer be edited', 409);
+            }
+            shouldNotifyMedical = shouldSendToMedical
+                && editAccess.workflow_status === 'COMPLETED_NO_PRESCRIPTION';
 
             await connection.execute(
                 `UPDATE tbl_consultations
@@ -509,7 +633,9 @@ const createConsultation = asyncHandler(async (req, res) => {
 
     return res.status(201).json({
         success: true,
-        message: 'Consultation created successfully',
+        message: updatedExistingConsultation
+            ? 'Consultation updated successfully'
+            : 'Consultation created successfully',
         data: {
             appointment,
             consultation,
@@ -536,6 +662,7 @@ const getConsultationByAppointmentId = asyncHandler(async (req, res) => {
     }
 
     const pricing = await getMedicalPricingAggregateByConsultationId(consultation.consultation_id);
+    const editAccess = await getConsultationEditAccess(query, consultation.consultation_id);
     const followUpChain = await enrichAppointmentChainWithConsultationData(
         await getAppointmentChain(appointmentId)
     );
@@ -547,6 +674,7 @@ const getConsultationByAppointmentId = asyncHandler(async (req, res) => {
             appointment,
             consultation,
             pricing,
+            edit_access: editAccess,
             follow_up_chain: followUpChain,
         },
     });
