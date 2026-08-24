@@ -345,7 +345,21 @@ const listBills = asyncHandler(async (req, res) => {
             b.updated_at,
             a.auid,
             COALESCE(a.appointment_date, DATE(b.created_at)) AS appointment_date,
+            a.original_token_number,
             a.current_token_number AS token_number,
+            COALESCE(
+                a.live_queue_assigned_position,
+                (
+                    SELECT COUNT(*)
+                    FROM tbl_appointments sibling
+                    WHERE sibling.fk_branch_id = a.fk_branch_id
+                      AND sibling.fk_slot_id = a.fk_slot_id
+                      AND sibling.appointment_date = a.appointment_date
+                      AND sibling.is_active = 1
+                      AND COALESCE(sibling.original_token_number, sibling.current_token_number, sibling.token_number)
+                          <= COALESCE(a.original_token_number, a.current_token_number, a.token_number)
+                )
+            ) AS queue_position,
             s.slot_name,
             COALESCE(sto.override_start_time, s.start_time) AS start_time,
             COALESCE(sto.override_end_time, s.end_time) AS end_time,

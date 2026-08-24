@@ -103,12 +103,72 @@ const validatePrescribedDispensingItems = ({ submittedItems, prescribedMedicatio
     return normalizedItems;
 };
 
+const validatePrescribedTests = ({ submittedTests, prescribedTests }) => {
+    const prescribedById = new Map(
+        prescribedTests.map((item) => [Number(item.consultation_test_id || item.id), item])
+    );
+    const seenIds = new Set();
+
+    const normalizedTests = submittedTests.map((item, index) => {
+        const testId = Number(item?.consultation_test_id);
+        if (!Number.isInteger(testId) || testId <= 0) {
+            throw new AppError(`tests[${index}].consultation_test_id is required`, 400);
+        }
+
+        if (seenIds.has(testId)) {
+            throw new AppError(`Duplicate consultation test id ${testId}`, 400);
+        }
+        seenIds.add(testId);
+
+        const prescribed = prescribedById.get(testId);
+        if (!prescribed) {
+            throw new AppError(`Test ${testId} does not belong to this Doctor prescription`, 400);
+        }
+
+        const dispenseStatus = normalizeDispenseStatus(item?.dispense_status);
+        const voidReason = item?.void_reason ? String(item.void_reason).trim() : null;
+        if (dispenseStatus === 'VOID' && !voidReason) {
+            throw new AppError(`Removal reason is required for test ${testId}`, 400);
+        }
+
+        const submittedVersion = item?.version === undefined || item?.version === null || item?.version === ''
+            ? null
+            : Number(item.version);
+
+        if (submittedVersion !== null && (!Number.isInteger(submittedVersion) || submittedVersion < 0)) {
+            throw new AppError(`tests[${index}].version must be a non-negative integer`, 400);
+        }
+
+        const existingVersion = Number(prescribed.version);
+        if (Number.isInteger(existingVersion) && submittedVersion !== null && submittedVersion !== existingVersion) {
+            throw new AppError(`Test ${testId} was changed by another user. Please reload.`, 409);
+        }
+
+        return {
+            consultation_test_id: testId,
+            test_name: prescribed.test_name,
+            amount: toAmount(prescribed.amount, `tests[${index}].amount`),
+            dispense_status: dispenseStatus,
+            void_reason: dispenseStatus === 'VOID' ? voidReason : null,
+            existing_version: Number.isInteger(existingVersion) ? existingVersion : 1,
+        };
+    });
+
+    if (seenIds.size !== prescribedById.size) {
+        throw new AppError('Every Doctor-prescribed test must remain in the dispensing list', 400);
+    }
+
+    return normalizedTests;
+};
+
 const calculateDispensingTotal = ({ prescribedItems, additionalItems = [], tests = [] }) => {
     const activePrescribedCents = prescribedItems
         .filter((item) => item.dispense_status === 'ACTIVE')
         .reduce((sum, item) => sum + toCents(item.amount), 0);
     const additionalCents = additionalItems.reduce((sum, item) => sum + toCents(item.amount), 0);
-    const testCents = tests.reduce((sum, item) => sum + toCents(item.amount), 0);
+    const testCents = tests
+        .filter((item) => String(item.dispense_status || 'ACTIVE').toUpperCase() !== 'VOID')
+        .reduce((sum, item) => sum + toCents(item.amount), 0);
 
     return fromCents(activePrescribedCents + additionalCents + testCents);
 };
@@ -164,4 +224,5 @@ module.exports = {
     resolveDispensingEventType,
     toAmount,
     validatePrescribedDispensingItems,
+    validatePrescribedTests,
 };

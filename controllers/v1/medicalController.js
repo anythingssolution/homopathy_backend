@@ -37,6 +37,7 @@ const {
     projectDispensingStatus,
     resolveDispensingEventType,
     validatePrescribedDispensingItems,
+    validatePrescribedTests,
 } = require('../../services/dispensaryPricingService');
 
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
@@ -477,7 +478,12 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
         `SELECT
             id AS consultation_test_id,
             test_name,
-            amount
+            amount,
+            COALESCE(dispense_status, 'ACTIVE') AS dispense_status,
+            void_reason,
+            voided_by,
+            voided_at,
+            COALESCE(version, 1) AS version
          FROM tbl_consultation_tests
          WHERE consultation_id = ?
          ORDER BY id ASC`,
@@ -495,7 +501,16 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
             medication,
             pricingByMedicationId.get(Number(medication.consultation_medication_id)) || null
         )),
-        tests: testRows,
+        tests: testRows.map((test) => ({
+            consultation_test_id: test.consultation_test_id,
+            test_name: test.test_name,
+            amount: test.amount,
+            dispense_status: test.dispense_status || 'ACTIVE',
+            void_reason: test.dispense_status === 'VOID' ? test.void_reason || null : null,
+            voided_by: test.dispense_status === 'VOID' ? test.voided_by || null : null,
+            voided_at: test.dispense_status === 'VOID' ? test.voided_at || null : null,
+            version: Number(test.version || 1),
+        })),
         pricing,
     };
 };
@@ -1326,6 +1341,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
     const remark = req.body?.remark ? String(req.body.remark).trim() : null;
     const medications = Array.isArray(req.body?.medications) ? req.body.medications : null;
     const additionalMedications = Array.isArray(req.body?.additional_medications) ? req.body.additional_medications : [];
+    const submittedTests = Array.isArray(req.body?.tests) ? req.body.tests : null;
     const processAfterSave = toBoolean(req.body?.process_after_save);
     const payment = normalizeMedicalPaymentPayload(req.body?.payment);
     const submittedRequestKey = String(
@@ -1469,7 +1485,13 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
         });
 
         const [testRows] = await connection.execute(
-            `SELECT id, amount
+            `SELECT
+                id AS consultation_test_id,
+                test_name,
+                amount,
+                COALESCE(dispense_status, 'ACTIVE') AS dispense_status,
+                void_reason,
+                COALESCE(version, 1) AS version
              FROM tbl_consultation_tests
              WHERE consultation_id = ?
              ORDER BY id ASC
@@ -1477,10 +1499,23 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             [consultationId]
         );
 
+        const normalizedTests = submittedTests
+            ? validatePrescribedTests({
+                submittedTests,
+                prescribedTests: testRows,
+            })
+            : testRows.map((row) => ({
+                consultation_test_id: row.consultation_test_id,
+                test_name: row.test_name,
+                amount: row.amount,
+                dispense_status: row.dispense_status || 'ACTIVE',
+                void_reason: row.dispense_status === 'VOID' ? row.void_reason || null : null,
+            }));
+
         const totalAmount = calculateDispensingTotal({
             prescribedItems: normalizedItems,
             additionalItems: normalizedAdditionalItems,
-            tests: testRows,
+            tests: normalizedTests,
         });
 
         if (existingPricingRows.length > 0) {
@@ -1632,6 +1667,36 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                  VALUES (?, ?, ?, ?, 'ACTIVE', 1)`,
                 [pricingId, insertMedication.insertId, item.medicine_value, item.amount]
             );
+        }
+
+        if (submittedTests) {
+            for (const test of normalizedTests) {
+                const [updateTest] = await connection.execute(
+                    `UPDATE tbl_consultation_tests
+                     SET dispense_status = ?,
+                         void_reason = ?,
+                         voided_by = CASE WHEN ? = 'VOID' THEN ? ELSE NULL END,
+                         voided_at = CASE WHEN ? = 'VOID' THEN NOW() ELSE NULL END,
+                         version = version + 1
+                     WHERE id = ?
+                       AND consultation_id = ?
+                       AND version = ?`,
+                    [
+                        test.dispense_status,
+                        test.void_reason,
+                        test.dispense_status,
+                        req.user.id,
+                        test.dispense_status,
+                        test.consultation_test_id,
+                        consultationId,
+                        test.existing_version,
+                    ]
+                );
+
+                if (updateTest.affectedRows !== 1) {
+                    throw new AppError(`Test ${test.consultation_test_id} was changed by another user. Please reload.`, 409);
+                }
+            }
         }
 
         if (!processAfterSave) {

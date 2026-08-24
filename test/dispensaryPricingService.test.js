@@ -8,6 +8,7 @@ const {
     projectDispensingStatus,
     resolveDispensingEventType,
     validatePrescribedDispensingItems,
+    validatePrescribedTests,
 } = require('../services/dispensaryPricingService');
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test_dispensary_secret';
@@ -139,6 +140,59 @@ test('server total includes only active dispensing items plus additional medicin
             { id: 2, dispense_status: 'VOID' },
         ]).map((item) => item.id),
         [1]
+    );
+});
+
+test('server total excludes voided tests', () => {
+    const total = calculateDispensingTotal({
+        prescribedItems: [{ amount: 100, dispense_status: 'ACTIVE' }],
+        additionalItems: [],
+        tests: [
+            { amount: 50.30, dispense_status: 'ACTIVE' },
+            { amount: 80, dispense_status: 'VOID' },
+        ],
+    });
+
+    assert.equal(total, 150.30);
+});
+
+test('dispensary can void a prescribed test only when a removal reason is given', () => {
+    const prescribedTests = [
+        { consultation_test_id: 21, test_name: 'CBC', amount: 50.30, version: 1 },
+        { consultation_test_id: 22, test_name: 'ESR', amount: 80, version: 1 },
+    ];
+
+    const normalized = validatePrescribedTests({
+        prescribedTests,
+        submittedTests: [
+            { consultation_test_id: 21, dispense_status: 'ACTIVE', version: 1 },
+            {
+                consultation_test_id: 22,
+                dispense_status: 'VOID',
+                void_reason: 'Patient already completed this test outside',
+                version: 1,
+            },
+        ],
+    });
+
+    assert.deepEqual(normalized.map((item) => ({
+        id: item.consultation_test_id,
+        status: item.dispense_status,
+        reason: item.void_reason,
+    })), [
+        { id: 21, status: 'ACTIVE', reason: null },
+        { id: 22, status: 'VOID', reason: 'Patient already completed this test outside' },
+    ]);
+
+    assert.throws(
+        () => validatePrescribedTests({
+            prescribedTests,
+            submittedTests: [
+                { consultation_test_id: 21, dispense_status: 'ACTIVE', version: 1 },
+                { consultation_test_id: 22, dispense_status: 'VOID', version: 1 },
+            ],
+        }),
+        (error) => error.statusCode === 400 && /Removal reason is required/.test(error.message)
     );
 });
 

@@ -636,6 +636,11 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
             consultation_test_id: test.consultation_test_id,
             test_name: test.test_name,
             amount: test.amount,
+            dispense_status: test.dispense_status || 'ACTIVE',
+            void_reason: test.dispense_status === 'VOID' ? test.void_reason || null : null,
+            voided_by: test.dispense_status === 'VOID' ? test.voided_by || null : null,
+            voided_at: test.dispense_status === 'VOID' ? test.voided_at || null : null,
+            version: Number(test.version || 1),
         })),
     };
 };
@@ -741,7 +746,12 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
         `SELECT
             id AS consultation_test_id,
             test_name,
-            amount
+            amount,
+            COALESCE(dispense_status, 'ACTIVE') AS dispense_status,
+            void_reason,
+            voided_by,
+            voided_at,
+            COALESCE(version, 1) AS version
          FROM tbl_consultation_tests
          WHERE consultation_id = ?
          ORDER BY id ASC`,
