@@ -5,6 +5,7 @@ const { normalizeAmount, collectMedicationBillPayment } = require('./billingServ
 
 const ALLOCATION_ORDERS = Object.freeze({
     CURRENT_FIRST: 'CURRENT_FIRST',
+    CURRENT_ONLY: 'CURRENT_ONLY',
     PREVIOUS_FIRST: 'PREVIOUS_FIRST',
 });
 
@@ -25,7 +26,7 @@ const ensureValidAllocationOrder = (allocationOrder) => {
     const normalized = String(allocationOrder || ALLOCATION_ORDERS.CURRENT_FIRST).trim().toUpperCase();
 
     if (!Object.values(ALLOCATION_ORDERS).includes(normalized)) {
-        throw new AppError('allocation_order must be CURRENT_FIRST or PREVIOUS_FIRST', 400);
+        throw new AppError('allocation_order must be CURRENT_FIRST, CURRENT_ONLY or PREVIOUS_FIRST', 400);
     }
 
     return normalized;
@@ -270,7 +271,7 @@ const allocateReceivedAmount = ({
 
     const previous = (Array.isArray(previousBills) ? previousBills : [])
         .map((bill) => ({
-            bill_id: Number(bill.bill_id),
+            bill_id: Number(bill.bill_id || bill.bill_id),
             pending_amount: normalizeAmount(bill.pending_amount) ?? 0,
         }))
         .filter((bill) => Number.isInteger(bill.bill_id) && bill.bill_id > 0 && bill.pending_amount > 0);
@@ -311,9 +312,15 @@ const allocateReceivedAmount = ({
     if (order === ALLOCATION_ORDERS.PREVIOUS_FIRST) {
         applyToPrevious();
         applyToCurrent();
+    } else if (order === ALLOCATION_ORDERS.CURRENT_ONLY) {
+        applyToCurrent();
     } else {
         applyToCurrent();
         applyToPrevious();
+    }
+
+    if (order === ALLOCATION_ORDERS.CURRENT_ONLY && remaining > 0) {
+        throw new AppError('amount cannot be greater than today\'s bill unless previous pending is also collected', 400);
     }
 
     const previousAppliedTotal = Number(previousAllocations.reduce((sum, item) => sum + item.amount, 0).toFixed(2));

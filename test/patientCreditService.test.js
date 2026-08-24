@@ -79,6 +79,32 @@ test('paying zero borrows the full current bill and leaves previous dues', () =>
     assert.equal(result.total_remaining, 700);
 });
 
+test('current-only leftover cannot be applied to previous dues', () => {
+    assert.throws(
+        () => allocateReceivedAmount({
+            receivedAmount: 800,
+            currentPending: 700,
+            previousBills: [{ bill_id: 11, pending_amount: 200 }],
+            allocationOrder: 'CURRENT_ONLY',
+        }),
+        (error) => error.statusCode === 400 && /today's bill/.test(error.message)
+    );
+});
+
+test('current-only underpay leaves previous dues untouched', () => {
+    const result = allocateReceivedAmount({
+        receivedAmount: 500,
+        currentPending: 700,
+        previousBills: [{ bill_id: 11, pending_amount: 200 }],
+        allocationOrder: 'CURRENT_ONLY',
+    });
+
+    assert.equal(result.current_applied, 500);
+    assert.equal(result.current_remaining, 200);
+    assert.equal(result.previous_applied, 0);
+    assert.equal(result.previous_remaining, 200);
+});
+
 test('overpaying total due is rejected', () => {
     assert.throws(
         () => allocateReceivedAmount({
