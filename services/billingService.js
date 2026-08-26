@@ -5,6 +5,10 @@ const { getBillableDispensingItems } = require('./dispensaryPricingService');
 
 const PAYMENT_MODES = new Set(['CASH', 'ONLINE']);
 const PAYMENT_STATUSES = new Set(['UNPAID', 'PAID', 'PARTIAL']);
+const ALLOCATION_KINDS = Object.freeze({
+    CURRENT: 'CURRENT',
+    PREVIOUS: 'PREVIOUS',
+});
 const PAYMENT_SETTLEMENT_TYPES = Object.freeze({
     COLLECTED: 'COLLECTED',
     FOLLOW_UP: 'FOLLOW_UP',
@@ -158,6 +162,86 @@ const replaceMedicationBillItems = async ({
     }
 };
 
+const ensureValidAllocationKind = (allocationKind) => {
+    const normalized = String(allocationKind || ALLOCATION_KINDS.CURRENT).trim().toUpperCase();
+
+    if (!Object.values(ALLOCATION_KINDS).includes(normalized)) {
+        throw new AppError('allocation_kind must be CURRENT or PREVIOUS', 400);
+    }
+
+    return normalized;
+};
+
+const resolveSettlementSourceBillId = (settlementSourceBillId, fallbackBillId) => {
+    if (settlementSourceBillId === null) {
+        return null;
+    }
+
+    const parsed = Number(settlementSourceBillId === undefined ? fallbackBillId : settlementSourceBillId);
+
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        return fallbackBillId || null;
+    }
+
+    return parsed;
+};
+
+const mapBillPaymentRow = (row) => ({
+    payment_id: Number(row.payment_id),
+    bill_id: Number(row.bill_id),
+    bill_number: row.bill_number || null,
+    bill_type: row.bill_type || null,
+    appointment_id: row.appointment_id ? Number(row.appointment_id) : null,
+    consultation_id: row.consultation_id ? Number(row.consultation_id) : null,
+    patient_id: row.patient_id ? Number(row.patient_id) : null,
+    payment_for: row.payment_for,
+    allocation_kind: String(row.allocation_kind || ALLOCATION_KINDS.CURRENT).toUpperCase(),
+    settlement_source_bill_id: row.settlement_source_bill_id ? Number(row.settlement_source_bill_id) : null,
+    settlement_source_bill_number: row.settlement_source_bill_number || null,
+    amount: normalizeAmount(row.amount) ?? 0,
+    pending_before: row.pending_before == null ? null : (normalizeAmount(row.pending_before) ?? 0),
+    pending_after: row.pending_after == null ? null : (normalizeAmount(row.pending_after) ?? 0),
+    payment_mode: row.payment_mode,
+    transaction_reference: row.transaction_reference || null,
+    remark: row.remark || null,
+    collected_by_user_id: row.collected_by_user_id ? Number(row.collected_by_user_id) : null,
+    collected_by_role: row.collected_by_role || null,
+    collected_at: row.collected_at,
+    status: row.status,
+    created_at: row.created_at,
+});
+
+const billPaymentSelectSql = `
+    bp.id AS payment_id,
+    bp.bill_id,
+    b.bill_number,
+    b.bill_type,
+    bp.appointment_id,
+    bp.consultation_id,
+    bp.patient_id,
+    bp.payment_for,
+    bp.allocation_kind,
+    bp.settlement_source_bill_id,
+    src.bill_number AS settlement_source_bill_number,
+    bp.amount,
+    bp.pending_before,
+    bp.pending_after,
+    bp.payment_mode,
+    bp.transaction_reference,
+    bp.remark,
+    bp.collected_by_user_id,
+    bp.collected_by_role,
+    bp.collected_at,
+    bp.status,
+    bp.created_at
+`;
+
+const billPaymentFromSql = `
+    FROM tbl_bill_payments bp
+    JOIN tbl_bills b ON b.id = bp.bill_id
+    LEFT JOIN tbl_bills src ON src.id = bp.settlement_source_bill_id
+`;
+
 const collectBillPayment = async ({
     connection,
     billId,
@@ -171,6 +255,8 @@ const collectBillPayment = async ({
     collectedByRole,
     expectedBillType,
     paymentFor,
+    allocationKind = ALLOCATION_KINDS.CURRENT,
+    settlementSourceBillId,
 }) => {
     const normalizedMode = ensureValidPaymentMode(paymentMode);
     const normalizedTransactionReference = transactionReference ? String(transactionReference).trim() : null;
@@ -259,18 +345,24 @@ const collectBillPayment = async ({
     const nextPaidAmount = normalizeAmount(paidAmount + normalizedAmount) ?? paidAmount;
     const nextPendingAmount = normalizeAmount(totalAmount - nextPaidAmount) ?? 0;
     const nextPaymentStatus = nextPendingAmount <= 0 ? 'PAID' : 'PARTIAL';
+    const resolvedAllocationKind = ensureValidAllocationKind(allocationKind);
+    const resolvedSettlementSourceBillId = resolveSettlementSourceBillId(settlementSourceBillId, bill.id);
 
     await connection.execute(
         `INSERT INTO tbl_bill_payments
-         (bill_id, appointment_id, consultation_id, patient_id, payment_for, amount, payment_mode, transaction_reference, remark, collected_by_user_id, collected_by_role, collected_at, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'SUCCESS')`,
+         (bill_id, appointment_id, consultation_id, patient_id, payment_for, allocation_kind, settlement_source_bill_id, amount, pending_before, pending_after, payment_mode, transaction_reference, remark, collected_by_user_id, collected_by_role, collected_at, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), 'SUCCESS')`,
         [
             bill.id,
             bill.appointment_id,
             bill.consultation_id,
             bill.patient_id,
             paymentFor,
+            resolvedAllocationKind,
+            resolvedSettlementSourceBillId,
             normalizedAmount,
+            dueAmount,
+            nextPendingAmount,
             normalizedMode,
             normalizedTransactionReference,
             remark,
@@ -307,6 +399,11 @@ const collectBillPayment = async ({
         appointmentId: bill.appointment_id,
         consultationId: bill.consultation_id,
         paymentStatus: nextPaymentStatus,
+        allocationKind: resolvedAllocationKind,
+        settlementSourceBillId: resolvedSettlementSourceBillId,
+        amount: normalizedAmount,
+        pendingBefore: dueAmount,
+        pendingAfter: nextPendingAmount,
     };
 };
 
@@ -386,28 +483,22 @@ const getBillDetailById = async (billId) => {
         return null;
     }
 
-    const [payments, items] = await Promise.all([
+    const [paymentRows, previousPendingRows, items] = await Promise.all([
         query(
-            `SELECT
-                id AS payment_id,
-                bill_id,
-                appointment_id,
-                consultation_id,
-                patient_id,
-                payment_for,
-                amount,
-                payment_mode,
-                transaction_reference,
-                remark,
-                collected_by_user_id,
-                collected_by_role,
-                collected_at,
-                status,
-                created_at
-             FROM tbl_bill_payments
-             WHERE bill_id = ?
-             ORDER BY id ASC`,
+            `SELECT ${billPaymentSelectSql}
+             ${billPaymentFromSql}
+             WHERE bp.bill_id = ?
+             ORDER BY bp.id ASC`,
             [billId]
+        ),
+        query(
+            `SELECT ${billPaymentSelectSql}
+             ${billPaymentFromSql}
+             WHERE bp.settlement_source_bill_id = ?
+               AND bp.bill_id <> ?
+               AND bp.status = 'SUCCESS'
+             ORDER BY bp.id ASC`,
+            [billId, billId]
         ),
         query(
             `SELECT
@@ -428,9 +519,25 @@ const getBillDetailById = async (billId) => {
         ),
     ]);
 
+    const payments = paymentRows.map(mapBillPaymentRow);
+    const previousPendingSettlements = previousPendingRows.map(mapBillPaymentRow);
+
     return {
         ...summary,
         payments,
+        previous_pending_settlements: previousPendingSettlements,
+        payment_allocation: {
+            towards_this_bill: Number(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0).toFixed(2)),
+            towards_previous_pending: Number(previousPendingSettlements.reduce((sum, payment) => sum + Number(payment.amount || 0), 0).toFixed(2)),
+            previous_bills: previousPendingSettlements.map((payment) => ({
+                bill_id: payment.bill_id,
+                bill_number: payment.bill_number,
+                amount: payment.amount,
+                pending_before: payment.pending_before,
+                pending_after: payment.pending_after,
+                collected_at: payment.collected_at,
+            })),
+        },
         items,
     };
 };
@@ -514,12 +621,15 @@ const getAppointmentBillingSummaryByAppointmentId = async (appointmentId) => {
     const firstRow = billRows[0];
 
     const mergedPayments = validBills
-        .flatMap((bill) => (bill.payments || []).map((payment) => ({
-            ...payment,
-            bill_id: bill.bill_id,
-            bill_number: bill.bill_number,
-            bill_type: bill.bill_type,
-        })))
+        .flatMap((bill) => [
+            ...(bill.payments || []).map((payment) => ({
+                ...payment,
+                bill_id: bill.bill_id,
+                bill_number: bill.bill_number,
+                bill_type: bill.bill_type,
+            })),
+            ...(bill.previous_pending_settlements || []),
+        ])
         .sort((a, b) => new Date(a.collected_at || a.created_at || 0).getTime() - new Date(b.collected_at || b.created_at || 0).getTime());
 
     const grandTotal = validBills.reduce((sum, bill) => sum + (Number(bill.total_amount) || 0), 0);
@@ -738,6 +848,8 @@ const collectMedicationBillPayment = async ({
     remark = null,
     collectedByUserId,
     collectedByRole,
+    allocationKind = ALLOCATION_KINDS.CURRENT,
+    settlementSourceBillId,
 }) => {
     return collectBillPayment({
         connection,
@@ -751,6 +863,8 @@ const collectMedicationBillPayment = async ({
         collectedByRole,
         expectedBillType: 'MEDICATION',
         paymentFor: 'MEDICATION',
+        allocationKind,
+        settlementSourceBillId,
     });
 };
 
@@ -960,6 +1074,7 @@ const createRepeatMedicineBill = async ({
 module.exports = {
     PAYMENT_MODES,
     PAYMENT_SETTLEMENT_TYPES,
+    ALLOCATION_KINDS,
     createConsultationBillForAppointment,
     transferConsultationBillToAppointment,
     collectConsultationBillPayment,

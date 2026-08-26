@@ -333,6 +333,28 @@ const listBills = asyncHandler(async (req, res) => {
                 (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1),
                 NULL
             ) AS payment_mode,
+            COALESCE((
+                SELECT SUM(bp.amount)
+                FROM tbl_bill_payments bp
+                WHERE bp.bill_id = b.id
+                  AND bp.status = 'SUCCESS'
+                  AND COALESCE(bp.allocation_kind, 'CURRENT') <> 'PREVIOUS'
+            ), 0) AS paid_towards_this_bill,
+            COALESCE((
+                SELECT SUM(bp.amount)
+                FROM tbl_bill_payments bp
+                WHERE bp.settlement_source_bill_id = b.id
+                  AND bp.bill_id <> b.id
+                  AND bp.status = 'SUCCESS'
+                  AND bp.allocation_kind = 'PREVIOUS'
+            ), 0) AS paid_towards_previous_pending,
+            COALESCE((
+                SELECT SUM(bp.amount)
+                FROM tbl_bill_payments bp
+                WHERE bp.bill_id = b.id
+                  AND bp.status = 'SUCCESS'
+                  AND bp.allocation_kind = 'PREVIOUS'
+            ), 0) AS borrowed_amount_collected,
             CASE
                 WHEN b.appointment_id IS NULL THEN b.created_at
                 ELSE a.actual_completed_at

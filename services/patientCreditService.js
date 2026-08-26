@@ -1,7 +1,7 @@
 const AppError = require('../utils/AppError');
 const { query } = require('../config/db');
 const { decorateTokenFields } = require('../utils/tokenDisplay');
-const { normalizeAmount, collectMedicationBillPayment } = require('./billingService');
+const { ALLOCATION_KINDS, normalizeAmount, collectMedicationBillPayment } = require('./billingService');
 
 const ALLOCATION_ORDERS = Object.freeze({
     CURRENT_FIRST: 'CURRENT_FIRST',
@@ -421,11 +421,15 @@ const applyMedicationReceipt = async ({
             remark: settlementRemark,
             collectedByUserId,
             collectedByRole,
+            allocationKind: ALLOCATION_KINDS.CURRENT,
+            settlementSourceBillId: currentBillId,
         });
         payments.push({
             bill_id: currentBillId,
             amount: allocation.current_applied,
             kind: 'CURRENT',
+            pending_before: result.pendingBefore,
+            pending_after: result.pendingAfter,
             payment_status: result.paymentStatus,
         });
     }
@@ -440,11 +444,15 @@ const applyMedicationReceipt = async ({
             remark: settlementRemark,
             collectedByUserId,
             collectedByRole,
+            allocationKind: ALLOCATION_KINDS.PREVIOUS,
+            settlementSourceBillId: currentBillId || null,
         });
         payments.push({
             bill_id: item.bill_id,
             amount: item.amount,
             kind: 'PREVIOUS',
+            pending_before: result.pendingBefore,
+            pending_after: result.pendingAfter,
             payment_status: result.paymentStatus,
         });
     }
