@@ -76,13 +76,9 @@ const buildDedupeKey = (product) => {
 };
 
 const normalizeProductPayload = (payload) => {
-    const medicineValue = normalizeString(payload?.medicine_value);
     const sourceType = String(payload?.source_type || '').trim().toUpperCase();
     const productName = normalizeString(payload?.product_name);
-
-    if (!medicineValue) {
-        throw new AppError('medicine_value is required', 400);
-    }
+    const medicineValue = normalizeString(payload?.medicine_value) || productName;
 
     if (!SOURCE_TYPES.has(sourceType)) {
         throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA, MEDICAL_PRODUCT_PRICE or DOCTOR_MANUAL', 400);
