@@ -336,6 +336,26 @@ const listBills = asyncHandler(async (req, res) => {
             COALESCE((
                 SELECT SUM(bp.amount)
                 FROM tbl_bill_payments bp
+                WHERE bp.status = 'SUCCESS'
+                  AND UPPER(bp.payment_mode) = 'CASH'
+                  AND (
+                    bp.settlement_source_bill_id = b.id
+                    OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.id)
+                  )
+            ), 0) AS cash_amount,
+            COALESCE((
+                SELECT SUM(bp.amount)
+                FROM tbl_bill_payments bp
+                WHERE bp.status = 'SUCCESS'
+                  AND UPPER(bp.payment_mode) = 'ONLINE'
+                  AND (
+                    bp.settlement_source_bill_id = b.id
+                    OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.id)
+                  )
+            ), 0) AS online_amount,
+            COALESCE((
+                SELECT SUM(bp.amount)
+                FROM tbl_bill_payments bp
                 WHERE bp.bill_id = b.id
                   AND bp.status = 'SUCCESS'
                   AND COALESCE(bp.allocation_kind, 'CURRENT') <> 'PREVIOUS'

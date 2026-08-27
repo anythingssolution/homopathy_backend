@@ -17,6 +17,7 @@ const {
 } = require('./shared');
     const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
 const { getAppointmentChain } = require('../../../services/followupService');
+const { getMedicationPaymentSummaries } = require('../../../services/billingService');
 const {
     buildPlateBlankTimelineRows,
     getActiveProtectedWindowAppointmentIds,
@@ -328,6 +329,14 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
             ),
         }))
     );
+
+    const paymentSummaries = await getMedicationPaymentSummaries({
+        consultationIds: consultationRows.map((row) => Number(row.consultation_id)).filter(Boolean),
+    });
+    data.forEach((item, index) => {
+        item.payment_summary = paymentSummaries.byConsultationId.get(Number(consultationRows[index].consultation_id))
+            || { cash_amount: 0, online_amount: 0, payment_mode: null };
+    });
 
     return res.status(200).json({
         success: true,

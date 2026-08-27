@@ -464,6 +464,70 @@ const applyMedicationReceipt = async ({
     };
 };
 
+const applyMedicationReceipts = async ({
+    payments = null,
+    receivedAmount,
+    paymentMode,
+    transactionReference = null,
+    ...receiptOptions
+} = {}) => {
+    const parts = Array.isArray(payments) && payments.length > 0
+        ? payments
+            .map((part) => ({
+                paymentMode: String(part.paymentMode || part.payment_mode || '').trim().toUpperCase(),
+                amount: normalizeAmount(part.amount) ?? 0,
+                transactionReference: part.transactionReference || part.transaction_reference || null,
+            }))
+            .filter((part) => part.amount > 0)
+        : [{
+            paymentMode,
+            amount: normalizeAmount(receivedAmount) ?? 0,
+            transactionReference,
+        }].filter((part) => part.amount > 0);
+
+    if (parts.length === 0) {
+        return applyMedicationReceipt({
+            ...receiptOptions,
+            receivedAmount: 0,
+            paymentMode: paymentMode || 'CASH',
+            transactionReference,
+        });
+    }
+
+    const mergedPayments = [];
+    const mergedPreviousAllocations = [];
+    let currentApplied = 0;
+    let previousApplied = 0;
+    let last = null;
+
+    for (const part of parts) {
+        last = await applyMedicationReceipt({
+            ...receiptOptions,
+            receivedAmount: part.amount,
+            paymentMode: part.paymentMode,
+            transactionReference: part.transactionReference,
+        });
+        currentApplied = Number((currentApplied + Number(last.current_applied || 0)).toFixed(2));
+        previousApplied = Number((previousApplied + Number(last.previous_applied || 0)).toFixed(2));
+        mergedPayments.push(...(last.payments || []).map((payment) => ({
+            ...payment,
+            payment_mode: part.paymentMode,
+        })));
+        mergedPreviousAllocations.push(...(last.previous_allocations || []));
+    }
+
+    const totalReceived = Number(parts.reduce((sum, part) => sum + part.amount, 0).toFixed(2));
+
+    return {
+        ...last,
+        received: totalReceived,
+        current_applied: currentApplied,
+        previous_applied: previousApplied,
+        previous_allocations: mergedPreviousAllocations,
+        payments: mergedPayments,
+    };
+};
+
 const buildAccountDuesPayload = (bills = [], extras = {}) => ({
     ...summarizeOutstandingBills(bills),
     ...extras,
@@ -473,6 +537,7 @@ module.exports = {
     ALLOCATION_ORDERS,
     allocateReceivedAmount,
     applyMedicationReceipt,
+    applyMedicationReceipts,
     buildAccountDuesPayload,
     ensureValidAllocationOrder,
     filterOutstandingBills,

@@ -7,10 +7,11 @@ const {
     createMedicationBillFromConsultation,
     createRepeatMedicineBill,
     getBillDetailById,
+    getMedicationPaymentSummaries,
 } = require('../../services/billingService');
 const {
     ALLOCATION_ORDERS,
-    applyMedicationReceipt,
+    applyMedicationReceipts,
     ensureValidAllocationOrder,
     filterOutstandingBills,
     getMedicationOutstandingMap,
@@ -62,25 +63,90 @@ const toPositiveAmount = (value) => {
 
 const toBoolean = (value) => value === true || String(value).trim().toLowerCase() === 'true';
 
+const isSplitPaymentPayload = (value) => (
+    value?.split === true
+    || String(value?.split || '').trim().toLowerCase() === 'true'
+    || (Array.isArray(value?.payments) && value.payments.length > 0)
+);
+
 const normalizeMedicalPaymentPayload = (value) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         return null;
     }
 
-    const hasAnyPaymentField = ['payment_mode', 'amount', 'transaction_reference', 'remark', 'allocation_order']
-        .some((field) => value[field] !== undefined && value[field] !== null && String(value[field]).trim() !== '');
+    const hasAnyPaymentField = [
+        'payment_mode',
+        'amount',
+        'cash_amount',
+        'online_amount',
+        'split',
+        'payments',
+        'transaction_reference',
+        'remark',
+        'allocation_order',
+    ].some((field) => value[field] !== undefined && value[field] !== null && String(value[field]).trim() !== '');
 
     if (!hasAnyPaymentField) {
         return null;
     }
 
-    const paymentMode = value.payment_mode ? String(value.payment_mode).trim().toUpperCase() : '';
-    const amount = toPositiveAmount(value.amount);
     const transactionReference = value.transaction_reference ? String(value.transaction_reference).trim() : null;
     const remark = value.remark ? String(value.remark).trim() : null;
     const allocationOrder = value.allocation_order
         ? ensureValidAllocationOrder(value.allocation_order)
         : ALLOCATION_ORDERS.CURRENT_FIRST;
+
+    if (isSplitPaymentPayload(value)) {
+        const payments = Array.isArray(value.payments) && value.payments.length > 0
+            ? value.payments.map((part) => {
+                const mode = String(part?.payment_mode || '').trim().toUpperCase();
+                const amount = toPositiveAmount(part?.amount);
+                if (amount === null) {
+                    throw new AppError('payment.payments amount must be a valid non-negative number', 400);
+                }
+                if (amount > 0 && !['CASH', 'ONLINE'].includes(mode)) {
+                    throw new AppError('payment.payments payment_mode must be CASH or ONLINE', 400);
+                }
+                const partReference = part?.transaction_reference
+                    ? String(part.transaction_reference).trim()
+                    : (mode === 'ONLINE' ? transactionReference : null);
+                if (mode === 'ONLINE' && amount > 0 && !partReference) {
+                    throw new AppError('transaction_reference is required for online amount', 400);
+                }
+                return {
+                    payment_mode: mode || 'CASH',
+                    amount,
+                    transaction_reference: mode === 'ONLINE' ? partReference : null,
+                };
+            }).filter((part) => part.amount > 0)
+            : (() => {
+                const cashAmount = toPositiveAmount(value.cash_amount ?? 0);
+                const onlineAmount = toPositiveAmount(value.online_amount ?? 0);
+                if (cashAmount === null || onlineAmount === null) {
+                    throw new AppError('cash_amount and online_amount must be valid non-negative numbers', 400);
+                }
+                if (onlineAmount > 0 && !transactionReference) {
+                    throw new AppError('transaction_reference is required for online amount', 400);
+                }
+                return [
+                    cashAmount > 0 ? { payment_mode: 'CASH', amount: cashAmount, transaction_reference: null } : null,
+                    onlineAmount > 0 ? { payment_mode: 'ONLINE', amount: onlineAmount, transaction_reference: transactionReference } : null,
+                ].filter(Boolean);
+            })();
+
+        const amount = Number(payments.reduce((sum, part) => sum + Number(part.amount || 0), 0).toFixed(2));
+        return {
+            payment_mode: payments.length === 1 ? payments[0].payment_mode : 'CASH',
+            amount,
+            transaction_reference: transactionReference,
+            remark,
+            allocation_order: allocationOrder,
+            payments,
+        };
+    }
+
+    const paymentMode = value.payment_mode ? String(value.payment_mode).trim().toUpperCase() : '';
+    const amount = toPositiveAmount(value.amount);
 
     if (amount === null) {
         throw new AppError('payment.amount must be a valid non-negative number', 400);
@@ -96,6 +162,13 @@ const normalizeMedicalPaymentPayload = (value) => {
         transaction_reference: transactionReference,
         remark,
         allocation_order: allocationOrder,
+        payments: amount > 0
+            ? [{
+                payment_mode: paymentMode || 'CASH',
+                amount,
+                transaction_reference: paymentMode === 'ONLINE' ? transactionReference : null,
+            }]
+            : [],
     };
 };
 
@@ -174,7 +247,7 @@ const finalizeMedicalPrescription = async ({
     let paymentResult = null;
 
     if (payment) {
-        paymentResult = await applyMedicationReceipt({
+        paymentResult = await applyMedicationReceipts({
             connection,
             patientId: rows[0].patient_id,
             currentBillId: billResult.billId,
@@ -187,6 +260,7 @@ const finalizeMedicalPrescription = async ({
             allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
             branchId: rows[0].branch_id,
             sourceConsultationId: consultationId,
+            payments: payment.payments,
         });
     }
 
@@ -819,7 +893,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
         billId = billResult.billId;
 
         if (payment) {
-            paymentAllocation = await applyMedicationReceipt({
+            paymentAllocation = await applyMedicationReceipts({
                 connection,
                 patientId,
                 currentBillId: billId,
@@ -832,6 +906,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
                 allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
                 branchId,
                 sourceConsultationId,
+                payments: payment.payments,
             });
         }
     });
@@ -1200,10 +1275,21 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     const medicationBillsByConsultationId = new Map(
         medicationBillRows.map((bill) => [Number(bill.consultation_id), bill])
     );
+    const paymentSummaries = await getMedicationPaymentSummaries({
+        consultationIds,
+        billIds: repeatRows.map((row) => Number(row.bill_id)).filter(Boolean),
+    });
     prescriptionData.forEach((item) => {
         const bill = medicationBillsByConsultationId.get(Number(item.consultation_id));
         if (bill) {
-            item.medication_bill = bill;
+            item.medication_bill = {
+                ...bill,
+                ...(paymentSummaries.byConsultationId.get(Number(item.consultation_id)) || {
+                    cash_amount: 0,
+                    online_amount: 0,
+                    payment_mode: null,
+                }),
+            };
         }
     });
 
@@ -1275,6 +1361,11 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 paid_amount: row.paid_amount,
                 pending_amount: row.pending_amount,
                 payment_status: row.payment_status,
+                ...(paymentSummaries.byBillId.get(Number(row.bill_id)) || {
+                    cash_amount: 0,
+                    online_amount: 0,
+                    payment_mode: null,
+                }),
             },
             updated_at: row.updated_at,
             created_at: row.created_at,

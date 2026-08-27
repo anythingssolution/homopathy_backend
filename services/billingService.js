@@ -186,6 +186,71 @@ const resolveSettlementSourceBillId = (settlementSourceBillId, fallbackBillId) =
     return parsed;
 };
 
+const toPaymentSummary = (cashAmount = 0, onlineAmount = 0) => {
+    const cash = Number((Number(cashAmount || 0)).toFixed(2));
+    const online = Number((Number(onlineAmount || 0)).toFixed(2));
+    return {
+        cash_amount: cash,
+        online_amount: online,
+        payment_mode: cash > 0 && online > 0 ? 'MIXED' : online > 0 ? 'ONLINE' : cash > 0 ? 'CASH' : null,
+    };
+};
+
+const getMedicationPaymentSummaries = async ({ consultationIds = [], billIds = [] } = {}) => {
+    const byConsultationId = new Map();
+    const byBillId = new Map();
+    const normalizedConsultationIds = [...new Set((consultationIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+    const normalizedBillIds = [...new Set((billIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+    const conditions = [];
+    const params = [];
+
+    if (normalizedConsultationIds.length > 0) {
+        conditions.push(`(b.consultation_id IN (${normalizedConsultationIds.map(() => '?').join(',')}) AND b.bill_type = 'MEDICATION' AND b.status = 'ACTIVE')`);
+        params.push(...normalizedConsultationIds);
+    }
+    if (normalizedBillIds.length > 0) {
+        conditions.push(`b.id IN (${normalizedBillIds.map(() => '?').join(',')})`);
+        params.push(...normalizedBillIds);
+    }
+    if (conditions.length === 0) {
+        return { byConsultationId, byBillId };
+    }
+
+    const rows = await query(
+        `SELECT
+            b.id AS bill_id,
+            b.consultation_id,
+            COALESCE(SUM(CASE WHEN UPPER(bp.payment_mode) = 'CASH' THEN bp.amount ELSE 0 END), 0) AS cash_amount,
+            COALESCE(SUM(CASE WHEN UPPER(bp.payment_mode) = 'ONLINE' THEN bp.amount ELSE 0 END), 0) AS online_amount
+         FROM tbl_bills b
+         LEFT JOIN tbl_bill_payments bp
+           ON bp.status = 'SUCCESS'
+          AND (
+            bp.settlement_source_bill_id = b.id
+            OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.id)
+          )
+         WHERE ${conditions.join(' OR ')}
+         GROUP BY b.id, b.consultation_id`,
+        params
+    );
+
+    rows.forEach((row) => {
+        const summary = toPaymentSummary(row.cash_amount, row.online_amount);
+        if (row.bill_id) {
+            byBillId.set(Number(row.bill_id), summary);
+        }
+        if (row.consultation_id) {
+            const existing = byConsultationId.get(Number(row.consultation_id)) || toPaymentSummary(0, 0);
+            byConsultationId.set(Number(row.consultation_id), toPaymentSummary(
+                existing.cash_amount + summary.cash_amount,
+                existing.online_amount + summary.online_amount
+            ));
+        }
+    });
+
+    return { byConsultationId, byBillId };
+};
+
 const mapBillPaymentRow = (row) => ({
     payment_id: Number(row.payment_id),
     bill_id: Number(row.bill_id),
@@ -521,9 +586,19 @@ const getBillDetailById = async (billId) => {
 
     const payments = paymentRows.map(mapBillPaymentRow);
     const previousPendingSettlements = previousPendingRows.map(mapBillPaymentRow);
+    const successfulPayments = payments.filter((payment) => String(payment.status || '').toUpperCase() === 'SUCCESS');
+    const collectedCash = successfulPayments.reduce(
+        (sum, payment) => sum + (String(payment.payment_mode || '').toUpperCase() === 'CASH' ? Number(payment.amount || 0) : 0),
+        0
+    );
+    const collectedOnline = successfulPayments.reduce(
+        (sum, payment) => sum + (String(payment.payment_mode || '').toUpperCase() === 'ONLINE' ? Number(payment.amount || 0) : 0),
+        0
+    );
 
     return {
         ...summary,
+        ...toPaymentSummary(collectedCash, collectedOnline),
         payments,
         previous_pending_settlements: previousPendingSettlements,
         payment_allocation: {
@@ -1085,4 +1160,6 @@ module.exports = {
     getBillDetailById,
     getAppointmentBillingSummaryByAppointmentId,
     normalizeAmount,
+    toPaymentSummary,
+    getMedicationPaymentSummaries,
 };

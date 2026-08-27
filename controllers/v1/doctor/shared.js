@@ -7,6 +7,7 @@ const { decorateTokenFields } = require('../../../utils/tokenDisplay');
 const { normalizeRoleCode } = require('../../../utils/roles');
 const { getCrossModuleAccessFlag } = require('../../../utils/moduleAccess');
 const { projectDispensingStatus } = require('../../../services/dispensaryPricingService');
+const { getMedicationPaymentSummaries } = require('../../../services/billingService');
 const {
     getAppointmentPatientColumns,
     getAppointmentPatientJoin,
@@ -807,26 +808,38 @@ const getMedicalPricingAggregateByConsultationId = async (consultationId) => {
     };
 };
 
-const enrichAppointmentChainWithConsultationData = async (chainRows = []) => Promise.all(
-    chainRows.map(async (row) => {
-        if (!row.consultation_id) {
+const enrichAppointmentChainWithConsultationData = async (chainRows = []) => {
+    const enriched = await Promise.all(
+        chainRows.map(async (row) => {
+            if (!row.consultation_id) {
+                return {
+                    ...row,
+                    consultation: null,
+                    pricing: null,
+                    payment_summary: { cash_amount: 0, online_amount: 0, payment_mode: null },
+                };
+            }
+
+            const consultation = await getConsultationAggregateByAppointmentId(row.appointment_id);
+            const pricing = await getMedicalPricingAggregateByConsultationId(row.consultation_id);
+
             return {
                 ...row,
-                consultation: null,
-                pricing: null,
+                consultation,
+                pricing,
             };
-        }
+        })
+    );
 
-        const consultation = await getConsultationAggregateByAppointmentId(row.appointment_id);
-        const pricing = await getMedicalPricingAggregateByConsultationId(row.consultation_id);
+    const consultationIds = enriched.map((row) => Number(row.consultation_id)).filter(Boolean);
+    const paymentSummaries = await getMedicationPaymentSummaries({ consultationIds });
 
-        return {
-            ...row,
-            consultation,
-            pricing,
-        };
-    })
-);
+    return enriched.map((row) => ({
+        ...row,
+        payment_summary: paymentSummaries.byConsultationId.get(Number(row.consultation_id))
+            || { cash_amount: 0, online_amount: 0, payment_mode: null },
+    }));
+};
 
 const getConsultationHistoryRows = async ({
     branchId = null,

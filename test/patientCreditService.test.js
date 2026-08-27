@@ -128,3 +128,26 @@ test('outstanding summary excludes the current consultation', () => {
         bills,
     });
 });
+
+test('cash then online still pays today first and leftover to previous pending', () => {
+    const afterCash = allocateReceivedAmount({
+        receivedAmount: 400,
+        currentPending: 600,
+        previousBills: [{ bill_id: 11, pending_amount: 500 }],
+        allocationOrder: 'CURRENT_FIRST',
+    });
+
+    const afterOnline = allocateReceivedAmount({
+        receivedAmount: 300,
+        currentPending: afterCash.current_remaining,
+        previousBills: [{ bill_id: 11, pending_amount: afterCash.previous_remaining }],
+        allocationOrder: 'CURRENT_FIRST',
+    });
+
+    assert.equal(afterCash.current_applied, 400);
+    assert.equal(afterCash.previous_applied, 0);
+    assert.equal(afterOnline.current_applied, 200);
+    assert.equal(afterOnline.previous_applied, 100);
+    assert.equal(afterOnline.current_remaining, 0);
+    assert.equal(afterOnline.previous_remaining, 400);
+});
