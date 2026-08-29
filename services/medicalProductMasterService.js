@@ -222,7 +222,7 @@ const listMedicalProducts = async ({
          FROM master_medical_products mmp
          LEFT JOIN master_text_medicines mtm ON mtm.id = mmp.medicine_text_id
          ${whereSql}
-         ORDER BY mmp.updated_at DESC, mmp.id DESC
+         ORDER BY (TRIM(mmp.product_name) REGEXP '^[0-9]') ASC, mmp.product_name ASC, mmp.id ASC
          LIMIT ? OFFSET ?`,
         [...params, safeLimit, offset]
     );
