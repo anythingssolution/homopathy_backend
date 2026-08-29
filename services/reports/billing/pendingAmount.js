@@ -1,5 +1,12 @@
 const { buildBillingReportScope, query } = require('./shared');
 
+const SAME_PERSON = `
+    ax.fk_patient_id = b.patient_id
+    AND ax.is_active = 1
+    AND LOWER(COALESCE(ax.status, '')) <> 'cancelled'
+    AND ax.fk_patient_family_member_id <=> a.fk_patient_family_member_id
+`;
+
 const getPendingAmountReport = async (filters) => {
     const { whereClause, params } = buildBillingReportScope(filters);
 
@@ -16,13 +23,36 @@ const getPendingAmountReport = async (filters) => {
             b.paid_amount,
             b.pending_amount,
             b.payment_status,
+            COALESCE(a.appointment_date, DATE(b.created_at)) AS unpaid_visit_date,
             COALESCE(a.appointment_date, DATE(b.created_at)) AS due_date,
             a.auid,
             b.consultation_id,
             b.appointment_id,
             t.treatment_name,
             d.full_name AS doctor_name,
-            b.created_at
+            b.created_at,
+            DATEDIFF(CURDATE(), COALESCE(a.appointment_date, DATE(b.created_at))) AS days_unpaid,
+            (
+                SELECT COUNT(*)
+                FROM tbl_appointments ax
+                WHERE ${SAME_PERSON}
+            ) AS visit_count,
+            (
+                SELECT MIN(ax.appointment_date)
+                FROM tbl_appointments ax
+                WHERE ${SAME_PERSON}
+            ) AS first_visit_date,
+            (
+                SELECT MAX(ax.appointment_date)
+                FROM tbl_appointments ax
+                WHERE ${SAME_PERSON}
+            ) AS last_visit_date,
+            (
+                SELECT MAX(bp.collected_at)
+                FROM tbl_bill_payments bp
+                WHERE bp.bill_id = b.id
+                  AND bp.status = 'SUCCESS'
+            ) AS last_paid_at
          FROM tbl_bills b
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN tbl_consultations c ON c.id = b.consultation_id
