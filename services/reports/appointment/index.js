@@ -6,6 +6,7 @@ const getStatusAppointmentsReport = require('./statusAppointments');
 const getReceptionStatusAppointmentsReport = require('./receptionStatusAppointments');
 const getBookingSourceAppointmentsReport = require('./bookingSourceAppointments');
 const getBookingSubjectAppointmentsReport = require('./bookingSubjectAppointments');
+const getFirstConsultationsReport = require('./firstConsultations');
 
 const getAppointmentReports = async (filters) => {
     const [
@@ -17,6 +18,7 @@ const getAppointmentReports = async (filters) => {
         receptionStatusAppointments,
         bookingSourceAppointments,
         bookingSubjectAppointments,
+        firstConsultations,
     ] = await Promise.all([
         getDateWiseAppointmentsReport(filters),
         getBranchWiseAppointmentsReport(filters),
@@ -26,6 +28,7 @@ const getAppointmentReports = async (filters) => {
         getReceptionStatusAppointmentsReport(filters),
         getBookingSourceAppointmentsReport(filters),
         getBookingSubjectAppointmentsReport(filters),
+        getFirstConsultationsReport(filters),
     ]);
 
     return {
@@ -37,6 +40,7 @@ const getAppointmentReports = async (filters) => {
         reception_status_appointments: receptionStatusAppointments,
         booking_source_appointments: bookingSourceAppointments,
         booking_subject_appointments: bookingSubjectAppointments,
+        first_consultations: firstConsultations,
     };
 };
 
