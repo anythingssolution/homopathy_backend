@@ -266,6 +266,7 @@ const mapBillPaymentRow = (row) => ({
     amount: normalizeAmount(row.amount) ?? 0,
     pending_before: row.pending_before == null ? null : (normalizeAmount(row.pending_before) ?? 0),
     pending_after: row.pending_after == null ? null : (normalizeAmount(row.pending_after) ?? 0),
+    collection_total_amount: row.collection_total_amount == null ? null : (normalizeAmount(row.collection_total_amount) ?? 0),
     payment_mode: row.payment_mode,
     transaction_reference: row.transaction_reference || null,
     remark: row.remark || null,
@@ -291,6 +292,23 @@ const billPaymentSelectSql = `
     bp.amount,
     bp.pending_before,
     bp.pending_after,
+    (
+        SELECT COALESCE(SUM(sibling.amount), bp.amount)
+        FROM tbl_bill_payments sibling
+        WHERE sibling.status = 'SUCCESS'
+          AND UPPER(sibling.payment_mode) = UPPER(bp.payment_mode)
+          AND sibling.collected_at = bp.collected_at
+          AND (
+            (
+                bp.settlement_source_bill_id IS NOT NULL
+                AND sibling.settlement_source_bill_id = bp.settlement_source_bill_id
+            )
+            OR (
+                bp.settlement_source_bill_id IS NULL
+                AND sibling.bill_id = bp.bill_id
+            )
+          )
+    ) AS collection_total_amount,
     bp.payment_mode,
     bp.transaction_reference,
     bp.remark,
@@ -306,6 +324,122 @@ const billPaymentFromSql = `
     JOIN tbl_bills b ON b.id = bp.bill_id
     LEFT JOIN tbl_bills src ON src.id = bp.settlement_source_bill_id
 `;
+
+const sumPaymentAmounts = (payments = []) => Number(payments.reduce((sum, payment) => (
+    sum + Number(payment.amount || 0)
+), 0).toFixed(2));
+
+const sumPaymentAmountsByMode = (payments = [], mode) => Number(payments.reduce((sum, payment) => (
+    String(payment.payment_mode || '').toUpperCase() === mode
+        ? sum + Number(payment.amount || 0)
+        : sum
+), 0).toFixed(2));
+
+const summarizePreviousPendingSettlements = (payments = []) => {
+    const byBillId = new Map();
+
+    payments
+        .filter((payment) => String(payment.status || '').toUpperCase() === 'SUCCESS')
+        .forEach((payment) => {
+            const billId = Number(payment.bill_id);
+            if (!Number.isInteger(billId) || billId <= 0) {
+                return;
+            }
+
+            const current = byBillId.get(billId) || {
+                bill_id: billId,
+                bill_number: payment.bill_number || null,
+                paid_amount: 0,
+                pending_before: payment.pending_before == null ? null : Number(payment.pending_before || 0),
+                pending_after: payment.pending_after == null ? null : Number(payment.pending_after || 0),
+                last_received_at: getPaymentEventTimeValue(payment),
+                payment_mode: payment.payment_mode || null,
+            };
+
+            const eventTime = getPaymentEventTimeValue(payment);
+            const currentTime = current.last_received_at ? new Date(current.last_received_at).getTime() : 0;
+            const nextTime = eventTime ? new Date(eventTime).getTime() : 0;
+
+            current.paid_amount = Number((Number(current.paid_amount || 0) + Number(payment.amount || 0)).toFixed(2));
+
+            if (!current.last_received_at || nextTime >= currentTime) {
+                current.pending_after = payment.pending_after == null ? current.pending_after : Number(payment.pending_after || 0);
+                current.last_received_at = eventTime;
+                current.payment_mode = payment.payment_mode || current.payment_mode;
+            }
+
+            byBillId.set(billId, current);
+        });
+
+    return Array.from(byBillId.values()).map((item) => ({
+        ...item,
+        paid_amount: Number(Number(item.paid_amount || 0).toFixed(2)),
+        pending_before: item.pending_before == null ? null : Number(Number(item.pending_before || 0).toFixed(2)),
+        pending_after: item.pending_after == null ? null : Number(Number(item.pending_after || 0).toFixed(2)),
+    }));
+};
+
+const getPaymentEventTimeValue = (payment) => payment?.collected_at || payment?.created_at || null;
+
+const getPaymentEventKeyValue = (payment) => {
+    const eventTime = getPaymentEventTimeValue(payment);
+    if (!eventTime) {
+        return '';
+    }
+
+    const parsedTime = new Date(eventTime).getTime();
+    const normalizedTime = Number.isNaN(parsedTime) ? String(eventTime) : String(parsedTime);
+    return `${normalizedTime}|${String(payment.payment_mode || '').toUpperCase()}`;
+};
+
+const buildBillPaymentBreakdown = ({ summary, payments = [], previousPendingSettlements = [] }) => {
+    const successfulPayments = payments.filter((payment) => String(payment.status || '').toUpperCase() === 'SUCCESS');
+    const directBillPayments = successfulPayments.filter((payment) => String(payment.allocation_kind || ALLOCATION_KINDS.CURRENT).toUpperCase() !== ALLOCATION_KINDS.PREVIOUS);
+    const laterPendingReceipts = successfulPayments.filter((payment) => String(payment.allocation_kind || '').toUpperCase() === ALLOCATION_KINDS.PREVIOUS);
+    const successfulPreviousSettlements = previousPendingSettlements.filter((payment) => String(payment.status || '').toUpperCase() === 'SUCCESS');
+    const timelineRows = [...directBillPayments, ...laterPendingReceipts, ...successfulPreviousSettlements];
+    const lastPayment = timelineRows
+        .filter((payment) => getPaymentEventTimeValue(payment))
+        .sort((a, b) => new Date(getPaymentEventTimeValue(b)).getTime() - new Date(getPaymentEventTimeValue(a)).getTime())[0] || null;
+    const lastPaymentKey = getPaymentEventKeyValue(lastPayment);
+    const groupedLastReceivedAmount = lastPaymentKey
+        ? timelineRows
+            .filter((payment) => getPaymentEventKeyValue(payment) === lastPaymentKey)
+            .reduce((sum, payment) => sum + Number(payment.amount || 0), 0)
+        : 0;
+
+    const receivedAtBilling = sumPaymentAmounts(directBillPayments);
+    const laterPendingReceived = sumPaymentAmounts(laterPendingReceipts);
+    const previousPendingPaid = sumPaymentAmounts(successfulPreviousSettlements);
+    const previousPendingSettlementSummary = summarizePreviousPendingSettlements(successfulPreviousSettlements);
+    const previousPendingRemaining = previousPendingSettlementSummary.reduce((sum, settlement) => (
+        sum + Number(settlement.pending_after || 0)
+    ), 0);
+    const totalPaid = Number(summary?.paid_amount || 0);
+    const pendingAmount = Number(summary?.pending_amount || 0);
+
+    return {
+        current_bill_total: Number(summary?.total_amount || 0),
+        received_at_billing: receivedAtBilling,
+        later_pending_received: laterPendingReceived,
+        previous_pending_paid: previousPendingPaid,
+        total_paid: Number(totalPaid.toFixed(2)),
+        pending_amount: Number(pendingAmount.toFixed(2)),
+        payment_status: summary?.payment_status || (pendingAmount <= 0 ? 'PAID' : totalPaid > 0 ? 'PARTIAL' : 'UNPAID'),
+        previous_pending_remaining: Number(previousPendingRemaining.toFixed(2)),
+        previous_pending_settlements_summary: previousPendingSettlementSummary,
+        cash_received_at_billing: sumPaymentAmountsByMode(directBillPayments, 'CASH'),
+        online_received_at_billing: sumPaymentAmountsByMode(directBillPayments, 'ONLINE'),
+        cash_later_pending_received: sumPaymentAmountsByMode(laterPendingReceipts, 'CASH'),
+        online_later_pending_received: sumPaymentAmountsByMode(laterPendingReceipts, 'ONLINE'),
+        last_received_amount: Number(Math.max(
+            Number(lastPayment?.collection_total_amount || 0),
+            groupedLastReceivedAmount
+        ).toFixed(2)),
+        last_received_at: getPaymentEventTimeValue(lastPayment),
+        last_received_mode: lastPayment?.payment_mode || null,
+    };
+};
 
 const collectBillPayment = async ({
     connection,
@@ -601,6 +735,11 @@ const getBillDetailById = async (billId) => {
         ...toPaymentSummary(collectedCash, collectedOnline),
         payments,
         previous_pending_settlements: previousPendingSettlements,
+        payment_breakdown: buildBillPaymentBreakdown({
+            summary,
+            payments,
+            previousPendingSettlements,
+        }),
         payment_allocation: {
             towards_this_bill: Number(payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0).toFixed(2)),
             towards_previous_pending: Number(previousPendingSettlements.reduce((sum, payment) => sum + Number(payment.amount || 0), 0).toFixed(2)),
@@ -1079,10 +1218,11 @@ const createRepeatMedicineBill = async ({
 
     const billNumber = await generateBillNumber(connection);
     const extraReasonText = normalizedAdditionalItems
+        .filter((item) => item.reason)
         .map((item) => `${item.medicine_value}: ${item.reason}`)
         .join('; ');
     const billRemark = [
-        'Repeat Medicine',
+        normalizedPrescribedItems.length > 0 ? 'Repeat Medicine' : 'Repeat Medicine - Medical Only',
         remark,
         extraReasonText ? `Medical Added Reason: ${extraReasonText}` : null,
         deliveryMode === 'COURIER' ? 'Delivery: Courier' : 'Delivery: Hand',
@@ -1122,7 +1262,10 @@ const createRepeatMedicineBill = async ({
 
     for (const item of normalizedAdditionalItems) {
         const itemAmount = normalizeAmount(item.amount) ?? 0;
-        const itemName = `${item.medicine_value} (Reason: ${item.reason})`.slice(0, 255);
+        const itemName = (item.reason
+            ? `${item.medicine_value} (Reason: ${item.reason})`
+            : item.medicine_value
+        ).slice(0, 255);
         await connection.execute(
             `INSERT INTO tbl_bill_items
              (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)

@@ -508,10 +508,34 @@ const getBillById = asyncHandler(async (req, res) => {
         throw new AppError('Medical role can only access medication bills', 403);
     }
 
+    let enrichedBill = bill;
+
+    if (String(bill.bill_type || '').toUpperCase() === 'MEDICATION') {
+        const accountDues = await getPatientMedicationOutstanding({
+            patientId: bill.patient_id,
+            branchId: req.selectedBranchId || null,
+            excludeConsultationIds: bill.consultation_id ? [bill.consultation_id] : [],
+            excludeBillIds: [bill.bill_id],
+        });
+        const otherPendingAmount = Number(accountDues.total_pending || 0);
+        const currentPendingAmount = Number(bill.pending_amount || 0);
+        enrichedBill = {
+            ...bill,
+            account_dues: accountDues,
+            payment_breakdown: bill.payment_breakdown
+                ? {
+                    ...bill.payment_breakdown,
+                    other_pending_amount: otherPendingAmount,
+                    account_pending_after_this_bill: Number((otherPendingAmount + currentPendingAmount).toFixed(2)),
+                }
+                : bill.payment_breakdown,
+        };
+    }
+
     return res.status(200).json({
         success: true,
         message: 'Bill fetched successfully',
-        data: bill,
+        data: enrichedBill,
     });
 });
 

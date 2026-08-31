@@ -448,10 +448,26 @@ const attachAccountDuesToItems = async (items, rows, { branchId = null } = {}) =
             excludeConsultationIds: [row.consultation_id || item.consultation_id],
             excludeBillIds: [row.bill_id || item.bill_id],
         });
+        const accountDues = summarizeOutstandingBills(bills);
+        const currentPending = Number(item?.medication_bill?.pending_amount ?? item?.prescription?.pending_amount ?? 0) || 0;
+        const accountPendingAfterThisBill = Number((accountDues.total_pending + currentPending).toFixed(2));
+        const paymentBreakdown = item?.medication_bill?.payment_breakdown
+            ? {
+                ...item.medication_bill.payment_breakdown,
+                other_pending_amount: accountDues.total_pending,
+                account_pending_after_this_bill: accountPendingAfterThisBill,
+            }
+            : item?.medication_bill?.payment_breakdown;
 
         return {
             ...item,
-            account_dues: summarizeOutstandingBills(bills),
+            account_dues: accountDues,
+            medication_bill: item?.medication_bill
+                ? {
+                    ...item.medication_bill,
+                    payment_breakdown: paymentBreakdown,
+                }
+                : item?.medication_bill,
         };
     });
 };
@@ -765,7 +781,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
         throw new AppError('Valid patient_id is required', 400);
     }
 
-    if (!sourceConsultationId) {
+    if (!sourceConsultationId && submittedMedicines.length > 0) {
         throw new AppError('Valid source_consultation_id is required', 400);
     }
 
@@ -794,17 +810,13 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
             throw new AppError(`additional_medications[${index}].medicine_value is required`, 400);
         }
 
-        if (!reason) {
-            throw new AppError(`additional_medications[${index}].reason is required`, 400);
-        }
-
         if (amount === null || amount <= 0) {
             throw new AppError(`additional_medications[${index}].amount must be greater than 0`, 400);
         }
 
         return {
             medicine_value: medicineValue,
-            reason,
+            reason: reason || null,
             amount,
         };
     });
@@ -813,26 +825,28 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     let paymentAllocation = null;
 
     await withTransaction(async (connection) => {
-        const [consultationRows] = await connection.execute(
-            `SELECT c.id, a.fk_patient_id, a.fk_branch_id
-             FROM tbl_consultations c
-             JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-             WHERE c.id = ?
-             LIMIT 1
-             FOR UPDATE`,
-            [sourceConsultationId]
-        );
+        if (sourceConsultationId) {
+            const [consultationRows] = await connection.execute(
+                `SELECT c.id, a.fk_patient_id, a.fk_branch_id
+                 FROM tbl_consultations c
+                 JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+                 WHERE c.id = ?
+                 LIMIT 1
+                 FOR UPDATE`,
+                [sourceConsultationId]
+            );
 
-        if (consultationRows.length === 0) {
-            throw new AppError('Source prescription not found', 404);
-        }
+            if (consultationRows.length === 0) {
+                throw new AppError('Source prescription not found', 404);
+            }
 
-        if (Number(consultationRows[0].fk_patient_id) !== Number(patientId)) {
-            throw new AppError('Source prescription does not belong to selected patient', 400);
-        }
+            if (Number(consultationRows[0].fk_patient_id) !== Number(patientId)) {
+                throw new AppError('Source prescription does not belong to selected patient', 400);
+            }
 
-        if (Number(consultationRows[0].fk_branch_id) !== Number(branchId)) {
-            throw new AppError('Repeat medicine is allowed only for selected branch prescription', 403);
+            if (Number(consultationRows[0].fk_branch_id) !== Number(branchId)) {
+                throw new AppError('Repeat medicine is allowed only for selected branch prescription', 403);
+            }
         }
 
         const requestedMedicineIds = submittedMedicines
@@ -1275,6 +1289,14 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     const medicationBillsByConsultationId = new Map(
         medicationBillRows.map((bill) => [Number(bill.consultation_id), bill])
     );
+    const medicationBillDetails = await Promise.all(
+        medicationBillRows.map((bill) => getBillDetailById(bill.bill_id))
+    );
+    const medicationBillDetailsById = new Map(
+        medicationBillDetails
+            .filter(Boolean)
+            .map((bill) => [Number(bill.bill_id), bill])
+    );
     const paymentSummaries = await getMedicationPaymentSummaries({
         consultationIds,
         billIds: repeatRows.map((row) => Number(row.bill_id)).filter(Boolean),
@@ -1282,6 +1304,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     prescriptionData.forEach((item) => {
         const bill = medicationBillsByConsultationId.get(Number(item.consultation_id));
         if (bill) {
+            const billDetail = medicationBillDetailsById.get(Number(bill.bill_id));
             item.medication_bill = {
                 ...bill,
                 ...(paymentSummaries.byConsultationId.get(Number(item.consultation_id)) || {
@@ -1289,12 +1312,26 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                     online_amount: 0,
                     payment_mode: null,
                 }),
+                payments: billDetail?.payments || [],
+                previous_pending_settlements: billDetail?.previous_pending_settlements || [],
+                payment_breakdown: billDetail?.payment_breakdown || null,
+                payment_allocation: billDetail?.payment_allocation || null,
             };
         }
     });
 
+    const repeatBillDetails = await Promise.all(
+        repeatRows.map((row) => getBillDetailById(row.bill_id))
+    );
+    const repeatBillDetailsById = new Map(
+        repeatBillDetails
+            .filter(Boolean)
+            .map((bill) => [Number(bill.bill_id), bill])
+    );
+
     const repeatData = repeatRows.map((row) => {
         const billItems = repeatItemsByBillId.get(row.bill_id) || [];
+        const billDetail = repeatBillDetailsById.get(Number(row.bill_id));
         const medicineItems = billItems.filter((item) => String(item.item_name || '').toLowerCase() !== 'courier charge');
         const courierItem = billItems.find((item) => String(item.item_name || '').toLowerCase() === 'courier charge');
         let deliveryDetails = null;
@@ -1366,6 +1403,10 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                     online_amount: 0,
                     payment_mode: null,
                 }),
+                payments: billDetail?.payments || [],
+                previous_pending_settlements: billDetail?.previous_pending_settlements || [],
+                payment_breakdown: billDetail?.payment_breakdown || null,
+                payment_allocation: billDetail?.payment_allocation || null,
             },
             updated_at: row.updated_at,
             created_at: row.created_at,

@@ -1145,14 +1145,15 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
         }
 
         const medicineValue = `${medicineValueNumber}${powerValue ? `[${powerValue}]` : ''}${inlineAlphaRaw}`;
-        if (seenMedicineValues.has(String(medicineValueNumber))) {
+        const medicineDuplicateKey = medicineValue.toLowerCase();
+        if (seenMedicineValues.has(medicineDuplicateKey)) {
             errors.push({
                 raw_token: token,
-                message: `Duplicate medicine number ${medicineValueNumber} is not allowed`,
+                message: `Duplicate medicine ${medicineValue} is not allowed`,
             });
             return;
         }
-        seenMedicineValues.add(String(medicineValueNumber));
+        seenMedicineValues.add(medicineDuplicateKey);
 
         const suffix = match[4] ? String(match[4]).trim() : null;
         let resolvedRule = snapshot.rules?.plain_number || null;
