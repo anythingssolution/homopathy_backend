@@ -34,6 +34,10 @@ const {
     scheduleFollowUpReminders,
     cancelScheduledReminders,
 } = require('../../../services/whatsappAutomationService');
+const {
+    normalizeTestFindingsPayload,
+    upsertConsultationTestFindings,
+} = require('../../../services/consultationTestFindingsService');
 
 const executeRows = async (executor, sql, params = []) => {
     const result = await executor(sql, params);
@@ -680,6 +684,49 @@ const getConsultationByAppointmentId = asyncHandler(async (req, res) => {
     });
 });
 
+const saveConsultationTestFindings = asyncHandler(async (req, res) => {
+    const appointmentId = Number(req.params.appointment_id);
+
+    if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
+        throw new AppError('Valid appointment_id is required', 400);
+    }
+
+    const appointment = await getDoctorAppointmentById(appointmentId, req.selectedBranchId || null);
+    if (!appointment) {
+        throw new AppError('Appointment not found', 404);
+    }
+
+    const consultation = await getConsultationAggregateByAppointmentId(appointmentId);
+    if (!consultation) {
+        throw new AppError('Consultation not found for this appointment', 404);
+    }
+
+    const normalizedFindings = normalizeTestFindingsPayload({
+        submittedFindings: req.body?.findings,
+        prescribedTests: consultation.tests || [],
+    });
+
+    await withTransaction(async (connection) => {
+        await upsertConsultationTestFindings({
+            connection,
+            consultationId: consultation.consultation_id,
+            actorUserId: req.user.id,
+            findings: normalizedFindings,
+        });
+    });
+
+    const updated = await getConsultationAggregateByAppointmentId(appointmentId);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Lab findings saved successfully',
+        data: {
+            appointment,
+            consultation: updated,
+        },
+    });
+});
+
 const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
     const appointmentId = Number(req.params.appointment_id);
 
@@ -860,6 +907,7 @@ module.exports = {
     createConsultation,
     getConsultationEditAccess,
     getConsultationByAppointmentId,
+    saveConsultationTestFindings,
     getRepeatTreatmentDraft,
     getPrescriptionSuggestions,
 };

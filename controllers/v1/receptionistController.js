@@ -520,12 +520,18 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
 
     const testRows = await query(
         `SELECT
-            id AS consultation_test_id,
-            test_name,
-            amount
-         FROM tbl_consultation_tests
-         WHERE consultation_id = ?
-         ORDER BY id ASC`,
+            t.id AS consultation_test_id,
+            t.test_name,
+            t.amount,
+            f.id AS finding_id,
+            f.finding_text,
+            f.notes AS finding_notes,
+            f.interpreted_by,
+            f.interpreted_at
+         FROM tbl_consultation_tests t
+         LEFT JOIN tbl_consultation_test_findings f ON f.consultation_test_id = t.id
+         WHERE t.consultation_id = ?
+         ORDER BY t.id ASC`,
         [consultationId]
     );
 

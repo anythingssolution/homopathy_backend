@@ -20,6 +20,7 @@ const {
     getAppointmentDetailForDoctor,
     createConsultation,
     getConsultationByAppointmentId,
+    saveConsultationTestFindings,
     getRepeatTreatmentDraft,
     getPrescriptionSuggestions,
     getDoctorHomepageCms,
@@ -124,6 +125,7 @@ router.delete('/leaves/:leave_id', removeDoctorLeave);
 router.patch('/patients/:patient_id', updateDoctorPatient);
 router.post('/consultations', createConsultation);
 router.get('/consultations/:appointment_id/repeat-draft', authorizeAppointmentBranchScope, getRepeatTreatmentDraft);
+router.put('/consultations/:appointment_id/test-findings', authorizeAppointmentBranchScope, saveConsultationTestFindings);
 router.get('/consultations/prescription-suggestions', getPrescriptionSuggestions);
 router.get('/consultations/:appointment_id', authorizeAppointmentBranchScope, getConsultationByAppointmentId);
 

@@ -572,17 +572,23 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
 
     const testRows = await query(
         `SELECT
-            id AS consultation_test_id,
-            test_name,
-            amount,
-            COALESCE(dispense_status, 'ACTIVE') AS dispense_status,
-            void_reason,
-            voided_by,
-            voided_at,
-            COALESCE(version, 1) AS version
-         FROM tbl_consultation_tests
-         WHERE consultation_id = ?
-         ORDER BY id ASC`,
+            t.id AS consultation_test_id,
+            t.test_name,
+            t.amount,
+            COALESCE(t.dispense_status, 'ACTIVE') AS dispense_status,
+            t.void_reason,
+            t.voided_by,
+            t.voided_at,
+            COALESCE(t.version, 1) AS version,
+            f.id AS finding_id,
+            f.finding_text,
+            f.notes AS finding_notes,
+            f.interpreted_by,
+            f.interpreted_at
+         FROM tbl_consultation_tests t
+         LEFT JOIN tbl_consultation_test_findings f ON f.consultation_test_id = t.id
+         WHERE t.consultation_id = ?
+         ORDER BY t.id ASC`,
         [consultationId]
     );
 
@@ -606,6 +612,11 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
             voided_by: test.dispense_status === 'VOID' ? test.voided_by || null : null,
             voided_at: test.dispense_status === 'VOID' ? test.voided_at || null : null,
             version: Number(test.version || 1),
+            finding_id: test.finding_id || null,
+            finding_text: test.finding_text || null,
+            finding_notes: test.finding_notes || null,
+            interpreted_by: test.interpreted_by || null,
+            interpreted_at: test.interpreted_at || null,
         })),
         pricing,
     };

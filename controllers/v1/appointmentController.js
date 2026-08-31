@@ -225,6 +225,11 @@ const mapPrescriptionAggregate = (consultationRows, medicationRows, testRows = [
             consultation_test_id: row.consultation_test_id,
             test_name: row.test_name,
             amount: row.amount,
+            finding_id: row.finding_id || null,
+            finding_text: row.finding_text || null,
+            finding_notes: row.finding_notes || null,
+            interpreted_by: row.interpreted_by || null,
+            interpreted_at: row.interpreted_at || null,
         });
     });
 
@@ -1118,13 +1123,19 @@ const listMyAppointments = asyncHandler(async (req, res) => {
 
             const testRows = await query(
                 `SELECT
-                    consultation_id,
-                    id AS consultation_test_id,
-                    test_name,
-                    amount
-                 FROM tbl_consultation_tests
-                 WHERE consultation_id IN (${medicationPlaceholders})
-                 ORDER BY id ASC`,
+                    t.consultation_id,
+                    t.id AS consultation_test_id,
+                    t.test_name,
+                    t.amount,
+                    f.id AS finding_id,
+                    f.finding_text,
+                    f.notes AS finding_notes,
+                    f.interpreted_by,
+                    f.interpreted_at
+                 FROM tbl_consultation_tests t
+                 LEFT JOIN tbl_consultation_test_findings f ON f.consultation_test_id = t.id
+                 WHERE t.consultation_id IN (${medicationPlaceholders})
+                 ORDER BY t.id ASC`,
                 consultationIds
             );
 
