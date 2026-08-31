@@ -21,6 +21,27 @@ const snapshot = {
             template_code: 'DEFAULT',
             doses: doseRows,
         },
+        slash_single_numeric: {
+            amount_strategy: 'MULTIPLY_SUFFIX',
+            fixed_amount: null,
+            multiplier_value: 100,
+            template_code: 'DEFAULT',
+            doses: doseRows,
+        },
+        slash_double_numeric: {
+            amount_strategy: 'MULTIPLY_SUFFIX',
+            fixed_amount: null,
+            multiplier_value: 10,
+            template_code: 'DEFAULT',
+            doses: doseRows,
+        },
+        slash_price_numeric: {
+            amount_strategy: 'SUFFIX_AS_PRICE',
+            fixed_amount: null,
+            multiplier_value: null,
+            template_code: 'DEFAULT',
+            doses: doseRows,
+        },
     },
     alpha_codes: {
         Q: {
@@ -45,4 +66,27 @@ test('numeric formula still blocks exact duplicate medicine values', () => {
     assert.equal(result.entries.length, 1);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].message, 'Duplicate medicine 43Q is not allowed');
+});
+
+test('numeric formula applies trailing slash digit suffix to the preceding comma group', () => {
+    const result = parseQuickFormulaInput({ rawInput: '54,63,32,32Q/3', snapshot });
+
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.entries.map((entry) => entry.medicine_value), ['54', '63', '32', '32Q']);
+    assert.deepEqual(result.entries.map((entry) => entry.amount), [75, 75, 75, 75]);
+    assert.deepEqual(result.entries.map((entry) => entry.suffix_type), [
+        'NUMERIC_SINGLE',
+        'NUMERIC_SINGLE',
+        'NUMERIC_SINGLE',
+        'NUMERIC_SINGLE',
+    ]);
+});
+
+test('numeric formula keeps slash double and price rules unchanged for single medicines', () => {
+    const result = parseQuickFormulaInput({ rawInput: '54/15,63/200', snapshot });
+
+    assert.deepEqual(result.errors, []);
+    assert.deepEqual(result.entries.map((entry) => entry.medicine_value), ['54', '63']);
+    assert.deepEqual(result.entries.map((entry) => entry.amount), [150, 200]);
+    assert.deepEqual(result.entries.map((entry) => entry.suffix_type), ['NUMERIC_DOUBLE', 'NUMERIC_PRICE']);
 });

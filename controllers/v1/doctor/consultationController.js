@@ -858,6 +858,7 @@ const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
 
 module.exports = {
     createConsultation,
+    getConsultationEditAccess,
     getConsultationByAppointmentId,
     getRepeatTreatmentDraft,
     getPrescriptionSuggestions,

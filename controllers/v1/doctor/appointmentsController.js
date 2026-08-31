@@ -25,6 +25,7 @@ const {
     sortAppointmentsByRuntimeQueue,
 } = require('../../../services/liveQueueService');
 const { resolveDoctorVisibleSlotId } = require('../../../services/doctorSessionService');
+const { getConsultationEditAccess } = require('./consultationController');
 
 const normalizeQueueDateKey = (value) => {
     if (!value) {
@@ -228,14 +229,33 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
         ];
     }
 
+    const sortedAppointments = sortAppointmentsByRuntimeQueue(appointments, {
+        sessions: queueSessions,
+        timelineRows: queueTimelineRows,
+        protectedWindowAppointmentIdsByGroup,
+    });
+
+    const data = await Promise.all(sortedAppointments.map(async (appointment) => {
+        const isCompleted = String(appointment.status || '').toLowerCase() === 'completed';
+        const consultationId = Number(appointment.consultation_id || 0);
+
+        if (!isCompleted || !consultationId) {
+            return {
+                ...appointment,
+                edit_access: null,
+            };
+        }
+
+        return {
+            ...appointment,
+            edit_access: await getConsultationEditAccess(query, consultationId),
+        };
+    }));
+
     return res.status(200).json({
         success: true,
         message: 'Doctor appointments fetched successfully',
-        data: sortAppointmentsByRuntimeQueue(appointments, {
-            sessions: queueSessions,
-            timelineRows: queueTimelineRows,
-            protectedWindowAppointmentIdsByGroup,
-        }),
+        data,
         meta: {
             filters: {
                 branch_id: branchId,

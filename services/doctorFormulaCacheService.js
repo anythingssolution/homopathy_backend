@@ -123,7 +123,11 @@ const DEFAULT_ALPHA_CODE_DEFINITIONS = [
 
 const NUMERIC_MEDICINE_MIN = 1;
 const NUMERIC_MEDICINE_MAX = 200;
-const NUMERIC_MEDICINE_TOKEN_RE = /^(\d{1,3})(?:\[(\d{1,4}(?:\s*,\s*\d{1,4})*)\])?([A-Za-z]*)(?:\/([A-Za-z0-9]+))?$/;
+const NUMERIC_POWER_LIST = String.raw`\d{1,4}(?:\s*,\s*\d{1,4})*`;
+const createQuickFormulaMedicineTokenRe = () => new RegExp(
+    `(\\d{1,3})(?:\\[(${NUMERIC_POWER_LIST})\\])?([A-Za-z]*)(?:\\[(${NUMERIC_POWER_LIST})\\])?`,
+    'g'
+);
 
 const createValidationError = (message) => new AppError(message, 400);
 
@@ -210,6 +214,29 @@ const splitQuickFormulaCommaItems = (source) => {
     }
 
     return items;
+};
+
+const groupQuickFormulaSuffixItems = (items = []) => {
+    const grouped = [];
+    let pendingPlainItems = [];
+
+    items.forEach((item) => {
+        const trimmed = String(item || '').trim();
+        if (!trimmed) {
+            return;
+        }
+
+        if (trimmed.includes('/')) {
+            grouped.push([...pendingPlainItems, trimmed].join(','));
+            pendingPlainItems = [];
+            return;
+        }
+
+        pendingPlainItems.push(trimmed);
+    });
+
+    grouped.push(...pendingPlainItems);
+    return grouped;
 };
 
 const buildDefaultPayload = () => ({
@@ -1089,7 +1116,7 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
         throw new AppError('Formula snapshot is not available for parsing', 409);
     }
 
-    const tokens = splitQuickFormulaCommaItems(source);
+    const tokens = groupQuickFormulaSuffixItems(splitQuickFormulaCommaItems(source));
 
     const entries = [];
     const warnings = [];
@@ -1123,8 +1150,8 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
     };
 
     tokens.forEach((token) => {
-        const match = token.match(NUMERIC_MEDICINE_TOKEN_RE);
-        if (!match) {
+        const slashParts = token.split('/');
+        if (slashParts.length > 2) {
             errors.push({
                 raw_token: token,
                 message: 'Token format is invalid. Use formats like 30, 12[14], 2[5,12,34], 200/2, 84/20, 10/BD',
@@ -1132,36 +1159,27 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
             return;
         }
 
-        const medicineValueNumber = Number(match[1]);
-        const powerValue = normalizeNumericMedicinePower(match[2] || null);
-        const inlineAlphaRaw = match[3] ? String(match[3]).trim() : '';
-        const inlineAlphaCode = inlineAlphaRaw ? inlineAlphaRaw.toUpperCase() : null;
-        if (!Number.isInteger(medicineValueNumber) || medicineValueNumber < NUMERIC_MEDICINE_MIN || medicineValueNumber > NUMERIC_MEDICINE_MAX) {
+        const groupPart = String(slashParts[0] || '').trim();
+        const suffix = slashParts.length === 2 ? String(slashParts[1] || '').trim() : null;
+        const medicineMatches = [...groupPart.matchAll(createQuickFormulaMedicineTokenRe())];
+        const unmatched = groupPart
+            .replace(createQuickFormulaMedicineTokenRe(), '')
+            .replace(/[\s\-+,]/g, '');
+
+        if (medicineMatches.length === 0 || unmatched) {
             errors.push({
                 raw_token: token,
-                message: `Medicine number must be between ${NUMERIC_MEDICINE_MIN} and ${NUMERIC_MEDICINE_MAX}`,
+                message: 'Token format is invalid. Use formats like 30, 12[14], 2[5,12,34], 200/2, 84/20, 10/BD',
             });
             return;
         }
 
-        const medicineValue = `${medicineValueNumber}${powerValue ? `[${powerValue}]` : ''}${inlineAlphaRaw}`;
-        const medicineDuplicateKey = medicineValue.toLowerCase();
-        if (seenMedicineValues.has(medicineDuplicateKey)) {
-            errors.push({
-                raw_token: token,
-                message: `Duplicate medicine ${medicineValue} is not allowed`,
-            });
-            return;
-        }
-        seenMedicineValues.add(medicineDuplicateKey);
-
-        const suffix = match[4] ? String(match[4]).trim() : null;
         let resolvedRule = snapshot.rules?.plain_number || null;
         let suffixType = 'NONE';
         let suffixValue = null;
-        let amount = resolveAmountFromRule(resolvedRule);
-        let doses = cloneDeep(resolvedRule?.doses || []);
-        let dosageTemplateCode = resolvedRule?.template_code || null;
+        let groupAmount = resolveAmountFromRule(resolvedRule);
+        let groupDoses = cloneDeep(resolvedRule?.doses || []);
+        let groupDosageTemplateCode = resolvedRule?.template_code || null;
         let durationOverrideDays = null;
 
         if (suffix) {
@@ -1179,9 +1197,9 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
                     suffixType = 'NUMERIC_PRICE';
                 }
 
-                amount = resolveAmountFromRule(resolvedRule, suffixNumber);
-                doses = cloneDeep(resolvedRule?.doses || []);
-                dosageTemplateCode = resolvedRule?.template_code || null;
+                groupAmount = resolveAmountFromRule(resolvedRule, suffixNumber);
+                groupDoses = cloneDeep(resolvedRule?.doses || []);
+                groupDosageTemplateCode = resolvedRule?.template_code || null;
             } else if (/^[A-Za-z]+$/.test(suffix)) {
                 const alphaCode = suffix.toUpperCase();
                 const codeRule = snapshot.alpha_codes?.[alphaCode] || null;
@@ -1195,11 +1213,11 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
 
                 suffixType = 'ALPHA';
                 suffixValue = alphaCode;
-                amount = codeRule.fixed_amount !== null && codeRule.fixed_amount !== undefined
+                groupAmount = codeRule.fixed_amount !== null && codeRule.fixed_amount !== undefined
                     ? Number(codeRule.fixed_amount)
                     : resolveAmountFromRule(snapshot.rules?.plain_number || null);
-                doses = cloneDeep(codeRule.doses || []);
-                dosageTemplateCode = codeRule.template_code || null;
+                groupDoses = cloneDeep(codeRule.doses || []);
+                groupDosageTemplateCode = codeRule.template_code || null;
                 durationOverrideDays = codeRule.duration_override_days || null;
             } else {
                 errors.push({
@@ -1210,41 +1228,74 @@ const parseQuickFormulaInput = ({ rawInput, snapshot }) => {
             }
         }
 
-        if (inlineAlphaCode) {
-            const inlineRule = snapshot.alpha_codes?.[inlineAlphaCode] || null;
-            if (!inlineRule) {
+        const amountPerMedicine = Number((Number(groupAmount || 0) / medicineMatches.length).toFixed(2));
+
+        medicineMatches.forEach((match) => {
+            const medicineValueNumber = Number(match[1]);
+            const powerValue = normalizeNumericMedicinePower(match[2] || match[4] || null);
+            const inlineAlphaRaw = match[3] ? String(match[3]).trim() : '';
+            const inlineAlphaCode = inlineAlphaRaw ? inlineAlphaRaw.toUpperCase() : null;
+            const rawToken = `${match[0]}${suffix ? `/${suffix}` : ''}`;
+
+            if (!Number.isInteger(medicineValueNumber) || medicineValueNumber < NUMERIC_MEDICINE_MIN || medicineValueNumber > NUMERIC_MEDICINE_MAX) {
                 errors.push({
-                    raw_token: token,
-                    message: `Unknown inline alpha code: ${inlineAlphaCode}`,
+                    raw_token: rawToken,
+                    message: `Medicine number must be between ${NUMERIC_MEDICINE_MIN} and ${NUMERIC_MEDICINE_MAX}`,
                 });
                 return;
             }
 
-            doses = cloneDeep(inlineRule.doses || []);
-            dosageTemplateCode = inlineRule.template_code || null;
-            if (inlineRule.duration_override_days) {
-                durationOverrideDays = inlineRule.duration_override_days;
+            const medicineValue = `${medicineValueNumber}${powerValue ? `[${powerValue}]` : ''}${inlineAlphaRaw}`;
+            const medicineDuplicateKey = medicineValue.toLowerCase();
+            if (seenMedicineValues.has(medicineDuplicateKey)) {
+                errors.push({
+                    raw_token: rawToken,
+                    message: `Duplicate medicine ${medicineValue} is not allowed`,
+                });
+                return;
             }
-        }
+            seenMedicineValues.add(medicineDuplicateKey);
 
-        if (!Array.isArray(doses) || doses.length === 0) {
-            errors.push({
-                raw_token: token,
-                message: 'Resolved dosage template has no dosage rows',
+            let doses = cloneDeep(groupDoses || []);
+            let dosageTemplateCode = groupDosageTemplateCode;
+            let entryDurationOverrideDays = durationOverrideDays;
+
+            if (inlineAlphaCode) {
+                const inlineRule = snapshot.alpha_codes?.[inlineAlphaCode] || null;
+                if (!inlineRule) {
+                    errors.push({
+                        raw_token: rawToken,
+                        message: `Unknown inline alpha code: ${inlineAlphaCode}`,
+                    });
+                    return;
+                }
+
+                doses = cloneDeep(inlineRule.doses || []);
+                dosageTemplateCode = inlineRule.template_code || null;
+                if (inlineRule.duration_override_days) {
+                    entryDurationOverrideDays = inlineRule.duration_override_days;
+                }
+            }
+
+            if (!Array.isArray(doses) || doses.length === 0) {
+                errors.push({
+                    raw_token: rawToken,
+                    message: 'Resolved dosage template has no dosage rows',
+                });
+                return;
+            }
+
+            entries.push({
+                raw_token: rawToken,
+                medicine_type: 'NUMERIC',
+                medicine_value: medicineValue,
+                suffix_type: suffixType,
+                suffix_value: suffixValue,
+                dosage_template_code: dosageTemplateCode,
+                duration_override_days: entryDurationOverrideDays,
+                amount: amountPerMedicine,
+                doses,
             });
-            return;
-        }
-
-        entries.push({
-            raw_token: token,
-            medicine_type: 'NUMERIC',
-            medicine_value: medicineValue,
-            suffix_type: suffixType,
-            suffix_value: suffixValue,
-            dosage_template_code: dosageTemplateCode,
-            duration_override_days: durationOverrideDays,
-            amount,
-            doses,
         });
     });
 
