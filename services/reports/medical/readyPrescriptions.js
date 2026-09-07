@@ -11,6 +11,7 @@ const getReadyPrescriptionsReport = async (filters) => {
             c.sent_to_medical_at,
             a.appointment_date,
             a.current_token_number AS token_number,
+            a.fk_patient_id,
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             p.mobile_no AS patient_mobile_no,
             d.full_name AS doctor_name,

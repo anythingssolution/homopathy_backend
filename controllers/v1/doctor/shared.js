@@ -94,6 +94,8 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
     b.branch_name,
     a.fk_treatment_id,
     t.treatment_name,
+    t.treatment_code,
+    a.assigned_visit_type_code,
     a.fk_slot_id,
     s.slot_name,
     COALESCE(sto.override_start_time, s.start_time) AS start_time,

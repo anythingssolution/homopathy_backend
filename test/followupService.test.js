@@ -25,6 +25,13 @@ test('follow-up history scope isolates self visits from family members', () => {
     });
 });
 
+test('follow-up history scope can prefix a table alias', () => {
+    assert.deepEqual(buildFollowUpHistorySubjectScope(7, 'a.fk_patient_family_member_id'), {
+        sql: 'AND a.fk_patient_family_member_id <=> ?',
+        params: [7],
+    });
+});
+
 test('follow-up fee keeps the exact branch boundary free', () => {
     assert.deepEqual(resolveFollowUpFeeDecision({
         checkedInAt: '2026-08-01T10:00:00.000Z',

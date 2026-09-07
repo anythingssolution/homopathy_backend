@@ -13,8 +13,9 @@ const getFollowupDueReport = async ({ fromDate, toDate, branchId }) => {
         `SELECT
             pf.id AS followup_id,
             pf.parent_appointment_id,
-            pf.due_date,
+            DATE_FORMAT(pf.due_date, '%Y-%m-%d') AS due_date,
             pf.status,
+            pf.fk_patient_id,
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             p.mobile_no AS patient_mobile_no,
             b.branch_name,

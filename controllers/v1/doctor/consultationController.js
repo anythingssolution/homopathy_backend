@@ -21,6 +21,8 @@ const {
     createNextFollowUpIfNeeded,
     getAppointmentChain,
     getVisitTypeCode,
+    findRepeatTreatmentSourceAppointmentId,
+    buildFollowUpHistorySubjectScope,
 } = require('../../../services/followupService');
 const {
     scheduleAutoCallNext,
@@ -204,6 +206,8 @@ const createConsultation = asyncHandler(async (req, res) => {
             `SELECT
                 a.appointment_id,
                 a.parent_appointment_id,
+                a.fk_patient_id,
+                a.fk_patient_family_member_id,
                 a.fk_branch_id,
                 a.status,
                 a.is_active,
@@ -211,6 +215,7 @@ const createConsultation = asyncHandler(async (req, res) => {
                 a.actual_called_at,
                 a.reception_status,
                 a.consultation_payment_status,
+                a.assigned_visit_type_code,
                 t.id AS treatment_id,
                 t.treatment_code,
                 t.treatment_name
@@ -264,25 +269,37 @@ const createConsultation = asyncHandler(async (req, res) => {
             const currentVisitType = getVisitTypeCode({
                 treatmentId: appointment.treatment_id,
                 treatmentName: appointment.treatment_name,
-                treatmentCode: appointment.treatment_code,
+                treatmentCode: appointment.assigned_visit_type_code || appointment.treatment_code,
             });
 
-            if (currentVisitType !== 'FOLLOW_UP_VISIT' || !appointment.parent_appointment_id) {
+            if (currentVisitType !== 'FOLLOW_UP_VISIT') {
                 throw new AppError('Repeat treatment is available only for follow-up visits', 409);
             }
 
+            const subjectScope = buildFollowUpHistorySubjectScope(
+                appointment.fk_patient_family_member_id,
+                'src.fk_patient_family_member_id'
+            );
             const [sourceRows] = await connection.execute(
                 `SELECT c.id
                  FROM tbl_consultations c
+                 JOIN tbl_appointments src ON src.appointment_id = c.appointment_id
                  WHERE c.id = ?
-                   AND c.appointment_id = ?
+                   AND src.fk_patient_id = ?
+                   AND src.appointment_id <> ?
+                   ${subjectScope.sql}
                  LIMIT 1
                  FOR UPDATE`,
-                [repeatedFromConsultationId, appointment.parent_appointment_id]
+                [
+                    repeatedFromConsultationId,
+                    appointment.fk_patient_id,
+                    appointment.appointment_id,
+                    ...subjectScope.params,
+                ]
             );
 
             if (sourceRows.length === 0) {
-                throw new AppError('Repeat treatment source must be the parent consultation', 409);
+                throw new AppError('Repeat treatment source must be a previous consultation for this patient', 409);
             }
         }
 
@@ -742,16 +759,21 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
     const currentVisitType = getVisitTypeCode({
         treatmentId: appointment.fk_treatment_id,
         treatmentName: appointment.treatment_name,
-        treatmentCode: appointment.treatment_code,
+        treatmentCode: appointment.assigned_visit_type_code || appointment.treatment_code,
     });
 
-    if (currentVisitType !== 'FOLLOW_UP_VISIT' || !appointment.parent_appointment_id) {
+    if (currentVisitType !== 'FOLLOW_UP_VISIT') {
         throw new AppError('Repeat treatment is available only for follow-up visits', 409);
     }
 
-    const sourceConsultation = await getConsultationAggregateByAppointmentId(appointment.parent_appointment_id);
+    const sourceAppointmentId = await findRepeatTreatmentSourceAppointmentId(appointment);
+    if (!sourceAppointmentId) {
+        throw new AppError('No previous consultation found to repeat for this patient', 404);
+    }
+
+    const sourceConsultation = await getConsultationAggregateByAppointmentId(sourceAppointmentId);
     if (!sourceConsultation) {
-        throw new AppError('Parent consultation not found', 404);
+        throw new AppError('Previous consultation not found', 404);
     }
 
     const pricing = await getMedicalPricingAggregateByConsultationId(sourceConsultation.consultation_id);

@@ -102,14 +102,14 @@ const buildFollowUpMeta = (treatments = []) => {
 
 const isFollowUpBookingVisitType = (visitTypeCode) => visitTypeCode === VISIT_TYPE.FOLLOW_UP_VISIT;
 
-const buildFollowUpHistorySubjectScope = (familyMemberId) => {
+const buildFollowUpHistorySubjectScope = (familyMemberId, column = 'fk_patient_family_member_id') => {
     const parsedFamilyMemberId = Number(familyMemberId);
     const normalizedFamilyMemberId = Number.isInteger(parsedFamilyMemberId) && parsedFamilyMemberId > 0
         ? parsedFamilyMemberId
         : null;
 
     return {
-        sql: 'AND fk_patient_family_member_id <=> ?',
+        sql: `AND ${column} <=> ?`,
         params: [normalizedFamilyMemberId],
     };
 };
@@ -634,6 +634,49 @@ const createNextFollowUpIfNeeded = async ({
     return withTransaction(async (transactionConnection) => run(transactionConnection));
 };
 
+const findRepeatTreatmentSourceAppointmentId = async (appointment) => {
+    const currentAppointmentId = Number(appointment?.appointment_id);
+    const patientId = Number(appointment?.fk_patient_id || appointment?.patient_id);
+    const parentAppointmentId = Number(appointment?.parent_appointment_id);
+
+    if (Number.isInteger(parentAppointmentId) && parentAppointmentId > 0) {
+        const parentRows = await query(
+            `SELECT c.appointment_id
+             FROM tbl_consultations c
+             WHERE c.appointment_id = ?
+             LIMIT 1`,
+            [parentAppointmentId]
+        );
+        if (parentRows.length > 0) {
+            return parentAppointmentId;
+        }
+    }
+
+    if (!Number.isInteger(currentAppointmentId) || currentAppointmentId <= 0 || !Number.isInteger(patientId) || patientId <= 0) {
+        return null;
+    }
+
+    const subjectScope = buildFollowUpHistorySubjectScope(
+        appointment.fk_patient_family_member_id,
+        'a.fk_patient_family_member_id'
+    );
+    const priorRows = await query(
+        `SELECT c.appointment_id
+         FROM tbl_consultations c
+         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         WHERE a.fk_patient_id = ?
+           AND a.appointment_id <> ?
+           AND a.is_active = 1
+           AND COALESCE(a.status, '') <> 'Cancelled'
+           ${subjectScope.sql}
+         ORDER BY a.appointment_date DESC, c.id DESC
+         LIMIT 1`,
+        [patientId, currentAppointmentId, ...subjectScope.params]
+    );
+
+    return priorRows[0]?.appointment_id || null;
+};
+
 module.exports = {
     FOLLOW_UP_STATUS,
     VISIT_TYPE,
@@ -652,6 +695,7 @@ module.exports = {
     closePendingFollowUpsForParent,
     getAppointmentChain,
     createNextFollowUpIfNeeded,
+    findRepeatTreatmentSourceAppointmentId,
     processDuePendingFollowUps,
     startPendingFollowUpNotifier,
     stopPendingFollowUpNotifier,
