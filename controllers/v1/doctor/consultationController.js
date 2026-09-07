@@ -793,6 +793,10 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
             medication_duration_days: sourceConsultation.medication_duration_days,
             universal_remark: sourceConsultation.universal_remark || null,
             universal_remark_hi: sourceConsultation.universal_remark_hi || null,
+            symptoms: sourceConsultation.symptoms || null,
+            treatment_advice: sourceConsultation.treatment_advice || null,
+            diagnosis: sourceConsultation.diagnosis || null,
+            quick_formula_input: sourceConsultation.quick_formula_input || null,
             medications: sourceConsultation.medications
                 .filter((medication) => String(medication.added_by_role || 'DOCTOR').toUpperCase() !== 'MEDICAL')
                 .map((medication) => ({
