@@ -11,7 +11,8 @@ const {
 } = require('../../services/billingService');
 const {
     ALLOCATION_ORDERS,
-    applyMedicationReceipt,
+    applyMedicationReceipts,
+    enrichMedicationReceipt,
     ensureValidAllocationOrder,
     getPatientMedicationOutstanding,
 } = require('../../services/patientCreditService');
@@ -635,6 +636,14 @@ const collectMedicationPayment = asyncHandler(async (req, res) => {
     });
 });
 
+const toNonNegativeAmount = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+        return null;
+    }
+    return Number(parsed.toFixed(2));
+};
+
 const collectPatientDues = asyncHandler(async (req, res) => {
     const patientId = toPositiveInt(req.params.patient_id);
 
@@ -642,44 +651,248 @@ const collectPatientDues = asyncHandler(async (req, res) => {
         throw new AppError('Valid patient_id is required', 400);
     }
 
-    const {
-        payment_mode,
-        amount,
-        transaction_reference = null,
-        remark = null,
-        allocation_order = ALLOCATION_ORDERS.PREVIOUS_FIRST,
-    } = req.body || {};
+    const source = req.body?.payment && typeof req.body.payment === 'object' && !Array.isArray(req.body.payment)
+        ? req.body.payment
+        : (req.body || {});
 
-    const normalizedAmount = Number(amount);
-    if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    const allocationOrder = ensureValidAllocationOrder(
+        source.allocation_order || req.body?.allocation_order || ALLOCATION_ORDERS.PREVIOUS_FIRST
+    );
+    const remark = source.remark || req.body?.remark || null;
+    const transactionReference = source.transaction_reference || req.body?.transaction_reference || null;
+    const isSplit = source.split === true
+        || Array.isArray(source.payments)
+        || (source.cash_amount !== undefined && source.online_amount !== undefined);
+
+    let payments = null;
+    let receivedAmount = toNonNegativeAmount(source.amount ?? req.body?.amount);
+    let paymentMode = String(source.payment_mode || req.body?.payment_mode || 'CASH').trim().toUpperCase();
+
+    if (isSplit) {
+        if (Array.isArray(source.payments) && source.payments.length > 0) {
+            payments = source.payments.map((part) => {
+                const mode = String(part?.payment_mode || '').trim().toUpperCase();
+                const amount = toNonNegativeAmount(part?.amount);
+                if (amount === null) {
+                    throw new AppError('payment.payments amount must be a valid non-negative number', 400);
+                }
+                const partReference = part?.transaction_reference
+                    ? String(part.transaction_reference).trim()
+                    : (mode === 'ONLINE' ? transactionReference : null);
+                if (mode === 'ONLINE' && amount > 0 && !partReference) {
+                    throw new AppError('transaction_reference is required for online amount', 400);
+                }
+                return {
+                    payment_mode: mode || 'CASH',
+                    amount,
+                    transaction_reference: mode === 'ONLINE' ? partReference : null,
+                };
+            }).filter((part) => part.amount > 0);
+        } else {
+            const cashAmount = toNonNegativeAmount(source.cash_amount ?? 0);
+            const onlineAmount = toNonNegativeAmount(source.online_amount ?? 0);
+            if (cashAmount === null || onlineAmount === null) {
+                throw new AppError('cash_amount and online_amount must be valid non-negative numbers', 400);
+            }
+            if (onlineAmount > 0 && !transactionReference) {
+                throw new AppError('transaction_reference is required for online amount', 400);
+            }
+            payments = [
+                cashAmount > 0 ? { payment_mode: 'CASH', amount: cashAmount, transaction_reference: null } : null,
+                onlineAmount > 0 ? { payment_mode: 'ONLINE', amount: onlineAmount, transaction_reference: transactionReference } : null,
+            ].filter(Boolean);
+        }
+        receivedAmount = Number(payments.reduce((sum, part) => sum + Number(part.amount || 0), 0).toFixed(2));
+        paymentMode = payments.length === 1 ? payments[0].payment_mode : 'CASH';
+    }
+
+    if (receivedAmount === null || receivedAmount <= 0) {
         throw new AppError('amount must be a valid number greater than 0', 400);
     }
 
-    const result = await withTransaction(async (connection) => applyMedicationReceipt({
+    if (!isSplit && receivedAmount > 0 && !['CASH', 'ONLINE'].includes(paymentMode)) {
+        throw new AppError('payment_mode must be CASH or ONLINE', 400);
+    }
+
+    if (!isSplit && paymentMode === 'ONLINE' && !transactionReference) {
+        throw new AppError('transaction_reference is required for online amount', 400);
+    }
+
+    const result = await withTransaction(async (connection) => applyMedicationReceipts({
         connection,
         patientId,
-        receivedAmount: amount,
-        paymentMode: payment_mode,
-        transactionReference: transaction_reference,
-        remark: remark ? String(remark).trim() : null,
+        receivedAmount,
+        paymentMode,
+        transactionReference,
+        remark: remark ? String(remark).trim() : 'Previous pending collected',
         collectedByUserId: req.user.id,
         collectedByRole: req.user.role_code,
-        allocationOrder: ensureValidAllocationOrder(allocation_order || ALLOCATION_ORDERS.PREVIOUS_FIRST),
+        allocationOrder,
         branchId: req.selectedBranchId || null,
+        payments,
     }));
 
     const outstanding = await getPatientMedicationOutstanding({
         patientId,
         branchId: req.selectedBranchId || null,
     });
+    const paymentAllocation = await enrichMedicationReceipt(result);
 
     return res.status(200).json({
         success: true,
         message: 'Patient medication dues collected successfully',
         data: {
             patient_id: patientId,
-            payment_allocation: result,
+            payment_allocation: paymentAllocation,
             outstanding,
+        },
+    });
+});
+
+const listBillPayments = asyncHandler(async (req, res) => {
+    const fromDate = req.query.from_date ? String(req.query.from_date).trim() : null;
+    const toDate = req.query.to_date ? String(req.query.to_date).trim() : null;
+    const allocationKindRaw = req.query.allocation_kind ? String(req.query.allocation_kind).trim().toUpperCase() : null;
+    const allocationKind = allocationKindRaw && ['CURRENT', 'PREVIOUS'].includes(allocationKindRaw)
+        ? allocationKindRaw
+        : allocationKindRaw === null
+            ? null
+            : undefined;
+    const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
+    const branchId = req.query.branch_id !== undefined
+        ? toPositiveInt(req.query.branch_id)
+        : (req.selectedBranchId ? Number(req.selectedBranchId) : null);
+
+    if (allocationKindRaw && allocationKind === undefined) {
+        throw new AppError('allocation_kind must be CURRENT or PREVIOUS', 400);
+    }
+
+    if (fromDate && !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
+        throw new AppError('from_date must be in YYYY-MM-DD format', 400);
+    }
+
+    if (toDate && !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+        throw new AppError('to_date must be in YYYY-MM-DD format', 400);
+    }
+
+    if (req.query.branch_id !== undefined && !branchId) {
+        throw new AppError('branch_id must be a positive integer', 400);
+    }
+
+    const conditions = [`bp.status = 'SUCCESS'`];
+    const params = [];
+
+    if (fromDate) {
+        conditions.push('DATE(bp.collected_at) >= ?');
+        params.push(fromDate);
+    }
+
+    if (toDate) {
+        conditions.push('DATE(bp.collected_at) <= ?');
+        params.push(toDate);
+    }
+
+    if (allocationKind) {
+        conditions.push("COALESCE(bp.allocation_kind, 'CURRENT') = ?");
+        params.push(allocationKind);
+    }
+
+    if (branchId) {
+        conditions.push('b.fk_branch_id = ?');
+        params.push(branchId);
+    }
+
+    if (req.user.role === 'patient') {
+        conditions.push('bp.patient_id = ?');
+        params.push(req.user.id);
+    } else if (req.user.role === 'doctor') {
+        conditions.push('(c.doctor_id = ? OR b.appointment_id IS NULL)');
+        params.push(req.user.id);
+    }
+
+    if (req.user.role === 'receptionist') {
+        conditions.push("b.bill_type = 'CONSULTATION'");
+    }
+
+    if (req.user.role === 'medical') {
+        conditions.push("b.bill_type = 'MEDICATION'");
+    }
+
+    if (patientSearch) {
+        conditions.push('(COALESCE(fm.full_name, p.full_name) LIKE ? OR p.full_name LIKE ? OR p.mobile_no LIKE ? OR p.uuid LIKE ? OR a.auid LIKE ? OR b.bill_number LIKE ?)');
+        params.push(
+            `%${patientSearch}%`,
+            `%${patientSearch}%`,
+            `%${patientSearch}%`,
+            `%${patientSearch}%`,
+            `%${patientSearch}%`,
+            `%${patientSearch}%`
+        );
+    }
+
+    const { page, pageSize } = parsePagination(req.query, { defaultPageSize: 200, maxPageSize: 1000 });
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const fromSql = `FROM tbl_bill_payments bp
+         JOIN tbl_bills b ON b.id = bp.bill_id
+         LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
+         LEFT JOIN tbl_consultations c ON c.appointment_id = b.appointment_id
+         LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
+         LEFT JOIN tbl_patient_family_members fm
+           ON fm.id = a.fk_patient_family_member_id
+         LEFT JOIN tbl_bills src ON src.id = bp.settlement_source_bill_id
+         ${whereClause}`;
+
+    const countRows = await query(`SELECT COUNT(*) AS total ${fromSql}`, params);
+    const pagination = resolvePagination({
+        page,
+        pageSize,
+        total: Number(countRows[0]?.total || 0),
+    });
+
+    const rows = await query(
+        `SELECT
+            bp.id AS payment_id,
+            bp.bill_id,
+            b.bill_number,
+            b.bill_type,
+            b.appointment_id,
+            b.consultation_id,
+            bp.patient_id,
+            COALESCE(fm.full_name, p.full_name) AS patient_full_name,
+            p.mobile_no AS patient_mobile_no,
+            bp.payment_for,
+            COALESCE(bp.allocation_kind, 'CURRENT') AS allocation_kind,
+            bp.settlement_source_bill_id,
+            src.bill_number AS settlement_source_bill_number,
+            bp.amount,
+            bp.pending_before,
+            bp.pending_after,
+            bp.payment_mode,
+            bp.transaction_reference,
+            bp.remark,
+            bp.collected_at,
+            COALESCE(a.appointment_date, DATE(b.created_at)) AS original_bill_date,
+            a.auid
+         ${fromSql}
+         ORDER BY bp.collected_at DESC, bp.id DESC
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
+        params
+    );
+
+    return res.status(200).json({
+        success: true,
+        message: 'Bill payments fetched successfully',
+        data: rows,
+        meta: {
+            ...buildPaginationMeta(pagination),
+            total: pagination.total,
+            filters: {
+                from_date: fromDate,
+                to_date: toDate,
+                allocation_kind: allocationKind,
+                patient_search: patientSearch,
+                branch_id: branchId,
+            },
         },
     });
 });
@@ -690,6 +903,7 @@ module.exports = {
     collectMedicationPayment,
     collectPatientDues,
     createMedicationBill,
+    listBillPayments,
     listBills,
     getBillById,
     getAppointmentBillingSummary,

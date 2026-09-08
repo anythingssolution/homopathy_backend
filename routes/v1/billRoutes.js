@@ -5,6 +5,7 @@ const {
     collectMedicationPayment,
     collectPatientDues,
     createMedicationBill,
+    listBillPayments,
     listBills,
     getBillById,
     getAppointmentBillingSummary,
@@ -29,6 +30,7 @@ router.patch('/medication/:bill_id/collect-payment', authenticate, authorizeModu
 router.get('/patients/:patient_id/outstanding', authenticate, authorizeRoles('patient', 'doctor', 'receptionist', 'medical'), enforceSelectedBranchScope, getPatientOutstanding);
 router.post('/patients/:patient_id/collect-dues', authenticate, authorizeModuleAccess('MEDICAL'), enforceSelectedBranchScope, collectPatientDues);
 router.get('/', authenticate, authorizeRoles('patient', 'doctor', 'receptionist', 'medical'), enforceSelectedBranchScope, listBills);
+router.get('/payments', authenticate, authorizeRoles('patient', 'doctor', 'receptionist', 'medical'), enforceSelectedBranchScope, listBillPayments);
 router.get('/appointment/:appointment_id/summary', authenticate, authorizeRoles('doctor'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, getAppointmentBillingSummary);
 router.get('/:bill_id', authenticate, authorizeRoles('patient', 'doctor', 'receptionist', 'medical'), enforceSelectedBranchScope, authorizeBillBranchScope, getBillById);
 

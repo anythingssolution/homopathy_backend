@@ -528,6 +528,42 @@ const applyMedicationReceipts = async ({
     };
 };
 
+const enrichMedicationReceipt = async (result = {}, extras = {}) => {
+    const payments = Array.isArray(result.payments) ? result.payments : [];
+    const allocationIds = (result.previous_allocations || []).map((item) => item.bill_id);
+    const ids = toIdList([
+        result.current_bill_id,
+        ...payments.map((payment) => payment.bill_id),
+        ...allocationIds,
+    ]);
+    let numberById = new Map();
+    if (ids.length > 0) {
+        const rows = await query(
+            `SELECT id, bill_number FROM tbl_bills WHERE id IN (${ids.map(() => '?').join(',')})`,
+            ids
+        );
+        numberById = new Map(rows.map((row) => [Number(row.id), row.bill_number]));
+    }
+
+    return {
+        ...result,
+        ...extras,
+        current_bill_number: result.current_bill_number
+            || numberById.get(Number(result.current_bill_id))
+            || extras.current_bill_number
+            || null,
+        collected_at: extras.collected_at || result.collected_at || new Date(),
+        payments: payments.map((payment) => ({
+            ...payment,
+            bill_number: payment.bill_number || numberById.get(Number(payment.bill_id)) || null,
+        })),
+        previous_allocations: (result.previous_allocations || []).map((item) => ({
+            ...item,
+            bill_number: item.bill_number || numberById.get(Number(item.bill_id)) || null,
+        })),
+    };
+};
+
 const buildAccountDuesPayload = (bills = [], extras = {}) => ({
     ...summarizeOutstandingBills(bills),
     ...extras,
@@ -538,6 +574,7 @@ module.exports = {
     allocateReceivedAmount,
     applyMedicationReceipt,
     applyMedicationReceipts,
+    enrichMedicationReceipt,
     buildAccountDuesPayload,
     ensureValidAllocationOrder,
     filterOutstandingBills,

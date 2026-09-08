@@ -12,6 +12,7 @@ const {
 const {
     ALLOCATION_ORDERS,
     applyMedicationReceipts,
+    enrichMedicationReceipt,
     ensureValidAllocationOrder,
     filterOutstandingBills,
     getMedicationOutstandingMap,
@@ -943,13 +944,18 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     });
 
     const bill = await getBillDetailById(billId);
+    const enrichedAllocation = paymentAllocation
+        ? await enrichMedicationReceipt(paymentAllocation, {
+            current_bill_number: bill?.bill_number || null,
+        })
+        : null;
 
     return res.status(201).json({
         success: true,
         message: 'Repeat medicine bill created successfully',
         data: {
             ...bill,
-            payment_allocation: paymentAllocation,
+            payment_allocation: enrichedAllocation,
         },
     });
 });
@@ -1134,10 +1140,34 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     }
 
     if (appointmentDate) {
-        conditions.push('a.appointment_date = ?');
-        params.push(appointmentDate);
-        repeatConditions.push('DATE(b.created_at) = ?');
-        repeatParams.push(appointmentDate);
+        conditions.push(`(
+            a.appointment_date = ?
+            OR EXISTS (
+                SELECT 1
+                FROM tbl_bills mb
+                JOIN tbl_bill_payments bp ON bp.bill_id = mb.id
+                WHERE mb.consultation_id = c.id
+                  AND mb.appointment_id = a.appointment_id
+                  AND mb.bill_type = 'MEDICATION'
+                  AND mb.status = 'ACTIVE'
+                  AND bp.status = 'SUCCESS'
+                  AND COALESCE(bp.allocation_kind, 'CURRENT') = 'PREVIOUS'
+                  AND DATE(bp.collected_at) = ?
+            )
+        )`);
+        params.push(appointmentDate, appointmentDate);
+        repeatConditions.push(`(
+            DATE(b.created_at) = ?
+            OR EXISTS (
+                SELECT 1
+                FROM tbl_bill_payments bp
+                WHERE bp.bill_id = b.id
+                  AND bp.status = 'SUCCESS'
+                  AND COALESCE(bp.allocation_kind, 'CURRENT') = 'PREVIOUS'
+                  AND DATE(bp.collected_at) = ?
+            )
+        )`);
+        repeatParams.push(appointmentDate, appointmentDate);
     }
 
     if (patientSearch) {
