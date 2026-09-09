@@ -1,3 +1,4 @@
+const { consultationPositionSql } = require('../../utils/consultationPosition');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
@@ -18,6 +19,11 @@ const {
 } = require('../../services/patientCreditService');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
+
+// Bills Next is a selected-branch read view, like the existing billing reports.
+const isBranchBillingRead = (req) => req.user.role === 'doctor'
+    && req.query.billing_scope === 'branch'
+    && Number(req.selectedBranchId) > 0;
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -74,7 +80,7 @@ const buildBillListQuery = ({ actor, filters }) => {
     if (actor.role === 'patient') {
         conditions.push('b.patient_id = ?');
         params.push(actor.id);
-    } else if (actor.role === 'doctor') {
+    } else if (actor.role === 'doctor' && !filters.branchBillingRead) {
         conditions.push('c.doctor_id = ?');
         params.push(actor.id);
     } else if (filters.patientId) {
@@ -295,6 +301,7 @@ const listBills = asyncHandler(async (req, res) => {
             patientId,
             branchId,
             outstanding,
+            branchBillingRead: isBranchBillingRead(req),
         },
     });
 
@@ -330,6 +337,8 @@ const listBills = asyncHandler(async (req, res) => {
             b.pending_amount,
             b.payment_status,
             b.payment_settlement_type,
+            COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.id AND i.item_type = 'TEST'), 0) AS test_amount,
+            COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.id AND LOWER(i.item_name) = 'courier charge'), 0) AS courier_amount,
             COALESCE(
                 (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1),
                 NULL
@@ -377,9 +386,12 @@ const listBills = asyncHandler(async (req, res) => {
                   AND bp.allocation_kind = 'PREVIOUS'
             ), 0) AS borrowed_amount_collected,
             CASE
-                WHEN b.appointment_id IS NULL THEN b.created_at
-                ELSE a.actual_completed_at
+                WHEN b.appointment_id IS NULL THEN NULL
+                ELSE COALESCE(a.actual_completed_at, c.created_at)
             END AS consultation_completed_at,
+            a.actual_started_at AS consultation_started_at,
+            a.status AS appointment_status,
+            a.actual_completed_at,
             b.status,
             b.remark,
             b.delivery_mode,
@@ -390,19 +402,7 @@ const listBills = asyncHandler(async (req, res) => {
             COALESCE(a.appointment_date, DATE(b.created_at)) AS appointment_date,
             a.original_token_number,
             a.current_token_number AS token_number,
-            COALESCE(
-                a.live_queue_assigned_position,
-                (
-                    SELECT COUNT(*)
-                    FROM tbl_appointments sibling
-                    WHERE sibling.fk_branch_id = a.fk_branch_id
-                      AND sibling.fk_slot_id = a.fk_slot_id
-                      AND sibling.appointment_date = a.appointment_date
-                      AND sibling.is_active = 1
-                      AND COALESCE(sibling.original_token_number, sibling.current_token_number, sibling.token_number)
-                          <= COALESCE(a.original_token_number, a.current_token_number, a.token_number)
-                )
-            ) AS queue_position,
+            ${consultationPositionSql} AS queue_position,
             s.slot_name,
             COALESCE(sto.override_start_time, s.start_time) AS start_time,
             COALESCE(sto.override_end_time, s.end_time) AS end_time,
@@ -486,7 +486,7 @@ const getBillById = asyncHandler(async (req, res) => {
         throw new AppError('You are not authorized to access this bill', 403);
     }
 
-    if (req.user.role === 'doctor') {
+    if (req.user.role === 'doctor' && !isBranchBillingRead(req)) {
         const consultationScopeRows = await query(
             `SELECT c.id
              FROM tbl_consultations c
@@ -553,7 +553,7 @@ const getAppointmentBillingSummary = asyncHandler(async (req, res) => {
         throw new AppError('No active bills found for this appointment', 404);
     }
 
-    if (req.user.role === 'doctor' && Number(summary.doctor_id) !== Number(req.user.id)) {
+    if (req.user.role === 'doctor' && !isBranchBillingRead(req) && Number(summary.doctor_id) !== Number(req.user.id)) {
         throw new AppError('You are not authorized to access this appointment billing summary', 403);
     }
 
@@ -805,7 +805,7 @@ const listBillPayments = asyncHandler(async (req, res) => {
     if (req.user.role === 'patient') {
         conditions.push('bp.patient_id = ?');
         params.push(req.user.id);
-    } else if (req.user.role === 'doctor') {
+    } else if (req.user.role === 'doctor' && !isBranchBillingRead(req)) {
         conditions.push('(c.doctor_id = ? OR b.appointment_id IS NULL)');
         params.push(req.user.id);
     }
@@ -835,6 +835,7 @@ const listBillPayments = asyncHandler(async (req, res) => {
     const fromSql = `FROM tbl_bill_payments bp
          JOIN tbl_bills b ON b.id = bp.bill_id
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
+         LEFT JOIN master_slots s ON s.id = a.fk_slot_id
          LEFT JOIN tbl_consultations c ON c.appointment_id = b.appointment_id
          LEFT JOIN master_users p ON p.id = COALESCE(a.fk_patient_id, b.patient_id)
          LEFT JOIN tbl_patient_family_members fm
@@ -857,6 +858,13 @@ const listBillPayments = asyncHandler(async (req, res) => {
             b.bill_type,
             b.appointment_id,
             b.consultation_id,
+            b.remark AS bill_remark,
+            b.payment_settlement_type,
+            b.delivery_mode,
+            a.original_token_number,
+            a.current_token_number AS token_number,
+            s.slot_name,
+            s.start_time,
             bp.patient_id,
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             p.mobile_no AS patient_mobile_no,
@@ -882,7 +890,7 @@ const listBillPayments = asyncHandler(async (req, res) => {
     return res.status(200).json({
         success: true,
         message: 'Bill payments fetched successfully',
-        data: rows,
+        data: rows.map((row) => ({ ...row, ...decorateTokenFields(row) })),
         meta: {
             ...buildPaginationMeta(pagination),
             total: pagination.total,

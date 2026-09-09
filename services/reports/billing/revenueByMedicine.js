@@ -19,11 +19,16 @@ const getRevenueByMedicineReport = async (filters) => {
             END AS session_type
          FROM tbl_bill_items bi
          JOIN tbl_bills b ON b.id = bi.bill_id
-         LEFT JOIN tbl_bill_payments bp ON bp.bill_id = b.id AND bp.status = 'SUCCESS'
+         LEFT JOIN (
+            SELECT bill_id, CASE WHEN COUNT(DISTINCT UPPER(payment_mode)) > 1
+                THEN 'MIXED' ELSE MAX(UPPER(payment_mode)) END AS payment_mode
+            FROM tbl_bill_payments WHERE status = 'SUCCESS' GROUP BY bill_id
+         ) bp ON bp.bill_id = b.id
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN master_slots s ON s.id = a.fk_slot_id
          ${whereClause}
            AND b.status = 'ACTIVE'
+           AND LOWER(COALESCE(bi.item_name, '')) <> 'courier charge'
            AND (UPPER(bi.item_type) LIKE '%MEDIC%' OR (bi.item_type IS NOT NULL AND UPPER(bi.item_type) NOT IN ('TEST')))
          GROUP BY bi.item_name, payment_mode, session_type
          ORDER BY gross_revenue DESC, total_quantity_sold DESC`,

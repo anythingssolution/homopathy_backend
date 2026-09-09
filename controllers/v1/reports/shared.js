@@ -37,6 +37,7 @@ const parseReportFilters = (req) => {
         fromDate,
         toDate,
         branchId,
+        includeUnassigned: req.user?.role === 'doctor' && req.query.billing_scope === 'branch' && Number(req.selectedBranchId) > 0,
     };
 };
 

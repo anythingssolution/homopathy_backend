@@ -68,7 +68,7 @@ const getRevenueByConsultantReport = async (filters) => {
          LEFT JOIN master_slots s ON s.id = session_a.fk_slot_id
          ${whereClause}
            AND b.status = 'ACTIVE'
-           AND c.doctor_id IS NOT NULL
+           ${filters.includeUnassigned ? '' : 'AND c.doctor_id IS NOT NULL'}
          GROUP BY c.doctor_id, d.full_name, d.uuid, payment_mode, session_type
          ORDER BY total_gross_revenue DESC, doctor_name ASC`,
         params

@@ -289,7 +289,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     }
 
     const { page, pageSize } = parsePagination(req.query);
-    const { rows: consultationRows, pagination } = await getConsultationHistoryRows({
+    const { rows: consultationRows, pagination, timeline, paymentRows } = await getConsultationHistoryRows({
         branchId,
         fromDate,
         toDate,
@@ -322,6 +322,10 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
                 appointment_date: row.appointment_date,
                 symptoms: row.appointment_symptoms,
                 status: row.appointment_status,
+                history_queue_position: row.history_queue_position == null
+                    ? null : Number(row.history_queue_position),
+                position_explanation: row.history_queue_position == null ? null
+                    : 'Consultation completion order within this branch, date and slot.', 
                 cancelled_at: row.cancelled_at,
                 cancelled_by_user_id: row.cancelled_by_user_id,
                 cancelled_by_role: row.cancelled_by_role,
@@ -358,10 +362,17 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
             || { cash_amount: 0, online_amount: 0, payment_mode: null };
     });
 
+    const appointmentItems = new Map(data.map((item) => [Number(item.appointment.appointment_id), item]));
+    const paymentItems = new Map(paymentRows.map((payment) => [Number(payment.payment_id), {
+        record_type: 'PENDING_PAYMENT', payment,
+    }]));
+    const timelineData = timeline.map((event) => event.event_type === 'PAYMENT'
+        ? paymentItems.get(Number(event.event_id)) : appointmentItems.get(Number(event.event_id))).filter(Boolean);
+
     return res.status(200).json({
         success: true,
         message: 'Doctor consultation history fetched successfully',
-        data,
+        data: timelineData,
         meta: {
             ...buildPaginationMeta(pagination),
             filters: {
