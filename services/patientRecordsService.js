@@ -246,11 +246,8 @@ const buildRegistryWhere = (filters) => {
     const conditions = [
         'p.role = \'PAT\'',
         'p.is_active = 1',
-        'a.is_active = 1',
-        'a.status = \'Completed\'',
-        'a.fk_branch_id = ?',
     ];
-    const params = [filters.branchId];
+    const params = [];
 
     if (filters.patientSearch) {
         conditions.push(`(
@@ -283,10 +280,11 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
     const countRows = await query(
         `SELECT COUNT(DISTINCT p.id) AS total
          FROM master_users p
-         JOIN tbl_appointments a ON a.fk_patient_id = p.id
+         LEFT JOIN tbl_appointments a ON a.fk_patient_id = p.id
+           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?
          LEFT JOIN tbl_patient_family_members fm ON fm.fk_primary_patient_id = p.id
          ${whereClause}`,
-        params
+        [filters.branchId, ...params]
     );
 
     const total = Number(countRows[0]?.total || 0);
@@ -321,7 +319,8 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
                   AND family_count.is_active = 1
             ) AS family_members_count
          FROM master_users p
-         JOIN tbl_appointments a ON a.fk_patient_id = p.id
+         LEFT JOIN tbl_appointments a ON a.fk_patient_id = p.id
+           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?
          LEFT JOIN tbl_patient_family_members fm ON fm.fk_primary_patient_id = p.id
          LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
          LEFT JOIN tbl_bills bills ON bills.appointment_id = a.appointment_id AND bills.status = 'ACTIVE'
@@ -337,9 +336,9 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
          ) test ON test.consultation_id = c.id
          ${whereClause}
          GROUP BY p.id
-         ORDER BY latest_visit_date DESC, p.full_name ASC
+         ORDER BY latest_visit_date DESC, p.full_name ASC, p.id ASC
          LIMIT ? OFFSET ?`,
-        [...params, filters.pageSize, offset]
+        [filters.branchId, ...params, filters.pageSize, offset]
     );
 
     return {
@@ -431,21 +430,6 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
 
     if (patientRows.length === 0) {
         throw new AppError('Patient not found', 404);
-    }
-
-    const accessRows = await query(
-        `SELECT 1
-         FROM tbl_appointments
-         WHERE fk_patient_id = ?
-           AND fk_branch_id = ?
-           AND is_active = 1
-           AND status = 'Completed'
-         LIMIT 1`,
-        [patientId, branchId]
-    );
-
-    if (accessRows.length === 0) {
-        throw new AppError('Patient records not found for selected branch', 404);
     }
 
     const [familyRows, subjectSummaryRows] = await Promise.all([

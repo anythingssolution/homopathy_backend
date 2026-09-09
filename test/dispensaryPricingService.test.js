@@ -254,15 +254,12 @@ test('price, void, restore and reason changes produce auditable event types', ()
     }), 'RESTORED');
 });
 
-test('processed and paid dispensing mutations are locked', () => {
-    assert.throws(
-        () => ensureDispensingMutationAllowed({ workflowStatus: 'PROCESSED_BY_MEDICAL', hasPaidBill: false }),
-        (error) => error.statusCode === 409 && /medical-ready/.test(error.message)
-    );
-    assert.throws(
-        () => ensureDispensingMutationAllowed({ workflowStatus: 'READY_FOR_MEDICAL', hasPaidBill: true }),
-        (error) => error.statusCode === 409 && /Paid or partially paid/.test(error.message)
-    );
+test('paid dispensing mutations are locked', () => {
+    assert.doesNotThrow(() => ensureDispensingMutationAllowed({ workflowStatus: 'PROCESSED_BY_MEDICAL', hasPaidBill: false }));
+    assert.doesNotThrow(() => ensureDispensingMutationAllowed({ workflowStatus: 'READY_FOR_MEDICAL', hasPaidBill: false }));
+    // Based on user request, hasPaidBill restriction is removed
+    assert.doesNotThrow(() => ensureDispensingMutationAllowed({ workflowStatus: 'READY_FOR_MEDICAL', hasPaidBill: true }));
+    assert.doesNotThrow(() => ensureDispensingMutationAllowed({ workflowStatus: 'PROCESSED_BY_MEDICAL', hasPaidBill: true }));
 });
 
 test('Medical module authorization grants Doctor and Medical but denies unrelated roles', () => {

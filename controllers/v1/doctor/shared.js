@@ -924,11 +924,26 @@ const getConsultationHistoryRows = async ({
         LEFT JOIN tbl_patient_family_members pfm ON pfm.id = pa.fk_patient_family_member_id
         JOIN master_clinic_branches pbr ON pbr.id = pb.fk_branch_id
         WHERE ${payConditions.join(' AND ')}`;
+    const repeatConditions = ["rb.bill_type = 'MEDICATION'", 'rb.appointment_id IS NULL',
+        "rb.status = 'ACTIVE'"];
+    const repeatParams = [];
+    if (branchId) { repeatConditions.push('rb.fk_branch_id = ?'); repeatParams.push(branchId); }
+    if (fromDate) { repeatConditions.push('DATE(rb.created_at) >= ?'); repeatParams.push(fromDate); }
+    if (toDate) { repeatConditions.push('DATE(rb.created_at) <= ?'); repeatParams.push(toDate); }
+    if (patientSearch) {
+        repeatConditions.push('(rp.full_name LIKE ? OR rp.mobile_no LIKE ? OR rp.uuid LIKE ?)');
+        repeatParams.push(...Array(3).fill(`%${patientSearch}%`));
+    }
+    const repeatFrom = `FROM tbl_bills rb
+        JOIN master_users rp ON rp.id = rb.patient_id
+        JOIN master_clinic_branches rbr ON rbr.id = rb.fk_branch_id
+        WHERE ${repeatConditions.join(' AND ')}`;
     const timelineSql = `SELECT 'APPOINTMENT' AS event_type, a.appointment_id AS event_id,
         ${includePayments ? 'a.actual_completed_at' : 'a.appointment_date'} AS event_at,
         a.appointment_date AS event_date ${fromSql}
-        ${includePayments ? `UNION ALL SELECT 'PAYMENT', bp.id, bp.collected_at, DATE(bp.collected_at) ${payFrom}` : ''}`;
-    const timelineParams = includePayments ? [...params, ...payParams] : params;
+        ${includePayments ? `UNION ALL SELECT 'PAYMENT', bp.id, bp.collected_at, DATE(bp.collected_at) ${payFrom}
+        UNION ALL SELECT 'REPEAT_MEDICINE', rb.id, rb.created_at, DATE(rb.created_at) ${repeatFrom}` : ''}`;
+    const timelineParams = includePayments ? [...params, ...payParams, ...repeatParams] : params;
     const countRows = await query(`SELECT COUNT(*) AS total FROM (${timelineSql}) timeline`, timelineParams);
     const pagination = resolvePagination({ page, pageSize, total: Number(countRows[0]?.total || 0) });
     const timeline = await query(`SELECT * FROM (${timelineSql}) timeline
@@ -943,6 +958,13 @@ const getConsultationHistoryRows = async ({
         COALESCE(pfm.full_name, pp.full_name) AS patient_full_name,
         pp.mobile_no AS patient_mobile_no, pbr.branch_name
         ${payFrom} AND bp.id IN (${paymentIds.map(() => '?').join(',')})`, [...payParams, ...paymentIds]) : [];
+    const repeatIds = timeline.filter((event) => event.event_type === 'REPEAT_MEDICINE').map((event) => Number(event.event_id));
+    const repeatRows = repeatIds.length ? await query(`SELECT rb.id AS bill_id, rb.bill_number,
+        rb.created_at, rb.total_amount, rb.paid_amount, rb.pending_amount, rb.payment_status,
+        (rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%') AS is_direct_medicine,
+        rb.consultation_id AS original_consultation_id, rp.full_name AS patient_full_name,
+        rp.mobile_no AS patient_mobile_no, rbr.branch_name
+        ${repeatFrom} AND rb.id IN (${repeatIds.map(() => '?').join(',')})`, [...repeatParams, ...repeatIds]) : [];
     const orderByClause = 'ORDER BY a.actual_completed_at DESC, a.appointment_id DESC';
 
     const rows = appointmentIds.length ? await query(
@@ -997,7 +1019,7 @@ const getConsultationHistoryRows = async ({
         [...params, ...appointmentIds]
     ) : [];
 
-    return { rows, pagination, timeline, paymentRows };
+    return { rows, pagination, timeline, paymentRows, repeatRows };
 };
 
 const validateConsultationPayload = (body) => {

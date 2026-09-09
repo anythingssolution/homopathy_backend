@@ -1107,20 +1107,25 @@ const createMedicationBillFromConsultation = async ({
         const existingBill = existingRows[0];
         const paidAmount = normalizeAmount(existingBill.paid_amount) ?? 0;
 
-        if (existingBill.payment_status === 'PAID' || paidAmount > 0) {
-            throw new AppError('Medication bill already has collected payment and cannot be updated', 409);
+        const pendingAmount = totalAmount - paidAmount;
+        let newPaymentStatus = 'UNPAID';
+        if (paidAmount > 0) {
+            if (pendingAmount <= 0) {
+                newPaymentStatus = 'PAID';
+            } else {
+                newPaymentStatus = 'PARTIAL';
+            }
         }
 
         await connection.execute(
             `UPDATE tbl_bills
              SET total_amount = ?,
-                 paid_amount = 0,
                  pending_amount = ?,
-                 payment_status = 'UNPAID',
+                 payment_status = ?,
                  remark = ?,
                  updated_by = ?
              WHERE id = ?`,
-            [totalAmount, totalAmount, billRemark, createdByUserId, existingBill.id]
+            [totalAmount, pendingAmount, newPaymentStatus, billRemark, createdByUserId, existingBill.id]
         );
 
         await replaceMedicationBillItems({

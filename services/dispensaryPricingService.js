@@ -24,13 +24,14 @@ const normalizeDispenseStatus = (value) => {
 };
 
 const ensureDispensingMutationAllowed = ({ workflowStatus, hasPaidBill }) => {
-    if (workflowStatus !== 'READY_FOR_MEDICAL') {
-        throw new AppError('Only medical-ready prescriptions can be changed', 409);
+    if (workflowStatus !== 'READY_FOR_MEDICAL' && workflowStatus !== 'PROCESSED_BY_MEDICAL') {
+        throw new AppError('Only medical-ready or processed prescriptions can be changed', 409);
     }
 
-    if (hasPaidBill) {
-        throw new AppError('Paid or partially paid medication bills cannot be changed', 409);
-    }
+    // Removed the hasPaidBill restriction based on user request to allow edits regardless of payment status
+    // if (hasPaidBill) {
+    //     throw new AppError('Paid or partially paid medication bills cannot be changed', 409);
+    // }
 };
 
 const validatePrescribedDispensingItems = ({ submittedItems, prescribedMedications, existingItems }) => {

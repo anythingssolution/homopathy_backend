@@ -870,6 +870,9 @@ const listBillPayments = asyncHandler(async (req, res) => {
             p.mobile_no AS patient_mobile_no,
             bp.payment_for,
             COALESCE(bp.allocation_kind, 'CURRENT') AS allocation_kind,
+            CASE WHEN bp.allocation_kind = 'PREVIOUS'
+                OR DATE(bp.collected_at) > COALESCE(a.appointment_date, DATE(b.created_at))
+                THEN 1 ELSE 0 END AS is_previous_due,
             bp.settlement_source_bill_id,
             src.bill_number AS settlement_source_bill_number,
             bp.amount,

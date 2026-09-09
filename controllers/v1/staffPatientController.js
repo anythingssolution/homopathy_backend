@@ -117,6 +117,20 @@ const createStaffPatient = asyncHandler(async (req, res) => {
     const gender = String(req.body?.gender || '').trim().toLowerCase();
     const parsedAge = Number(req.body?.age);
     const registrationToken = String(req.body?.registration_token || '').trim();
+    const optionalText = (key, limit) => {
+        const value = String(req.body?.[key] ?? '').trim();
+        if (value.length > limit) throw new AppError(`${key} must be at most ${limit} characters`, 400);
+        return value || null;
+    };
+    const email = optionalText('email', 255);
+    const area = optionalText('address', 150);
+    const ward = optionalText('ward_no', 50);
+    const constituency = optionalText('vidhan_sabha', 150);
+    const pincode = optionalText('pincode', 6);
+    const city = optionalText('city', 100);
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError('Enter a valid email address', 400);
+    if (pincode && !/^\d{6}$/.test(pincode)) throw new AppError('Pincode must contain 6 digits', 400);
+    const address = [area, ward ? `Ward ${ward}` : null, constituency, pincode, city].filter(Boolean).join(', ') || null;
 
     if (!fullName || !mobileNo || req.body?.age === undefined || !gender || !registrationToken) {
         throw new AppError('full_name, mobile_no, age, gender and verified OTP token are required', 400);
@@ -157,13 +171,14 @@ const createStaffPatient = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, gender, email, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 generatedPatientUuid,
                 fullName,
                 parsedAge,
                 gender,
+                email, address, area, ward, constituency, pincode, city,
                 mobileNo,
                 generatedPasswordHash,
                 PATIENT_ROLE,

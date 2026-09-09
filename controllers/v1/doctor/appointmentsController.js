@@ -289,7 +289,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     }
 
     const { page, pageSize } = parsePagination(req.query);
-    const { rows: consultationRows, pagination, timeline, paymentRows } = await getConsultationHistoryRows({
+    const { rows: consultationRows, pagination, timeline, paymentRows, repeatRows } = await getConsultationHistoryRows({
         branchId,
         fromDate,
         toDate,
@@ -366,8 +366,12 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     const paymentItems = new Map(paymentRows.map((payment) => [Number(payment.payment_id), {
         record_type: 'PENDING_PAYMENT', payment,
     }]));
+    const repeatItems = new Map(repeatRows.map((bill) => [Number(bill.bill_id), {
+        record_type: bill.is_direct_medicine ? 'DIRECT_MEDICINE' : 'REPEAT_MEDICINE', bill,
+    }]));
     const timelineData = timeline.map((event) => event.event_type === 'PAYMENT'
-        ? paymentItems.get(Number(event.event_id)) : appointmentItems.get(Number(event.event_id))).filter(Boolean);
+        ? paymentItems.get(Number(event.event_id)) : event.event_type === 'REPEAT_MEDICINE'
+            ? repeatItems.get(Number(event.event_id)) : appointmentItems.get(Number(event.event_id))).filter(Boolean);
 
     return res.status(200).json({
         success: true,

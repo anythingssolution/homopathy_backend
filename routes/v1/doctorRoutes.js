@@ -74,6 +74,10 @@ const {
 const router = express.Router();
 
 router.use(authenticate, authorizeRoles('doctor'), enforceSelectedBranchScope);
+const { listLabTests, saveLabTest } = require('../../controllers/v1/labTestMasterController');
+router.get('/test-master', listLabTests);
+router.post('/test-master', saveLabTest);
+router.put('/test-master/:id', saveLabTest);
 
 router.get('/dashboard', getDoctorDashboard);
 router.get('/patient', listPatientsForDoctor);

@@ -235,8 +235,8 @@ const finalizeMedicalPrescription = async ({
         throw new AppError('Prescription not found', 404);
     }
 
-    if (rows[0].workflow_status !== 'READY_FOR_MEDICAL') {
-        throw new AppError('Only medical-ready prescriptions can be processed', 409);
+    if (rows[0].workflow_status !== 'READY_FOR_MEDICAL' && rows[0].workflow_status !== 'PROCESSED_BY_MEDICAL') {
+        throw new AppError('Only medical-ready or processed prescriptions can be processed', 409);
     }
 
     const billResult = await createMedicationBillFromConsultation({
@@ -248,21 +248,45 @@ const finalizeMedicalPrescription = async ({
     let paymentResult = null;
 
     if (payment) {
-        paymentResult = await applyMedicationReceipts({
-            connection,
-            patientId: rows[0].patient_id,
-            currentBillId: billResult.billId,
-            receivedAmount: payment.amount,
-            paymentMode: payment.payment_mode,
-            transactionReference: payment.transaction_reference,
-            remark: payment.remark,
-            collectedByUserId: medicalUserId,
-            collectedByRole: 'MED',
-            allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
-            branchId: rows[0].branch_id,
-            sourceConsultationId: consultationId,
-            payments: payment.payments,
-        });
+        // After bill creation/update, check the actual pending amount on the bill
+        const [billPendingRows] = await connection.execute(
+            `SELECT pending_amount, paid_amount, payment_status
+             FROM tbl_bills
+             WHERE id = ?
+             LIMIT 1`,
+            [billResult.billId]
+        );
+
+        const actualPending = Number(billPendingRows[0]?.pending_amount || 0);
+
+        // Only apply payment if there is actually something pending on the bill
+        if (actualPending > 0) {
+            // Cap the received amount to the actual pending so we don't overpay
+            const cappedAmount = Math.min(Number(payment.amount || 0), actualPending);
+
+            if (cappedAmount > 0) {
+                paymentResult = await applyMedicationReceipts({
+                    connection,
+                    patientId: rows[0].patient_id,
+                    currentBillId: billResult.billId,
+                    receivedAmount: cappedAmount,
+                    paymentMode: payment.payment_mode,
+                    transactionReference: payment.transaction_reference,
+                    remark: payment.remark,
+                    collectedByUserId: medicalUserId,
+                    collectedByRole: 'MED',
+                    allocationOrder: payment.allocation_order || ALLOCATION_ORDERS.CURRENT_FIRST,
+                    branchId: rows[0].branch_id,
+                    sourceConsultationId: consultationId,
+                    payments: payment.payments
+                        ? payment.payments.map((p) => ({
+                            ...p,
+                            amount: Math.min(Number(p.amount || 0), actualPending),
+                        }))
+                        : payment.payments,
+                });
+            }
+        }
     }
 
     await connection.execute(
@@ -358,6 +382,8 @@ const getMedicalPricingByConsultationId = async (consultationId) => {
     };
 };
 
+const { correctMedicalReceivedAmount } = require('../../services/medicalPaymentCorrectionService');
+
 const buildMedicalPrescriptionListItemResponse = (row, detail) => {
     const pricing = detail?.pricing || null;
 
@@ -368,6 +394,7 @@ const buildMedicalPrescriptionListItemResponse = (row, detail) => {
         sent_to_medical_at: row.sent_to_medical_at,
         pricing_status: pricing ? 'PRICED' : 'UNPRICED',
         is_priced: Boolean(pricing),
+        medication_bill: detail?.medication_bill || null,
         appointment: {
             appointment_id: row.appointment_id,
             auid: row.auid,
@@ -594,12 +621,15 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
     );
 
     const pricing = await getMedicalPricingByConsultationId(consultationId);
+    const billRows = await query(`SELECT id AS bill_id, total_amount, paid_amount, pending_amount, payment_status
+        FROM tbl_bills WHERE consultation_id = ? AND bill_type = 'MEDICATION' AND status = 'ACTIVE' LIMIT 1`, [consultationId]);
     const pricingByMedicationId = new Map(
         (pricing?.medications || []).map((item) => [Number(item.consultation_medication_id), item])
     );
 
     return {
         ...rows[0],
+        medication_bill: billRows[0] || null,
         medications: Array.from(medicationMap.values()).map((medication) => projectDispensingStatus(
             medication,
             pricingByMedicationId.get(Number(medication.consultation_medication_id)) || null
@@ -964,14 +994,7 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
     const pricingStatus = String(req.query.pricing_status || 'all').trim().toLowerCase();
     const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
-    const appointmentStatusRaw = req.query.status ? String(req.query.status).trim().toLowerCase() : null;
-    const appointmentStatus =
-        appointmentStatusRaw === 'pending' ? 'Pending'
-            : appointmentStatusRaw === 'completed' ? 'Completed'
-                : appointmentStatusRaw === 'confirmed' ? 'Confirmed'
-                    : appointmentStatusRaw === 'cancelled' ? 'Cancelled'
-                        : appointmentStatusRaw === 'all' ? null
-                            : appointmentStatusRaw;
+    const workflowStatusFilter = req.query.status ? String(req.query.status).trim().toLowerCase() : 'all';
     const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
 
     if (!['all', 'priced', 'unpriced'].includes(pricingStatus)) {
@@ -986,8 +1009,8 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         throw new AppError('appointment_date must be in YYYY-MM-DD format', 400);
     }
 
-    if (appointmentStatus && !['Pending', 'Completed', 'Confirmed', 'Cancelled'].includes(appointmentStatus)) {
-        throw new AppError('status must be one of Pending, Completed, Confirmed or Cancelled', 400);
+    if (!['pending', 'completed', 'all'].includes(workflowStatusFilter)) {
+        throw new AppError('status must be one of pending, completed or all', 400);
     }
 
     const pricingJoin =
@@ -997,7 +1020,7 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
                 ? 'LEFT JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id'
                 : 'LEFT JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id';
 
-    const conditions = [`c.workflow_status = 'READY_FOR_MEDICAL'`];
+    const conditions = [];
     const params = [];
 
     if (pricingStatus === 'unpriced') {
@@ -1009,9 +1032,12 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         params.push(appointmentDate);
     }
 
-    if (appointmentStatus) {
-        conditions.push('a.status = ?');
-        params.push(appointmentStatus);
+    if (workflowStatusFilter === 'pending') {
+        conditions.push(`c.workflow_status = 'READY_FOR_MEDICAL'`);
+    } else if (workflowStatusFilter === 'completed') {
+        conditions.push(`c.workflow_status = 'PROCESSED_BY_MEDICAL'`);
+    } else {
+        conditions.push(`c.workflow_status IN ('READY_FOR_MEDICAL', 'PROCESSED_BY_MEDICAL')`);
     }
 
     if (branchId) {
@@ -1098,7 +1124,7 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
                 pricing_status: pricingStatus,
                 branch_id: branchId,
                 appointment_date: appointmentDate,
-                status: appointmentStatus,
+                status: workflowStatusFilter,
                 patient_search: patientSearch,
             },
         },
@@ -1128,7 +1154,6 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
         `b.status = 'ACTIVE'`,
         `b.bill_type = 'MEDICATION'`,
         `b.appointment_id IS NULL`,
-        `b.remark LIKE 'Repeat Medicine%'`,
     ];
     const repeatParams = [];
 
@@ -1377,6 +1402,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     );
 
     const repeatData = repeatRows.map((row) => {
+        const isDirectMedicine = !row.consultation_id || /Medical Only/i.test(row.remark || '');
         const billItems = repeatItemsByBillId.get(row.bill_id) || [];
         const billDetail = repeatBillDetailsById.get(Number(row.bill_id));
         const medicineItems = billItems.filter((item) => String(item.item_name || '').toLowerCase() !== 'courier charge');
@@ -1391,7 +1417,8 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
         }
 
         return {
-            record_type: 'REPEAT_MEDICINE',
+            record_type: isDirectMedicine ? 'DIRECT_MEDICINE' : 'REPEAT_MEDICINE',
+            is_direct_medicine: isDirectMedicine,
             is_repeat_medicine: true,
             bill_id: row.bill_id,
             consultation_id: `repeat-${row.bill_id}`,
@@ -1408,7 +1435,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
             appointment: {
                 auid: row.bill_number,
                 appointment_date: row.created_at,
-                slot_name: 'Repeat Medicine',
+                slot_name: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
                 branch_name: row.branch_name,
                 token_number: null,
                 display_token_display: 'Repeat',
@@ -1522,6 +1549,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
     const additionalMedications = Array.isArray(req.body?.additional_medications) ? req.body.additional_medications : [];
     const submittedTests = Array.isArray(req.body?.tests) ? req.body.tests : null;
     const processAfterSave = toBoolean(req.body?.process_after_save);
+    const receivedCorrection = req.body?.received_correction || null;
     const payment = normalizeMedicalPaymentPayload(req.body?.payment);
     const submittedRequestKey = String(
         req.get('Idempotency-Key') || req.body?.request_key || randomUUID()
@@ -1577,6 +1605,10 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
 
         if (consultationRows.length === 0) {
             throw new AppError('Prescription not found', 404);
+        }
+
+        if (receivedCorrection && (consultationRows[0].workflow_status !== 'PROCESSED_BY_MEDICAL' || processAfterSave || payment)) {
+            throw new AppError('Received correction is only allowed through Save Changes on a completed prescription', 400);
         }
 
         try {
@@ -1725,6 +1757,17 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                 voidReason: item.void_reason,
             });
             let pricingItemId = existing?.pricing_item_id || null;
+
+            console.log('[MEDICAL_EDIT_DEBUG]', {
+                consultation_medication_id: item.consultation_medication_id,
+                submittedAmount: item.amount,
+                existingAmount: existing?.amount,
+                existingVersion: existing?.version,
+                eventType,
+                hasPricingItemId: !!pricingItemId,
+                willUpdate: !!(existing && eventType),
+                willInsert: !existing,
+            });
 
             if (existing && eventType) {
                 const [updateResult] = await connection.execute(
@@ -1879,26 +1922,31 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
         }
 
         if (!processAfterSave) {
-            const [existingUnpaidBillRows] = await connection.execute(
+            const [existingBillRows] = await connection.execute(
                 `SELECT id
                  FROM tbl_bills
                  WHERE consultation_id = ?
                    AND bill_type = 'MEDICATION'
                    AND status = 'ACTIVE'
-                   AND payment_status = 'UNPAID'
-                   AND paid_amount = 0
                  LIMIT 1
                  FOR UPDATE`,
                 [consultationId]
             );
 
-            if (existingUnpaidBillRows.length > 0) {
+            if (existingBillRows.length > 0) {
                 const refreshedBill = await createMedicationBillFromConsultation({
                     connection,
                     consultationId,
                     createdByUserId: req.user.id,
                 });
                 finalizedBillId = refreshedBill.billId;
+                if (receivedCorrection) {
+                    await correctMedicalReceivedAmount({ connection, billId: finalizedBillId,
+                        received: receivedCorrection.amount, expectedPaid: receivedCorrection.expected_paid_amount,
+                        userId: req.user.id, requestKey });
+                }
+            } else if (receivedCorrection) {
+                throw new AppError('Existing medicine bill not found for correction', 409);
             }
         }
 
