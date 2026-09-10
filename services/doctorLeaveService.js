@@ -1,6 +1,7 @@
 const { query, withTransaction } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { getDoctorSessionStatus } = require('./doctorSessionService');
+const { materializeRecurringOverridesForBranchDate } = require('./slotTimeOverrideService');
 
 const LEAVE_STATUS = {
     ACTIVE: 'ACTIVE',
@@ -669,6 +670,19 @@ const getBranchDoctorAvailability = async ({ branchId, appointmentDate, connecti
     }
 
     const execute = getExecutor(connection);
+
+    // Weekly schedule rules become override rows on first touch, so the booking screen sees them
+    // for any date (even far beyond the background pre-create horizon).
+    try {
+        await materializeRecurringOverridesForBranchDate({
+            executor: execute,
+            branchId: normalizedBranchId,
+            appointmentDate: normalizedAppointmentDate,
+        });
+    } catch (error) {
+        console.error('Weekly schedule materialisation failed for availability lookup:', error.message);
+    }
+
     const [activeLeave, slotTimeOverrides] = await Promise.all([
         getBranchActiveLeave({
             branchId: normalizedBranchId,

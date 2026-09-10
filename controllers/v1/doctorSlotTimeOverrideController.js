@@ -2,7 +2,9 @@ const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const {
+    buildRecurringRuleReason,
     calculateShiftedTiming,
+    findRecurringRuleForSlot,
     resolveEffectiveSlotTiming,
     shiftActiveExtensionTokenTimes,
 } = require('../../services/slotTimeOverrideService');
@@ -10,6 +12,11 @@ const {
     emitLiveQueueEvent,
     recalculateQueuePlan,
 } = require('../../services/liveQueueService');
+const {
+    assertSlotTimingCanShift,
+    cancelSlotOverrideForDate,
+    shiftSlotOverrideForDate,
+} = require('../../services/recurringScheduleService');
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -38,31 +45,7 @@ const parseContext = (req) => {
     return { branchId, slotId, appointmentDate };
 };
 
-const assertQueueCanShift = async (connection, context) => {
-    const [sessionRows] = await connection.execute(
-        `SELECT session_status
-         FROM tbl_live_queue_sessions
-         WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ?
-         LIMIT 1 FOR UPDATE`,
-        [context.branchId, context.slotId, context.appointmentDate]
-    );
-    if (sessionRows[0] && sessionRows[0].session_status !== 'NOT_STARTED') {
-        throw new AppError('Slot timing cannot be changed after the queue session has started', 409);
-    }
-
-    const [startedRows] = await connection.execute(
-        `SELECT appointment_id
-         FROM tbl_appointments
-         WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ?
-           AND is_active = 1
-           AND queue_status IN ('CHECKED_IN', 'WAITING', 'IN_PROGRESS', 'COMPLETED')
-         LIMIT 1 FOR UPDATE`,
-        [context.branchId, context.slotId, context.appointmentDate]
-    );
-    if (startedRows.length > 0) {
-        throw new AppError('Slot timing cannot be changed after patient check-in or consultation activity', 409);
-    }
-};
+const assertQueueCanShift = assertSlotTimingCanShift;
 
 const listSlotTimings = asyncHandler(async (req, res) => {
     const branchId = toPositiveInt(req.selectedBranchId || req.query.branch_id);
@@ -71,28 +54,53 @@ const listSlotTimings = asyncHandler(async (req, res) => {
         throw new AppError('branch_id and appointment_date (YYYY-MM-DD) are required', 400);
     }
 
-    const rows = await query(
-        `SELECT s.id AS slot_id, s.slot_name,
-                s.start_time AS default_start_time, s.end_time AS default_end_time,
-                COALESCE(o.override_start_time, s.start_time) AS effective_start_time,
-                COALESCE(o.override_end_time, s.end_time) AS effective_end_time,
-                o.id AS override_id, o.reason,
-                CASE WHEN o.id IS NULL THEN 0 ELSE 1 END AS has_override
-         FROM master_slots s
-         LEFT JOIN tbl_doctor_slot_time_overrides o
-           ON o.fk_branch_id = s.fk_branch_id
-          AND o.fk_slot_id = s.id
-          AND o.appointment_date = ?
-          AND o.status = 'ACTIVE'
-         WHERE s.fk_branch_id = ? AND s.is_active = 1
-         ORDER BY s.start_time ASC`,
-        [appointmentDate, branchId]
+    const slots = await query(
+        `SELECT id AS slot_id
+         FROM master_slots
+         WHERE fk_branch_id = ? AND is_active = 1
+         ORDER BY start_time ASC, id ASC`,
+        [branchId]
     );
+
+    // Resolving per slot also materialises any weekly rule for this date, so the doctor sees the
+    // real effective time even before the first booking of the day.
+    const data = [];
+    for (const slot of slots) {
+        const timing = await resolveEffectiveSlotTiming({
+            executor: query,
+            branchId,
+            slotId: Number(slot.slot_id),
+            appointmentDate,
+        });
+        data.push({
+            slot_id: timing.slotId,
+            slot_name: timing.slotName,
+            default_start_time: timing.defaultStartTime,
+            default_end_time: timing.defaultEndTime,
+            effective_start_time: timing.effectiveStartTime,
+            effective_end_time: timing.effectiveEndTime,
+            override_id: timing.overrideId,
+            reason: timing.reason,
+            has_override: timing.hasOverride,
+            is_recurring_rule: timing.isRecurringRule,
+            // Doctor shifted a date that also has a weekly rule (custom time wins for this date).
+            is_custom_over_rule: timing.hasOverride && !timing.isRecurringRule && Boolean(timing.recurringRule),
+            recurring_rule: timing.recurringRule
+                ? {
+                    id: timing.recurringRule.id,
+                    day_of_week: timing.recurringRule.dayOfWeek,
+                    day_label: timing.recurringRule.dayLabel,
+                    start_time: timing.recurringRule.startTime,
+                    description: timing.recurringRule.description,
+                }
+                : null,
+        });
+    }
 
     return res.status(200).json({
         success: true,
         message: 'Date-wise slot timings fetched successfully',
-        data: rows.map((row) => ({ ...row, has_override: Boolean(Number(row.has_override)) })),
+        data,
     });
 });
 
@@ -205,60 +213,37 @@ const saveSlotTiming = asyncHandler(async (req, res) => {
 
 const resetSlotTiming = asyncHandler(async (req, res) => {
     const context = parseContext(req);
+    const ip = getClientIp(req);
+
     const result = await withTransaction(async (connection) => {
-        await assertQueueCanShift(connection, context);
-        const current = await resolveEffectiveSlotTiming({ executor: connection, ...context, lock: true });
-        if (!current.hasOverride) {
-            return { ...context, changed: false };
+        // "Reset" means back to the schedule for that day: the weekly rule time when one applies,
+        // otherwise the slot's default time.
+        const rule = await findRecurringRuleForSlot({ executor: connection, ...context });
+
+        if (rule) {
+            const restored = await shiftSlotOverrideForDate(connection, {
+                ...context,
+                overrideStartTime: String(rule.override_start_time),
+                reason: buildRecurringRuleReason(rule),
+                actorUserId: req.user.id,
+                ip,
+                action: 'RESET_TO_WEEKLY_RULE',
+            });
+            return {
+                ...context,
+                changed: Boolean(restored),
+                restored_to: 'WEEKLY_RULE',
+                effective_start_time: restored ? restored.overrideStartTime : String(rule.override_start_time),
+            };
         }
 
-        const currentShift = calculateShiftedTiming({
-            defaultStartTime: current.defaultStartTime,
-            defaultEndTime: current.defaultEndTime,
-            overrideStartTime: current.effectiveStartTime,
-        }).shiftSeconds;
-        const affectedExtensionTokens = await shiftActiveExtensionTokenTimes({
-            connection,
+        const cancelled = await cancelSlotOverrideForDate(connection, {
             ...context,
-            deltaSeconds: -currentShift,
-        });
-        await connection.execute(
-            `UPDATE tbl_doctor_slot_time_overrides
-             SET status = 'CANCELLED', cancelled_by = ?, cancelled_at = NOW(), updated_by = ?
-             WHERE id = ?`,
-            [req.user.id, req.user.id, current.overrideId]
-        );
-        const [appointmentRows] = await connection.execute(
-            `SELECT COUNT(*) AS total FROM tbl_appointments
-             WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ? AND is_active = 1`,
-            [context.branchId, context.slotId, context.appointmentDate]
-        );
-        await recalculateQueuePlan(connection, {
-            branchId: context.branchId,
-            slotId: context.slotId,
-            appointmentDate: context.appointmentDate,
             actorUserId: req.user.id,
+            ip,
+            action: 'RESET',
         });
-        await connection.execute(
-            `INSERT INTO tbl_doctor_slot_time_override_audit_logs
-             (fk_override_id, fk_branch_id, fk_slot_id, appointment_date, action,
-              old_data_json, new_data_json, affected_appointments,
-              affected_extension_tokens, performed_by, ip_address)
-             VALUES (?, ?, ?, ?, 'RESET', ?, ?, ?, ?, ?, ?)`,
-            [
-                current.overrideId, context.branchId, context.slotId, context.appointmentDate,
-                JSON.stringify(current),
-                JSON.stringify({
-                    effective_start_time: current.defaultStartTime,
-                    effective_end_time: current.defaultEndTime,
-                }),
-                Number(appointmentRows[0].total),
-                affectedExtensionTokens,
-                req.user.id,
-                getClientIp(req),
-            ]
-        );
-        return { ...context, changed: true };
+        return { ...context, changed: Boolean(cancelled), restored_to: 'DEFAULT' };
     });
 
     if (result.changed) {
@@ -271,9 +256,18 @@ const resetSlotTiming = asyncHandler(async (req, res) => {
         });
     }
 
+    let message;
+    if (result.restored_to === 'WEEKLY_RULE') {
+        message = result.changed
+            ? 'Slot timing restored to the weekly schedule successfully'
+            : 'Slot is already following the weekly schedule';
+    } else {
+        message = result.changed ? 'Slot timing reset to default successfully' : 'Slot is already using default timing';
+    }
+
     return res.status(200).json({
         success: true,
-        message: result.changed ? 'Slot timing reset to default successfully' : 'Slot is already using default timing',
+        message,
         data: result,
     });
 });

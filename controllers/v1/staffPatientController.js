@@ -5,16 +5,10 @@ const { query, withTransaction } = require('../../config/db');
 const { env } = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
+const { generatePatientUuid } = require('../../utils/patientUuid');
 
 const PATIENT_ROLE = 'PAT';
 const CREATOR_ROLE_FILTERS = new Set(['SELF', 'DOC', 'REC', 'MED']);
-
-const formatPatientRegistrationDate = (date = new Date()) => {
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = String(date.getFullYear());
-    return `${day}${month}${year}`;
-};
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -44,41 +38,6 @@ const verifyStaffRegistrationToken = (token, mobileNo) => {
     }
 };
 const isValidDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
-
-const generateTodayPatientUuid = async (connection, date = new Date()) => {
-    const datePart = formatPatientRegistrationDate(date);
-    const prefix = `PAT${datePart}`;
-    const lockName = `patient_uuid_${datePart}`;
-
-    const [lockRows] = await connection.execute('SELECT GET_LOCK(?, 10) AS acquired_lock', [lockName]);
-
-    if (!lockRows[0]?.acquired_lock) {
-        throw new AppError('Unable to generate patient ID right now. Please try again.', 503);
-    }
-
-    try {
-        const [existingRows] = await connection.execute(
-            `SELECT uuid
-             FROM master_users
-             WHERE uuid LIKE ?
-             ORDER BY uuid DESC
-             LIMIT 1`,
-            [`${prefix}%`]
-        );
-
-        const lastUuid = existingRows[0]?.uuid || null;
-        const lastSerial = lastUuid ? Number(String(lastUuid).slice(prefix.length)) : 0;
-        const nextSerial = lastSerial + 1;
-
-        if (nextSerial > 9999) {
-            throw new AppError('Daily patient registration limit exceeded for PAT ID generation', 409);
-        }
-
-        return `${prefix}${String(nextSerial).padStart(4, '0')}`;
-    } finally {
-        await connection.execute('DO RELEASE_LOCK(?)', [lockName]);
-    }
-};
 
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -166,7 +125,7 @@ const createStaffPatient = asyncHandler(async (req, res) => {
             throw new AppError('Mobile number already registered', 409);
         }
 
-        const generatedPatientUuid = await generateTodayPatientUuid(connection);
+        const generatedPatientUuid = await generatePatientUuid(connection);
         const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
         const [insertResult] = await connection.execute(

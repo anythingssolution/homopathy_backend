@@ -15,6 +15,7 @@ const { getDoctorSessionStatus } = require('./services/doctorSessionService');
 const { startPendingFollowUpNotifier } = require('./services/followupService');
 const { startLiveQueueDueJobWorker } = require('./services/liveQueueAutomationService');
 const { startWhatsAppScheduler } = require('./services/whatsappAutomationService');
+const { startRecurringScheduleMaterializer } = require('./services/recurringScheduleService');
 const { loadBranchLayoutsIntoCache } = require('./utils/appointmentTokens');
 const {
     notFound,
@@ -343,6 +344,7 @@ const startServer = async () => {
         startPendingFollowUpNotifier();
         startLiveQueueDueJobWorker();
         startWhatsAppScheduler();
+        startRecurringScheduleMaterializer();
         if (env.nodeEnv === 'production' && env.otp.useDefaultInProduction) {
             console.warn('[startup] WARNING: Production default OTP mode is enabled');
         }

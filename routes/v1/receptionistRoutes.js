@@ -45,11 +45,16 @@ const {
 
 const router = express.Router();
 
-router.use(authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope);
+router.use(authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'));
 
+// Booking may target any active clinic; operational access stays branch scoped below.
 router.post('/book-appointment', createAppointmentByReceptionist);
-router.get('/form-data', getReceptionistFormData);
+router.get('/booking-form-data', getReceptionistFormData);
+router.get('/booking-patients', listReceptionistPatients);
 router.get('/token-plate', getBookingTokenPlate);
+
+router.use(enforceSelectedBranchScope);
+router.get('/form-data', getReceptionistFormData);
 router.get('/appointments', listReceptionistAppointments);
 router.get('/session/status', getSessionStatusForReceptionist);
 router.post('/session/start', startSessionByReceptionist);

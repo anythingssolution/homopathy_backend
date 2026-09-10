@@ -201,11 +201,13 @@ const appendCommonFilters = ({ conditions, params, filters, aliases = {} }) => {
             ${patientAlias}.full_name LIKE ?
             OR ${patientAlias}.mobile_no LIKE ?
             OR ${patientAlias}.uuid LIKE ?
+            OR ${patientAlias}.clinic_patient_no LIKE ?
             OR ${familyAlias}.full_name LIKE ?
             OR ${familyAlias}.relationship LIKE ?
             OR ${appointmentAlias}.auid LIKE ?
         )`);
         params.push(
+            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
@@ -254,11 +256,13 @@ const buildRegistryWhere = (filters) => {
             p.full_name LIKE ?
             OR p.mobile_no LIKE ?
             OR p.uuid LIKE ?
+            OR p.clinic_patient_no LIKE ?
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR a.auid LIKE ?
         )`);
         params.push(
+            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
@@ -296,6 +300,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
         `SELECT
             p.id AS patient_id,
             p.uuid AS patient_uuid,
+            p.clinic_patient_no,
             p.full_name,
             p.age,
             p.gender,
@@ -345,6 +350,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
         items: rows.map((row) => ({
             patient_id: Number(row.patient_id),
             patient_uuid: row.patient_uuid,
+            clinic_patient_no: row.clinic_patient_no || null,
             full_name: row.full_name,
             age: row.age,
             gender: row.gender,
@@ -1066,12 +1072,14 @@ const appendDocumentFilters = ({ conditions, params, filters }) => {
             p.full_name LIKE ?
             OR p.mobile_no LIKE ?
             OR p.uuid LIKE ?
+            OR p.clinic_patient_no LIKE ?
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR doc.title LIKE ?
             OR doc.original_filename LIKE ?
         )`);
         params.push(
+            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,

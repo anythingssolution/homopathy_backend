@@ -65,6 +65,12 @@ const {
     resetSlotTiming,
 } = require('../../controllers/v1/doctorSlotTimeOverrideController');
 const {
+    listDoctorScheduleRules,
+    createDoctorScheduleRule,
+    updateDoctorScheduleRule,
+    removeDoctorScheduleRule,
+} = require('../../controllers/v1/doctorScheduleRuleController');
+const {
     authenticate,
     authorizeRoles,
     enforceSelectedBranchScope,
@@ -122,6 +128,10 @@ router.get('/leaves', listDoctorLeaves);
 router.get('/slot-time-overrides', listSlotTimings);
 router.put('/slot-time-overrides', saveSlotTiming);
 router.post('/slot-time-overrides/reset', resetSlotTiming);
+router.get('/schedule-rules', listDoctorScheduleRules);
+router.post('/schedule-rules', createDoctorScheduleRule);
+router.put('/schedule-rules/:rule_id', updateDoctorScheduleRule);
+router.delete('/schedule-rules/:rule_id', removeDoctorScheduleRule);
 router.post('/leaves/bulk', saveDoctorLeavesBulk);
 router.post('/leaves/bulk-cancel', removeDoctorLeavesBulk);
 router.post('/leaves', saveDoctorLeave);

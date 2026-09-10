@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
+const { generatePatientUuid } = require('../../utils/patientUuid');
 const {
     createConsultationBillForAppointment,
     transferConsultationBillToAppointment,
@@ -282,41 +283,6 @@ const formatDateForPublicId = (date = new Date()) => {
     const year = String(date.getFullYear());
 
     return `${day}${month}${year}`;
-};
-
-const generateTodayPatientUuid = async (connection, date = new Date()) => {
-    const datePart = formatDateForPublicId(date);
-    const prefix = `PAT${datePart}`;
-    const lockName = `patient_uuid_${datePart}`;
-
-    const [lockRows] = await connection.execute('SELECT GET_LOCK(?, 10) AS acquired_lock', [lockName]);
-
-    if (!lockRows[0]?.acquired_lock) {
-        throw new AppError('Unable to generate patient ID right now. Please try again.', 503);
-    }
-
-    try {
-        const [existingRows] = await connection.execute(
-            `SELECT uuid
-             FROM master_users
-             WHERE uuid LIKE ?
-             ORDER BY uuid DESC
-             LIMIT 1`,
-            [`${prefix}%`]
-        );
-
-        const lastUuid = existingRows[0]?.uuid || null;
-        const lastSerial = lastUuid ? Number(String(lastUuid).slice(prefix.length)) : 0;
-        const nextSerial = lastSerial + 1;
-
-        if (nextSerial > 9999) {
-            throw new AppError('Daily patient registration limit exceeded for PAT ID generation', 409);
-        }
-
-        return `${prefix}${String(nextSerial).padStart(4, '0')}`;
-    } finally {
-        await connection.execute('DO RELEASE_LOCK(?)', [lockName]);
-    }
 };
 
 const generateTodayAppointmentAuid = async (connection, date = new Date()) => {
@@ -641,8 +607,8 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
     }
 
     if (search) {
-        conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.email LIKE ?)');
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.clinic_patient_no LIKE ? OR u.email LIKE ?)');
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     if (gender) {
@@ -686,6 +652,7 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             `SELECT
             u.id AS patient_id,
             u.uuid AS patient_uuid,
+            u.clinic_patient_no,
             u.full_name,
             u.age,
             u.gender,
@@ -772,6 +739,13 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
     const relationship =
         req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
+    // Empty string clears the value; whitespace is stripped and upper-cased so "dth 1210" is stored as "DTH1210".
+    const clinicPatientNo =
+        req.body?.clinic_patient_no !== undefined
+            ? (req.body.clinic_patient_no === null
+                ? null
+                : String(req.body.clinic_patient_no).replace(/\s+/g, '').toUpperCase() || null)
+            : undefined;
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
@@ -781,12 +755,16 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         if (fullName === undefined && gender === undefined && age === undefined && relationship === undefined) {
             throw new AppError('At least one of full_name, gender, age or relationship is required', 400);
         }
-    } else if (fullName === undefined && mobileNo === undefined && gender === undefined) {
-        throw new AppError('At least one of full_name, mobile_no or gender is required', 400);
+    } else if (fullName === undefined && mobileNo === undefined && gender === undefined && clinicPatientNo === undefined) {
+        throw new AppError('At least one of full_name, mobile_no, gender or clinic_patient_no is required', 400);
     }
 
     if (fullName !== undefined && (!fullName || fullName.length > 100)) {
         throw new AppError('full_name must be between 1 and 100 characters', 400);
+    }
+
+    if (clinicPatientNo !== undefined && clinicPatientNo !== null && clinicPatientNo.length > 50) {
+        throw new AppError('clinic_patient_no must be at most 50 characters', 400);
     }
 
     if (!familyMemberId && mobileNo !== undefined && !validateMobile(mobileNo)) {
@@ -811,7 +789,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, mobile_no, gender, age, role, is_active, updated_at
+            `SELECT id, uuid, clinic_patient_no, full_name, mobile_no, gender, age, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -957,6 +935,21 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             }
         }
 
+        if (clinicPatientNo && clinicPatientNo !== patient.clinic_patient_no) {
+            const [duplicateClinicRows] = await connection.execute(
+                `SELECT id
+                 FROM master_users
+                 WHERE clinic_patient_no = ?
+                   AND id <> ?
+                 LIMIT 1`,
+                [clinicPatientNo, patientId]
+            );
+
+            if (duplicateClinicRows.length > 0) {
+                throw new AppError('Patient ID already belongs to another patient', 409);
+            }
+        }
+
         const oldValues = {};
         const newValues = {};
         const changedFields = [];
@@ -964,6 +957,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             full_name: fullName,
             mobile_no: mobileNo,
             gender,
+            clinic_patient_no: clinicPatientNo,
         };
 
         for (const [field, value] of Object.entries(requestedValues)) {
@@ -1007,7 +1001,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         );
 
         const [updatedRows] = await connection.execute(
-            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, gender, email, mobile_no,
+            `SELECT id AS patient_id, uuid AS patient_uuid, clinic_patient_no, full_name, age, gender, email, mobile_no,
                     description, created_at, updated_at
              FROM master_users
              WHERE id = ?
@@ -1457,7 +1451,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
                 patientRows = matchedPatientRows;
                 resolvedPatientId = matchedPatientRows[0].id;
             } else {
-                const generatedPatientUuid = await generateTodayPatientUuid(connection);
+                const generatedPatientUuid = await generatePatientUuid(connection);
                 const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
                 const [insertPatientResult] = await connection.execute(

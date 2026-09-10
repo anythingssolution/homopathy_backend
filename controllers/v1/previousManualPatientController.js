@@ -3,15 +3,9 @@ const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
+const { generatePatientUuid } = require('../../utils/patientUuid');
 
 const PATIENT_ROLE = 'PAT';
-
-const formatPatientRegistrationDate = (date = new Date()) => {
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = String(date.getFullYear());
-    return `${day}${month}${year}`;
-};
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -25,41 +19,6 @@ const validateGender = (gender) => ['male', 'female', 'other'].includes(String(g
 const validateMobile = (mobileNo) => /^[6-9]\d{9}$/.test(String(mobileNo || '').trim());
 const validateEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
 
-const generateTodayPatientUuid = async (connection, date = new Date()) => {
-    const datePart = formatPatientRegistrationDate(date);
-    const prefix = `PAT${datePart}`;
-    const lockName = `patient_uuid_${datePart}`;
-
-    const [lockRows] = await connection.execute('SELECT GET_LOCK(?, 10) AS acquired_lock', [lockName]);
-
-    if (!lockRows[0]?.acquired_lock) {
-        throw new AppError('Unable to generate patient ID right now. Please try again.', 503);
-    }
-
-    try {
-        const [existingRows] = await connection.execute(
-            `SELECT uuid
-             FROM master_users
-             WHERE uuid LIKE ?
-             ORDER BY uuid DESC
-             LIMIT 1`,
-            [`${prefix}%`]
-        );
-
-        const lastUuid = existingRows[0]?.uuid || null;
-        const lastSerial = lastUuid ? Number(String(lastUuid).slice(prefix.length)) : 0;
-        const nextSerial = lastSerial + 1;
-
-        if (nextSerial > 9999) {
-            throw new AppError('Daily patient registration limit exceeded for PAT ID generation', 409);
-        }
-
-        return `${prefix}${String(nextSerial).padStart(4, '0')}`;
-    } finally {
-        await connection.execute('DO RELEASE_LOCK(?)', [lockName]);
-    }
-};
-
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
     if (forwarded) {
@@ -70,8 +29,11 @@ const getClientIp = (req) => {
 
 const normalizeCreatePayload = (body = {}) => {
     const fullName = String(body.full_name || '').trim();
+    // Strip all whitespace and force upper-case so "dth 1210" is always stored as "DTH1210".
     const patientIdRaw =
-        body.patient_id !== undefined && body.patient_id !== null ? String(body.patient_id).trim() : '';
+        body.patient_id !== undefined && body.patient_id !== null
+            ? String(body.patient_id).replace(/\s+/g, '').toUpperCase()
+            : '';
     const age = toPositiveInt(body.age);
     const gender = String(body.gender || '').trim().toLowerCase();
     const mobileNo = String(body.mobile_no || '').trim();
@@ -202,7 +164,7 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
             patientId = matched.id;
             action = 'LINK_EXISTING';
         } else {
-            const generatedPatientUuid = await generateTodayPatientUuid(connection);
+            const generatedPatientUuid = await generatePatientUuid(connection);
             const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
             const [insertResult] = await connection.execute(
