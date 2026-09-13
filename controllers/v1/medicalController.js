@@ -1,3 +1,4 @@
+const { saveAdditionalMedications } = require('../../services/additionalMedicationSaveService');
 const { query, withTransaction } = require('../../config/db');
 const { randomUUID } = require('crypto');
 const AppError = require('../../utils/AppError');
@@ -1846,50 +1847,9 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
             }
         }
 
-        const [oldAdditionalRows] = await connection.execute(
-            `SELECT id
-             FROM tbl_consultation_medications
-             WHERE consultation_id = ?
-               AND medicine_type = 'TEXT'
-               AND added_by_role = 'MEDICAL'
-             FOR UPDATE`,
-            [consultationId]
-        );
-
-        if (oldAdditionalRows.length > 0) {
-            const oldAdditionalIds = oldAdditionalRows.map((row) => Number(row.id));
-            const placeholders = oldAdditionalIds.map(() => '?').join(', ');
-            await connection.execute(
-                `DELETE FROM tbl_medical_prescription_pricing_items
-                 WHERE pricing_id = ?
-                   AND consultation_medication_id IN (${placeholders})`,
-                [pricingId, ...oldAdditionalIds]
-            );
-        }
-
-        await connection.execute(
-            `DELETE FROM tbl_consultation_medications
-             WHERE consultation_id = ?
-               AND medicine_type = 'TEXT'
-               AND added_by_role = 'MEDICAL'`,
-            [consultationId]
-        );
-
-        for (const item of normalizedAdditionalItems) {
-            const [insertMedication] = await connection.execute(
-                `INSERT INTO tbl_consultation_medications
-                 (consultation_id, medicine_type, medicine_value, remark, added_by_role)
-                 VALUES (?, 'TEXT', ?, NULL, 'MEDICAL')`,
-                [consultationId, item.medicine_value]
-            );
-
-            await connection.execute(
-                `INSERT INTO tbl_medical_prescription_pricing_items
-                 (pricing_id, consultation_medication_id, medicine_value, amount, dispense_status, version)
-                 VALUES (?, ?, ?, ?, 'ACTIVE', 1)`,
-                [pricingId, insertMedication.insertId, item.medicine_value, item.amount]
-            );
-        }
+        await saveAdditionalMedications({
+            connection, consultationId, pricingId, items: normalizedAdditionalItems,
+        });
 
         if (submittedTests) {
             for (const test of normalizedTests) {
