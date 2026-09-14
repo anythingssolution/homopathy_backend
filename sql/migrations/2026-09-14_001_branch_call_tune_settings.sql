@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS tbl_branch_call_tune_settings (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    fk_branch_id BIGINT UNSIGNED NOT NULL,
+    mode ENUM('CHIME', 'TEMPLATE', 'CUSTOM') NOT NULL DEFAULT 'CHIME',
+    custom_text VARCHAR(200) DEFAULT NULL,
+    updated_by BIGINT UNSIGNED DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_branch_call_tune (fk_branch_id),
+    CONSTRAINT fk_call_tune_branch FOREIGN KEY (fk_branch_id) REFERENCES master_clinic_branches (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

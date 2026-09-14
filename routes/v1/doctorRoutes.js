@@ -71,6 +71,10 @@ const {
     removeDoctorScheduleRule,
 } = require('../../controllers/v1/doctorScheduleRuleController');
 const {
+    getDoctorCallTune,
+    saveDoctorCallTune,
+} = require('../../controllers/v1/callTuneController');
+const {
     authenticate,
     authorizeRoles,
     enforceSelectedBranchScope,
@@ -132,6 +136,8 @@ router.get('/schedule-rules', listDoctorScheduleRules);
 router.post('/schedule-rules', createDoctorScheduleRule);
 router.put('/schedule-rules/:rule_id', updateDoctorScheduleRule);
 router.delete('/schedule-rules/:rule_id', removeDoctorScheduleRule);
+router.get('/call-tune', getDoctorCallTune);
+router.put('/call-tune', saveDoctorCallTune);
 router.post('/leaves/bulk', saveDoctorLeavesBulk);
 router.post('/leaves/bulk-cancel', removeDoctorLeavesBulk);
 router.post('/leaves', saveDoctorLeave);
