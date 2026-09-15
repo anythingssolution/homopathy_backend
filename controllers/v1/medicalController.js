@@ -1379,6 +1379,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
         if (bill) {
             const billDetail = medicationBillDetailsById.get(Number(bill.bill_id));
             item.medication_bill = {
+                ...billDetail,
                 ...bill,
                 ...(paymentSummaries.byConsultationId.get(Number(item.consultation_id)) || {
                     cash_amount: 0,
@@ -1467,6 +1468,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 pending_amount: row.pending_amount,
             },
             medication_bill: {
+                ...billDetail,
                 bill_id: row.bill_id,
                 bill_number: row.bill_number,
                 total_amount: row.total_amount,

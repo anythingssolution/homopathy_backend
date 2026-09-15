@@ -645,7 +645,10 @@ const getBillSummaryById = async (billId) => {
             a.fk_patient_family_member_id,
             fm.relationship AS family_member_relationship,
             p.full_name AS primary_patient_full_name,
-            br.branch_name
+            br.branch_name,
+            br.address AS branch_address,
+            br.contact_no AS branch_contact_no,
+            p.uuid AS patient_uuid
          FROM tbl_bills b
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN master_slots s ON s.id = a.fk_slot_id
