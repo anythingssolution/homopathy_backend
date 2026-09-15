@@ -573,6 +573,7 @@ const getReceptionistFormData = asyncHandler(async (req, res) => {
 const listReceptionistPatients = asyncHandler(async (req, res) => {
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
     const search = req.query.search ? String(req.query.search).trim() : null;
+    const searchById = req.query.search_by === 'id';
     const gender = req.query.gender ? String(req.query.gender).trim().toLowerCase() : null;
     const hasFamilyRaw = req.query.has_family !== undefined ? String(req.query.has_family).trim().toLowerCase() : null;
     const hasFamily =
@@ -607,8 +608,13 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
     }
 
     if (search) {
-        conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.clinic_patient_no LIKE ? OR u.email LIKE ?)');
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        if (searchById) {
+            conditions.push('(u.uuid LIKE ? OR u.clinic_patient_no LIKE ?)');
+            params.push(`%${search}%`, `%${search}%`);
+        } else {
+            conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.clinic_patient_no LIKE ? OR u.email LIKE ?)');
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        }
     }
 
     if (gender) {
@@ -666,9 +672,9 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             (SELECT MAX(a.appointment_date) FROM tbl_appointments a WHERE a.fk_patient_id = u.id ${branchId ? `AND a.fk_branch_id = ${branchId}` : ''} AND a.is_active = 1) AS last_appointment_date
          FROM master_users u
          ${whereClause}
-         ORDER BY u.full_name ASC
+         ORDER BY ${searchById && search ? 'CASE WHEN u.uuid = ? OR u.clinic_patient_no = ? THEN 0 ELSE 1 END,' : ''} u.full_name ASC, u.id ASC
          LIMIT ${pageSize} OFFSET ${offset}`,
-            params
+            searchById && search ? [...params, search, search] : params
         ),
     ]);
 
@@ -1448,8 +1454,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
             );
 
             if (matchedPatientRows.length > 0) {
-                patientRows = matchedPatientRows;
-                resolvedPatientId = matchedPatientRows[0].id;
+                throw new AppError('This mobile number is already registered. Search and select the existing patient before booking. For a family member, select the account holder first.', 409);
             } else {
                 const generatedPatientUuid = await generatePatientUuid(connection);
                 const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
