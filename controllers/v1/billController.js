@@ -19,6 +19,7 @@ const {
 } = require('../../services/patientCreditService');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
+const { buildBillListReadSql } = require('../../services/billListReadService');
 
 // Bills Next is a selected-branch read view, like the existing billing reports.
 const isBranchBillingRead = (req) => req.user.role === 'doctor'
@@ -324,7 +325,7 @@ const listBills = asyncHandler(async (req, res) => {
     });
 
     const rows = await query(
-        `SELECT
+        buildBillListReadSql(`SELECT
             b.id AS bill_id,
             b.bill_number,
             b.bill_type,
@@ -337,54 +338,6 @@ const listBills = asyncHandler(async (req, res) => {
             b.pending_amount,
             b.payment_status,
             b.payment_settlement_type,
-            COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.id AND i.item_type = 'TEST'), 0) AS test_amount,
-            COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.id AND LOWER(i.item_name) = 'courier charge'), 0) AS courier_amount,
-            COALESCE(
-                (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1),
-                NULL
-            ) AS payment_mode,
-            COALESCE((
-                SELECT SUM(bp.amount)
-                FROM tbl_bill_payments bp
-                WHERE bp.status = 'SUCCESS'
-                  AND UPPER(bp.payment_mode) = 'CASH'
-                  AND (
-                    bp.settlement_source_bill_id = b.id
-                    OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.id)
-                  )
-            ), 0) AS cash_amount,
-            COALESCE((
-                SELECT SUM(bp.amount)
-                FROM tbl_bill_payments bp
-                WHERE bp.status = 'SUCCESS'
-                  AND UPPER(bp.payment_mode) = 'ONLINE'
-                  AND (
-                    bp.settlement_source_bill_id = b.id
-                    OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.id)
-                  )
-            ), 0) AS online_amount,
-            COALESCE((
-                SELECT SUM(bp.amount)
-                FROM tbl_bill_payments bp
-                WHERE bp.bill_id = b.id
-                  AND bp.status = 'SUCCESS'
-                  AND COALESCE(bp.allocation_kind, 'CURRENT') <> 'PREVIOUS'
-            ), 0) AS paid_towards_this_bill,
-            COALESCE((
-                SELECT SUM(bp.amount)
-                FROM tbl_bill_payments bp
-                WHERE bp.settlement_source_bill_id = b.id
-                  AND bp.bill_id <> b.id
-                  AND bp.status = 'SUCCESS'
-                  AND bp.allocation_kind = 'PREVIOUS'
-            ), 0) AS paid_towards_previous_pending,
-            COALESCE((
-                SELECT SUM(bp.amount)
-                FROM tbl_bill_payments bp
-                WHERE bp.bill_id = b.id
-                  AND bp.status = 'SUCCESS'
-                  AND bp.allocation_kind = 'PREVIOUS'
-            ), 0) AS borrowed_amount_collected,
             CASE
                 WHEN b.appointment_id IS NULL THEN NULL
                 ELSE COALESCE(a.actual_completed_at, c.created_at)
@@ -441,7 +394,7 @@ const listBills = asyncHandler(async (req, res) => {
             COALESCE(sto.override_start_time, s.start_time) ASC,
             a.current_token_number ASC,
             b.id DESC
-         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
+         LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`),
         params
     );
 

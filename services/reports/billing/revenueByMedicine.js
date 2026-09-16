@@ -1,10 +1,11 @@
-const { buildBillingReportScope, query } = require('./shared');
+const { buildScopedBillingReportCte, query } = require('./shared');
 
 const getRevenueByMedicineReport = async (filters) => {
-    const { whereClause, params } = buildBillingReportScope(filters);
+    const { cte, params } = buildScopedBillingReportCte(filters);
 
     const rows = await query(
-        `SELECT
+        `${cte}
+         SELECT
             bi.item_name AS medicine_name,
             COALESCE(UPPER(bp.payment_mode), 'UNPAID') AS payment_mode,
             COUNT(DISTINCT bi.bill_id) AS total_bills,
@@ -18,17 +19,17 @@ const getRevenueByMedicineReport = async (filters) => {
                 ELSE 'evening'
             END AS session_type
          FROM tbl_bill_items bi
-         JOIN tbl_bills b ON b.id = bi.bill_id
+         JOIN scoped_bills b ON b.id = bi.bill_id
          LEFT JOIN (
             SELECT bill_id, CASE WHEN COUNT(DISTINCT UPPER(payment_mode)) > 1
                 THEN 'MIXED' ELSE MAX(UPPER(payment_mode)) END AS payment_mode
-            FROM tbl_bill_payments WHERE status = 'SUCCESS' GROUP BY bill_id
+            FROM tbl_bill_payments
+            JOIN scoped_bills payment_bill ON payment_bill.id = tbl_bill_payments.bill_id
+            WHERE tbl_bill_payments.status = 'SUCCESS' GROUP BY bill_id
          ) bp ON bp.bill_id = b.id
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id
          LEFT JOIN master_slots s ON s.id = a.fk_slot_id
-         ${whereClause}
-           AND b.status = 'ACTIVE'
-           AND LOWER(COALESCE(bi.item_name, '')) <> 'courier charge'
+         WHERE LOWER(COALESCE(bi.item_name, '')) <> 'courier charge'
            AND (UPPER(bi.item_type) LIKE '%MEDIC%' OR (bi.item_type IS NOT NULL AND UPPER(bi.item_type) NOT IN ('TEST')))
          GROUP BY bi.item_name, payment_mode, session_type
          ORDER BY gross_revenue DESC, total_quantity_sold DESC`,

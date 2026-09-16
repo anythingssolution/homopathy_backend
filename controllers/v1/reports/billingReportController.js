@@ -4,7 +4,7 @@ const { buildReportResponseMeta, parseReportFilters } = require('./shared');
 
 const getBillingReportsController = asyncHandler(async (req, res) => {
     const filters = parseReportFilters(req);
-    const reports = await getBillingReports(filters);
+    const reports = await getBillingReports(filters, { reportKeys: req.query.report_keys });
 
     return res.status(200).json({
         success: true,

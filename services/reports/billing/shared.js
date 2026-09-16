@@ -21,7 +21,22 @@ const buildBillingReportScope = (filters) => {
     };
 };
 
+const buildScopedBillingReportCte = (filters) => {
+    const { appointmentJoin, whereClause, params } = buildBillingReportScope(filters);
+    return {
+        cte: `WITH scoped_bills AS (
+            SELECT b.*
+            FROM tbl_bills b
+            ${appointmentJoin}
+            ${whereClause}
+              AND b.status = 'ACTIVE'
+        )`,
+        params,
+    };
+};
+
 module.exports = {
     buildBillingReportScope,
+    buildScopedBillingReportCte,
     query,
 };

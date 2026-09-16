@@ -15,8 +15,8 @@ test('consultant revenue report separates test/lab and courier revenue without d
         filename: sharedPath,
         loaded: true,
         exports: {
-            buildBillingReportScope: () => ({
-                whereClause: 'WHERE 1 = 1',
+            buildScopedBillingReportCte: () => ({
+                cte: 'WITH scoped_bills AS (SELECT * FROM tbl_bills)',
                 params: ['2026-08-22'],
             }),
             query: async (sql, params) => {
@@ -64,7 +64,7 @@ test('consultant revenue report separates test/lab and courier revenue without d
     assert.match(capturedSql, /COALESCE\(b\.delivery_mode, 'HAND_DELIVERY'\) = 'COURIER'/);
     assert.match(capturedSql, /COALESCE\(b\.delivery_mode, 'HAND_DELIVERY'\) <> 'COURIER'/);
     assert.match(capturedSql, /session_a\.appointment_id = COALESCE\(b\.appointment_id, c\.appointment_id\)/);
-    assert.match(capturedSql, /AND c\.doctor_id IS NOT NULL/);
+    assert.match(capturedSql, /WHERE c\.doctor_id IS NOT NULL/);
     assert.match(capturedSql, /COUNT\(DISTINCT UPPER\(payment_mode\)\) > 1 THEN 'MIXED'/);
     assert.doesNotMatch(capturedSql, /LEFT JOIN tbl_bill_payments bp ON bp\.bill_id = b\.id AND bp\.status = 'SUCCESS'/);
 });
