@@ -6,11 +6,88 @@ process.env.DB_HOST = process.env.DB_HOST || '127.0.0.1';
 process.env.DB_USER = process.env.DB_USER || 'test_user';
 process.env.DB_NAME = process.env.DB_NAME || 'test_db';
 
+const db = require('../config/db');
+let registryQueries = [];
+db.query = async (sql, params) => {
+    registryQueries.push({ sql, params });
+    return sql.includes('COUNT(DISTINCT p.id) AS total') ? [{ total: 45 }] : [];
+};
+
 const {
     buildSubject,
     buildVisitRecord,
+    listPatientRegistry,
+    parseRegistryFilters,
     parseTimelineFilters,
 } = require('../services/patientRecordsService');
+
+test('patient registry defaults to natural displayed patient ID order before pagination', async () => {
+    registryQueries = [];
+    const result = await listPatientRegistry({ filters: { page: 2 }, actor: { selected_branch_id: 2 } });
+    const { sql, params } = registryQueries[1];
+
+    assert.equal(result.filters.sortBy, 'patient_id');
+    assert.equal(result.filters.sortOrder, 'asc');
+    assert.match(sql, /ORDER BY CASE WHEN p\.uuid REGEXP '\^DTH\[0-9\]\+\$'/);
+    assert.match(sql, /CAST\(SUBSTRING\(p\.uuid, 4\) AS UNSIGNED\) END ASC/);
+    assert.match(sql, /p\.uuid ASC, p\.id ASC\s+LIMIT \? OFFSET \?/);
+    assert.deepEqual(params, [2, 20, 20]);
+    assert.equal(result.meta.total_pages, 3);
+});
+
+test('patient registry supports both directions for every sortable column', async () => {
+    const expressions = {
+        patient_id: 'p.uuid',
+        full_name: 'p.full_name',
+        mobile_no: 'p.mobile_no',
+        visits: 'completed_appointments_count',
+        latest_visit: 'latest_visit_date',
+    };
+    for (const [sort_by, expression] of Object.entries(expressions)) {
+        for (const sort_order of ['asc', 'desc']) {
+            registryQueries = [];
+            await listPatientRegistry({ filters: { branch_id: 1, sort_by, sort_order } });
+            const sql = registryQueries[1].sql;
+            assert.ok(sql.includes(`${expression} ${sort_order.toUpperCase()}, p.id ASC`));
+            if (sort_by === 'latest_visit') {
+                assert.ok(sql.includes('ORDER BY latest_visit_date IS NULL ASC,'));
+            }
+        }
+    }
+});
+
+test('patient registry sorting preserves global registrations and branch-scoped visit/search filters', async () => {
+    registryQueries = [];
+    await listPatientRegistry({
+        filters: { branch_id: 2, patient_search: 'DTH22', sort_by: 'full_name', sort_order: 'desc', page_size: 10 },
+    });
+    for (const { sql, params } of registryQueries) {
+        assert.ok(sql.includes("a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?"));
+        assert.ok(sql.includes("p.role = 'PAT' AND p.is_active = 1"));
+        assert.ok(sql.includes('p.clinic_patient_no LIKE ?'));
+        assert.equal(params[0], 2);
+        assert.deepEqual(params.slice(1, 8), Array(7).fill('%DTH22%'));
+    }
+    assert.ok(!registryQueries[1].sql.includes('p.fk_branch_id = ?'));
+    assert.deepEqual(registryQueries[1].params.slice(-2), [10, 0]);
+});
+
+test('patient registry rejects unknown and unsafe sort parameters before database access', async () => {
+    for (const invalid of [
+        { sort_by: 'toString' },
+        { sort_by: 'p.uuid DESC; DROP TABLE master_users' },
+        { sort_order: 'desc; DELETE FROM master_users' },
+        { sort_order: 'sideways' },
+    ]) {
+        registryQueries = [];
+        await assert.rejects(
+            listPatientRegistry({ filters: { branch_id: 1, ...invalid } }),
+            (error) => error.statusCode === 400 && error.message.startsWith('sort_')
+        );
+        assert.equal(registryQueries.length, 0);
+    }
+    assert.equal(parseRegistryFilters({ branch_id: 1, sort_by: ' FULL_NAME ', sort_order: ' DESC ' }).sortOrder, 'desc');
+});
 
 test('patient record subject keeps primary patient records as self', () => {
     const subject = buildSubject({

@@ -228,6 +228,14 @@ const parsePageFilters = (rawFilters = {}, defaults = {}) => {
     return { page, pageSize };
 };
 
+const REGISTRY_SORT_COLUMNS = Object.freeze({
+    patient_id: 'p.uuid',
+    full_name: 'p.full_name',
+    mobile_no: 'p.mobile_no',
+    visits: 'completed_appointments_count',
+    latest_visit: 'latest_visit_date',
+});
+
 const parseRegistryFilters = (rawFilters = {}, actor = {}) => {
     const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
     if (!branchId) {
@@ -235,13 +243,38 @@ const parseRegistryFilters = (rawFilters = {}, actor = {}) => {
     }
 
     const { page, pageSize } = parsePageFilters(rawFilters);
+    const sortBy = String(rawFilters.sort_by || 'patient_id').trim().toLowerCase();
+    const sortOrder = String(rawFilters.sort_order || 'asc').trim().toLowerCase();
+    if (!Object.hasOwn(REGISTRY_SORT_COLUMNS, sortBy)) {
+        throw new AppError(`sort_by must be one of: ${Object.keys(REGISTRY_SORT_COLUMNS).join(', ')}`, 400);
+    }
+    if (!['asc', 'desc'].includes(sortOrder)) {
+        throw new AppError('sort_order must be one of: asc, desc', 400);
+    }
 
     return {
         branchId,
         patientSearch: normalizeText(rawFilters.patient_search || rawFilters.search, 100),
+        sortBy,
+        sortOrder,
         page,
         pageSize,
     };
+};
+
+const buildRegistryOrder = ({ sortBy, sortOrder }) => {
+    const direction = sortOrder.toUpperCase();
+    if (sortBy === 'patient_id') {
+        // Sort the displayed DTH number naturally (DTH2 before DTH10), not the database key.
+        return `CASE WHEN p.uuid REGEXP '^DTH[0-9]+$' THEN 'DTH' ELSE p.uuid END ${direction},
+            CASE WHEN p.uuid REGEXP '^DTH[0-9]+$' THEN CAST(SUBSTRING(p.uuid, 4) AS UNSIGNED) END ${direction},
+            p.uuid ${direction}, p.id ASC`;
+    }
+
+    const column = REGISTRY_SORT_COLUMNS[sortBy];
+    // Keep patients without a visit at the end for either date order.
+    const nullsLast = sortBy === 'latest_visit' ? `${column} IS NULL ASC, ` : '';
+    return `${nullsLast}${column} ${direction}, p.id ASC`;
 };
 
 const buildRegistryWhere = (filters) => {
@@ -281,6 +314,7 @@ const buildRegistryWhere = (filters) => {
 const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
     const filters = parseRegistryFilters(rawFilters, actor);
     const { whereClause, params } = buildRegistryWhere(filters);
+    const orderBy = buildRegistryOrder(filters);
     const countRows = await query(
         `SELECT COUNT(DISTINCT p.id) AS total
          FROM master_users p
@@ -341,7 +375,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
          ) test ON test.consultation_id = c.id
          ${whereClause}
          GROUP BY p.id
-         ORDER BY latest_visit_date DESC, p.full_name ASC, p.id ASC
+         ORDER BY ${orderBy}
          LIMIT ? OFFSET ?`,
         [filters.branchId, ...params, filters.pageSize, offset]
     );

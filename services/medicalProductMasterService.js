@@ -77,7 +77,7 @@ const buildDedupeKey = (product) => {
 
 const normalizeProductPayload = (payload) => {
     const sourceType = String(payload?.source_type || '').trim().toUpperCase();
-    const productName = normalizeString(payload?.product_name);
+    const productName = normalizeString(payload?.product_name)?.toUpperCase() || null;
     const medicineValue = normalizeString(payload?.medicine_value) || productName;
 
     if (!SOURCE_TYPES.has(sourceType)) {
