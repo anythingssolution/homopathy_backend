@@ -218,9 +218,9 @@ const parseImportRows = (sheet) => {
         }
 
         const rowErrors = [];
-        const medicineValue = normalizeOptionalString(raw.medicine_value);
+        const medicineValue = normalizeOptionalString(raw.medicine_value)?.toUpperCase() || null;
         const sourceType = String(raw.source_type || '').trim().toUpperCase();
-        const productName = normalizeOptionalString(raw.product_name);
+        const productName = normalizeOptionalString(raw.product_name)?.toUpperCase() || null;
         const normalizedProductName = normalizeValue(productName);
 
         if (!medicineValue) {
@@ -314,7 +314,7 @@ const upsertMedicineMaster = async (connection, row) => {
         `INSERT INTO master_text_medicines
          (medicine_value, normalized_value, is_active)
          VALUES (?, ?, 1)
-         ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), updated_at = CURRENT_TIMESTAMP`,
+         ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), medicine_value = VALUES(medicine_value), updated_at = CURRENT_TIMESTAMP`,
         [row.medicine_value, row.normalized_medicine_value]
     );
 

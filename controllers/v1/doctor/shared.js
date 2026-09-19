@@ -296,7 +296,7 @@ const parseTextMedicineDisplayParts = (medicineValue) => {
 };
 
 const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManual = false) => {
-    const trimmedValue = String(medicineValue || '').trim();
+    const trimmedValue = String(medicineValue || '').trim().toUpperCase();
     const normalizedValue = normalizeMasterValue(trimmedValue);
     if (!trimmedValue || !normalizedValue) {
         return null;
@@ -314,14 +314,14 @@ const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManua
         if (!isDoctorManual && Number(existingRows[0].is_doctor_manual) === 1) {
             await connection.execute(
                 `UPDATE master_text_medicines
-                 SET is_doctor_manual = 0, is_active = 1
+                 SET medicine_value = ?, is_doctor_manual = 0, is_active = 1
                  WHERE id = ?`,
-                [existingRows[0].id]
+                [trimmedValue, existingRows[0].id]
             );
         } else {
             await connection.execute(
-                `UPDATE master_text_medicines SET is_active = 1 WHERE id = ?`,
-                [existingRows[0].id]
+                `UPDATE master_text_medicines SET medicine_value = ?, is_active = 1 WHERE id = ?`,
+                [trimmedValue, existingRows[0].id]
             );
         }
 
@@ -344,7 +344,7 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
         return;
     }
 
-    const productName = String(medicineValue || packing).trim();
+    const productName = String(medicineValue || packing).trim().toUpperCase();
     const normalizedProductName = normalizeMasterValue(productName);
     const dedupeKey = [normalizedProductName, normalizeMasterValue(packing)].join('|');
     const mrpRate = Number.isFinite(Number(unitPrice)) ? Number(Number(unitPrice).toFixed(2)) : null;
@@ -356,6 +356,7 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
          VALUES (?, 'DOCTOR_MANUAL', ?, ?, ?, ?, ?, 1)
          ON DUPLICATE KEY UPDATE
              medicine_text_id = VALUES(medicine_text_id),
+             product_name = VALUES(product_name),
              packing = VALUES(packing),
              mrp_rate = COALESCE(VALUES(mrp_rate), mrp_rate),
              is_active = 1`,
@@ -440,7 +441,7 @@ const groupRowsByTextMedicine = (textMedicines, rows) => {
             return;
         }
 
-        groupedRows.get(medicineId).push(row);
+        groupedRows.get(medicineId).push({ ...row, product_name: String(row.product_name || '').toUpperCase() });
     });
 
     return groupedRows;

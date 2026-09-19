@@ -449,7 +449,7 @@ const getDoctorReports = asyncHandler(async (req, res) => {
 const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
     const [textMedicines, textMedicineRemarks, scopedTextMedicineRemarks, labTests] = await Promise.all([
         query(
-            `SELECT id, medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
+            `SELECT id, UPPER(medicine_value) AS medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
              FROM master_text_medicines mtm
              WHERE mtm.is_active = 1
                AND (

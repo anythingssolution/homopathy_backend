@@ -78,7 +78,7 @@ const buildDedupeKey = (product) => {
 const normalizeProductPayload = (payload) => {
     const sourceType = String(payload?.source_type || '').trim().toUpperCase();
     const productName = normalizeString(payload?.product_name)?.toUpperCase() || null;
-    const medicineValue = normalizeString(payload?.medicine_value) || productName;
+    const medicineValue = normalizeString(payload?.medicine_value)?.toUpperCase() || productName;
 
     if (!SOURCE_TYPES.has(sourceType)) {
         throw new AppError('source_type must be REGULAR_PRODUCT, RADIENT_PHARMA, MEDICAL_PRODUCT_PRICE or DOCTOR_MANUAL', 400);
@@ -141,7 +141,7 @@ const upsertMedicineMaster = async (connection, product) => {
         `INSERT INTO master_text_medicines
          (medicine_value, normalized_value, is_active)
          VALUES (?, ?, 1)
-         ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), updated_at = CURRENT_TIMESTAMP`,
+         ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), medicine_value = VALUES(medicine_value), updated_at = CURRENT_TIMESTAMP`,
         [product.medicine_value, product.normalized_medicine_value]
     );
 
@@ -203,9 +203,9 @@ const listMedicalProducts = async ({
         `SELECT
             mmp.id,
             mmp.medicine_text_id,
-            COALESCE(mtm.medicine_value, '') AS medicine_value,
+            UPPER(COALESCE(mtm.medicine_value, '')) AS medicine_value,
             mmp.source_type,
-            mmp.product_name,
+            UPPER(mmp.product_name) AS product_name,
             mmp.product_type,
             mmp.category,
             mmp.packing,
@@ -243,9 +243,9 @@ const getMedicalProductById = async (id) => {
         `SELECT
             mmp.id,
             mmp.medicine_text_id,
-            COALESCE(mtm.medicine_value, '') AS medicine_value,
+            UPPER(COALESCE(mtm.medicine_value, '')) AS medicine_value,
             mmp.source_type,
-            mmp.product_name,
+            UPPER(mmp.product_name) AS product_name,
             mmp.product_type,
             mmp.category,
             mmp.packing,
