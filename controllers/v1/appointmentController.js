@@ -66,6 +66,83 @@ const toPositiveInt = (value) => {
     return parsed;
 };
 
+const toOptionalHealthText = (value, maxLength) => {
+    if (value === undefined || value === null) {
+        return null;
+    }
+
+    const normalized = String(value).trim();
+    return normalized ? normalized.slice(0, maxLength) : null;
+};
+
+const normalizePatientHealthDetails = (value) => {
+    if (value === undefined || value === null) {
+        return { has_any_value: false };
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) {
+        throw new AppError('health_details must be an object', 400);
+    }
+
+    const details = {
+        oxygen_saturation: toOptionalHealthText(value.oxygen_saturation, 20),
+        blood_pressure: toOptionalHealthText(value.blood_pressure, 20),
+        patient_height: toOptionalHealthText(value.patient_height, 20),
+        patient_weight: toOptionalHealthText(value.patient_weight, 20),
+        occupation: toOptionalHealthText(value.occupation, 255),
+        history_present_illness: toOptionalHealthText(value.history_present_illness, 5000),
+        history_past_illness: toOptionalHealthText(value.history_past_illness, 5000),
+        family_history: toOptionalHealthText(value.family_history, 5000),
+        allergies_history: toOptionalHealthText(value.allergies_history, 5000),
+        gynecological_history: toOptionalHealthText(value.gynecological_history, 5000),
+        personal_social_history: toOptionalHealthText(value.personal_social_history, 5000),
+        mental_mind_status: toOptionalHealthText(value.mental_mind_status, 5000),
+    };
+
+    return {
+        ...details,
+        has_any_value: Object.values(details).some(Boolean),
+    };
+};
+
+let patientHealthDetailColumnsEnsured = false;
+let patientHealthDetailColumnsPromise = null;
+const ensurePatientHealthDetailColumns = async () => {
+    if (patientHealthDetailColumnsEnsured) return;
+    if (!patientHealthDetailColumnsPromise) {
+        patientHealthDetailColumnsPromise = (async () => {
+            const targetColumns = [
+                { name: 'occupation', type: 'VARCHAR(255)' },
+                { name: 'history_present_illness', type: 'TEXT' },
+                { name: 'history_past_illness', type: 'TEXT' },
+                { name: 'family_history', type: 'TEXT' },
+                { name: 'allergies_history', type: 'TEXT' },
+                { name: 'gynecological_history', type: 'TEXT' },
+                { name: 'personal_social_history', type: 'TEXT' },
+                { name: 'mental_mind_status', type: 'TEXT' },
+            ];
+            const existingColumns = await query(
+                `SELECT COLUMN_NAME
+                 FROM INFORMATION_SCHEMA.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE()
+                   AND TABLE_NAME = 'tbl_appointment_vitals'`
+            );
+            const existingNames = new Set(existingColumns.map((row) => String(row.COLUMN_NAME).toLowerCase()));
+
+            for (const column of targetColumns) {
+                if (!existingNames.has(column.name)) {
+                    await query(`ALTER TABLE tbl_appointment_vitals ADD COLUMN ${column.name} ${column.type} NULL`);
+                }
+            }
+
+            patientHealthDetailColumnsEnsured = true;
+        })().finally(() => {
+            patientHealthDetailColumnsPromise = null;
+        });
+    }
+
+    await patientHealthDetailColumnsPromise;
+};
+
 const isValidDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 
 const normalizeAppointmentDateKey = (value) => {
@@ -78,35 +155,6 @@ const normalizeAppointmentDateKey = (value) => {
     }
 
     return String(value).split(/[ T]/)[0];
-};
-
-const validateSlotBookingCutoff = ({ appointmentDate, slotEndTime, now = new Date() }) => {
-    const normalizedAppointmentDate = String(appointmentDate || '').trim();
-    const normalizedSlotEndTime = String(slotEndTime || '').trim();
-
-    if (!isValidDateString(normalizedAppointmentDate) || !/^\d{2}:\d{2}:\d{2}$/.test(normalizedSlotEndTime)) {
-        return;
-    }
-
-    const nowDatePart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-
-    if (normalizedAppointmentDate !== nowDatePart) {
-        return;
-    }
-
-    const slotEndDateTime = new Date(`${normalizedAppointmentDate}T${normalizedSlotEndTime}`);
-    if (Number.isNaN(slotEndDateTime.getTime())) {
-        return;
-    }
-
-    const cutoffTime = new Date(slotEndDateTime.getTime());
-
-    if (now >= cutoffTime) {
-        throw new AppError(
-            'This slot is closed for booking because less than 30 minutes are left before the slot end time',
-            409
-        );
-    }
 };
 
 const formatDateForPublicId = (date = new Date()) => {
@@ -199,6 +247,8 @@ const mapPrescriptionAggregate = (consultationRows, medicationRows, testRows = [
                 medicine_type: row.medicine_type,
                 medicine_value: row.medicine_value,
                 remark: row.remark,
+                remark_hi: row.remark_hi,
+                is_manual_entry: row.is_manual_entry,
                 added_by_role: row.added_by_role || 'DOCTOR',
                 doses: [],
             }, row));
@@ -234,9 +284,19 @@ const mapPrescriptionAggregate = (consultationRows, medicationRows, testRows = [
     });
 
     return new Map(
-        consultationRows.map((row) => [
-            Number(row.appointment_id),
-            {
+        consultationRows.map((row) => {
+            let deliveryDetails = null;
+            try {
+                deliveryDetails = row.delivery_details_json
+                    ? (typeof row.delivery_details_json === 'string'
+                        ? JSON.parse(row.delivery_details_json)
+                        : row.delivery_details_json)
+                    : null;
+            } catch {
+                deliveryDetails = null;
+            }
+
+            return [Number(row.appointment_id), {
                 consultation_id: row.consultation_id,
                 appointment_id: row.appointment_id,
                 doctor_id: row.doctor_id,
@@ -246,12 +306,34 @@ const mapPrescriptionAggregate = (consultationRows, medicationRows, testRows = [
                 symptoms: row.symptoms,
                 treatment_advice: row.treatment_advice,
                 medication_duration_days: row.medication_duration_days,
+                follow_up_after_days: row.follow_up_after_days,
+                follow_up_chain_closed: row.follow_up_chain_closed,
+                repeated_from_consultation_id: row.repeated_from_consultation_id,
+                is_repeat: row.is_repeat,
+                is_same: row.is_same,
+                repeat_months: row.repeat_months,
+                same_months: row.same_months,
+                consultation_mode: row.consultation_mode,
+                oxygen_saturation: row.oxygen_saturation,
+                blood_pressure: row.blood_pressure,
+                patient_height: row.patient_height,
+                patient_weight: row.patient_weight,
+                diagnosis: row.diagnosis,
+                quick_formula_input: row.quick_formula_input,
+                universal_remark: row.universal_remark,
+                universal_remark_hi: row.universal_remark_hi,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
                 medications: Array.from((medicationMap.get(row.consultation_id) || new Map()).values()),
                 tests: testMap.get(row.consultation_id) || [],
-            },
-        ])
+                dispensing: row.medication_bill_id ? {
+                    medication_bill_id: Number(row.medication_bill_id),
+                    delivery_mode: row.delivery_mode || null,
+                    delivery_details: deliveryDetails,
+                    dispensed_at: row.dispensed_at || null,
+                } : null,
+            }];
+        })
     );
 };
 
@@ -552,6 +634,7 @@ const createAppointment = asyncHandler(async (req, res) => {
     const branchId = toPositiveInt(fk_branch_id);
     const treatmentId = toPositiveInt(fk_treatment_id);
     const slotId = toPositiveInt(fk_slot_id);
+    const healthDetails = normalizePatientHealthDetails(req.body?.health_details);
 
     if (!branchId || !treatmentId || !slotId || !appointment_date) {
         throw new AppError('fk_branch_id, fk_treatment_id, fk_slot_id and appointment_date are required', 400);
@@ -596,6 +679,10 @@ const createAppointment = asyncHandler(async (req, res) => {
 
     const createdIp = getClientIp(req);
     const familyBookingSchema = await getFamilyBookingSchemaState({ queryFn: query });
+
+    if (healthDetails.has_any_value) {
+        await ensurePatientHealthDetailColumns();
+    }
 
     if (!familyBookingSchema.enabled && bookedForType === BOOKED_FOR_TYPES.FAMILY_MEMBER) {
         throw new AppError('Family member booking is not available until the family-member migration is applied', 409);
@@ -668,15 +755,11 @@ const createAppointment = asyncHandler(async (req, res) => {
             }
         }
 
-        const effectiveTiming = await resolveEffectiveSlotTiming({
+        await resolveEffectiveSlotTiming({
             executor: connection,
             branchId,
             slotId,
             appointmentDate: appointment_date,
-        });
-        validateSlotBookingCutoff({
-            appointmentDate: appointment_date,
-            slotEndTime: effectiveTiming.effectiveEndTime,
         });
 
         let conflictingPatientAppointments;
@@ -849,6 +932,35 @@ const createAppointment = asyncHandler(async (req, res) => {
             );
         }
 
+        if (healthDetails.has_any_value) {
+            await connection.execute(
+                `INSERT INTO tbl_appointment_vitals
+                 (appointment_id, oxygen_saturation, blood_pressure, patient_height, patient_weight,
+                  occupation, history_present_illness, history_past_illness, family_history,
+                  allergies_history, gynecological_history, personal_social_history, mental_mind_status,
+                  captured_by_role, captured_by_user_id, captured_at,
+                  updated_by_role, updated_by_user_id, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', ?, NOW(), 'PAT', ?, NOW())`,
+                [
+                    insertResult.insertId,
+                    healthDetails.oxygen_saturation,
+                    healthDetails.blood_pressure,
+                    healthDetails.patient_height,
+                    healthDetails.patient_weight,
+                    healthDetails.occupation,
+                    healthDetails.history_present_illness,
+                    healthDetails.history_past_illness,
+                    healthDetails.family_history,
+                    healthDetails.allergies_history,
+                    healthDetails.gynecological_history,
+                    healthDetails.personal_social_history,
+                    healthDetails.mental_mind_status,
+                    req.user.id,
+                    req.user.id,
+                ]
+            );
+        }
+
         await createConsultationBillForAppointment({
             connection,
             appointmentId: insertResult.insertId,
@@ -951,6 +1063,7 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     const branchName = req.query.branch_name ? String(req.query.branch_name).trim() : null;
     const treatmentName = req.query.treatment_name ? String(req.query.treatment_name).trim() : null;
     const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
+    const prescriptionsOnly = ['1', 'true', 'yes'].includes(String(req.query.prescriptions_only || '').trim().toLowerCase());
     const { page, pageSize } = parsePagination(req.query);
 
     if (appointmentDate && appointmentDate !== 'all' && !isValidDateString(appointmentDate)) {
@@ -975,6 +1088,10 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     if (appointmentDate && appointmentDate !== 'all') {
         conditions.push('a.appointment_date = ?');
         params.push(appointmentDate);
+    }
+    if (prescriptionsOnly) {
+        conditions.push("a.status = 'Completed'");
+        conditions.push('EXISTS (SELECT 1 FROM tbl_consultations pc WHERE pc.appointment_id = a.appointment_id)');
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -1067,11 +1184,39 @@ const listMyAppointments = asyncHandler(async (req, res) => {
                 c.symptoms,
                 c.treatment_advice,
                 c.medication_duration_days,
+                c.follow_up_after_days,
+                c.follow_up_chain_closed,
+                c.repeated_from_consultation_id,
+                c.is_repeat,
+                c.is_same,
+                c.repeat_months,
+                c.same_months,
+                c.consultation_mode,
+                COALESCE(NULLIF(c.oxygen_saturation, ''), v.oxygen_saturation) AS oxygen_saturation,
+                COALESCE(NULLIF(c.blood_pressure, ''), v.blood_pressure) AS blood_pressure,
+                COALESCE(NULLIF(c.patient_height, ''), v.patient_height) AS patient_height,
+                COALESCE(NULLIF(c.patient_weight, ''), v.patient_weight) AS patient_weight,
+                c.diagnosis,
+                c.quick_formula_input,
+                c.universal_remark,
+                c.universal_remark_hi,
                 c.workflow_status,
+                mb.id AS medication_bill_id,
+                mb.delivery_mode,
+                mb.delivery_details_json,
+                mb.created_at AS dispensed_at,
                 c.created_at,
                 c.updated_at
              FROM tbl_consultations c
              JOIN master_users d ON d.id = c.doctor_id
+             LEFT JOIN tbl_appointment_vitals v ON v.appointment_id = c.appointment_id
+             LEFT JOIN (
+                SELECT consultation_id, MAX(id) AS bill_id
+                FROM tbl_bills
+                WHERE bill_type = 'MEDICATION' AND status = 'ACTIVE' AND consultation_id IS NOT NULL
+                GROUP BY consultation_id
+             ) medication_bill_ref ON medication_bill_ref.consultation_id = c.id
+             LEFT JOIN tbl_bills mb ON mb.id = medication_bill_ref.bill_id
              WHERE c.appointment_id IN (${placeholders})`;
 
         if (shouldApplyWorkflowStatusFilter) {
@@ -1096,6 +1241,8 @@ const listMyAppointments = asyncHandler(async (req, res) => {
                     cm.medicine_type,
                     cm.medicine_value,
                     cm.remark,
+                    cm.remark_hi,
+                    cm.is_manual_entry,
                     cm.added_by_role,
                     mppi.dispense_status,
                     mppi.void_reason,
@@ -1161,6 +1308,7 @@ const listMyAppointments = asyncHandler(async (req, res) => {
                 branch_name: branchName || 'all',
                 treatment_name: treatmentName || 'all',
                 appointment_date: appointmentDate || 'all',
+                prescriptions_only: prescriptionsOnly,
             },
             filter_options: {
                 branches: [...new Set(filterOptionRows.map((row) => row.branch_name).filter(Boolean))],

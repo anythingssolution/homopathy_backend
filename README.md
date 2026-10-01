@@ -53,7 +53,6 @@ RESTful authentication API built with Node.js, Express, JWT, and MySQL using `my
 - CORS support via `CORS_ORIGIN`
 - Route-level rate limiting for login, OTP, forgot-password, and token refresh APIs
 - Transaction-safe appointment creation with conflict checks
-- Same-day slot bookings are blocked during the last 30 minutes before that slot's end time
 - Appointment booking block rule:
   - active leave present ho to booking blocked
   - leave cancel ho chuki ho to booking allowed

@@ -452,18 +452,17 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             `SELECT id, UPPER(medicine_value) AS medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
              FROM master_text_medicines mtm
              WHERE mtm.is_active = 1
-               AND (
-                    EXISTS (
-                        SELECT 1
-                        FROM master_medical_products mmp
-                        WHERE mmp.medicine_text_id = mtm.id
-                          AND mmp.is_active = 1
-                    )
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM master_medical_products mmp
-                        WHERE mmp.medicine_text_id = mtm.id
-                    )
+               AND EXISTS (
+                    SELECT 1
+                    FROM master_medical_products mmp
+                    WHERE mmp.is_active = 1
+                      AND (
+                           mmp.medicine_text_id = mtm.id
+                           OR (
+                                mmp.medicine_text_id IS NULL
+                                AND mmp.normalized_product_name = mtm.normalized_value
+                           )
+                      )
                )
              ORDER BY medicine_value ASC`
         ),
@@ -532,11 +531,17 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             return;
         }
 
-        if (!scopedRemarksBySelectionValue.has(key)) {
-            scopedRemarksBySelectionValue.set(key, []);
-        }
+        const lookupKeys = Array.from(new Set([
+            key,
+            key.replace(/\s*[*x]\s*\d+$/i, '').trim(),
+        ].filter(Boolean)));
 
-        scopedRemarksBySelectionValue.get(key).push(mappedRemark);
+        lookupKeys.forEach((lookupKey) => {
+            if (!scopedRemarksBySelectionValue.has(lookupKey)) {
+                scopedRemarksBySelectionValue.set(lookupKey, []);
+            }
+            scopedRemarksBySelectionValue.get(lookupKey).push(mappedRemark);
+        });
     });
 
     universalRemarkRows.sort((left, right) => {
@@ -545,29 +550,77 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
         return rightTime - leftTime;
     });
 
-    const textMedicineRows = textMedicines.map(({ normalized_value: normalizedMedicineValue, ...medicine }) => ({
-        ...medicine,
-        remark_suggestions: scopedRemarksBySelectionValue.get(normalizedMedicineValue) || [],
-        medical_products: productMasters.medicalProducts.get(medicine.id) || [],
-        products: productMasters.products.get(medicine.id) || [],
-        radient_pharma_products: productMasters.radientPharmaProducts.get(medicine.id) || [],
-        handwritten_product_prices: productMasters.handwrittenProductPrices.get(medicine.id) || [],
-    }));
+    const sourcePriority = {
+        REGULAR_PRODUCT: 1,
+        RADIENT_PHARMA: 2,
+        MEDICAL_PRODUCT_PRICE: 3,
+        DOCTOR_MANUAL: 4,
+    };
+    const mergeRemarkSuggestions = (keys) => {
+        const byId = new Map();
+        keys.forEach((key) => {
+            (scopedRemarksBySelectionValue.get(key) || []).forEach((remark) => {
+                byId.set(remark.id, remark);
+            });
+        });
+
+        return Array.from(byId.values()).sort((left, right) => (
+            new Date(right.updated_at || 0).getTime() - new Date(left.updated_at || 0).getTime()
+        ));
+    };
+    const textMedicineRows = textMedicines.map(({ normalized_value: normalizedMedicineValue, ...medicine }) => {
+        const medicalProducts = productMasters.medicalProducts.get(medicine.id) || [];
+        const canonicalProduct = [...medicalProducts].sort((left, right) => {
+            const leftPriority = sourcePriority[left.source_type] || 99;
+            const rightPriority = sourcePriority[right.source_type] || 99;
+            return leftPriority - rightPriority || Number(left.id || 0) - Number(right.id || 0);
+        })[0];
+        const medicineValue = String(canonicalProduct?.product_name || medicine.medicine_value).trim().toUpperCase();
+        const remarkMedicineKeys = Array.from(new Set([
+            normalizeMasterValue(medicineValue),
+            normalizedMedicineValue,
+        ].filter(Boolean)));
+
+        return {
+            ...medicine,
+            medicine_value: medicineValue,
+            remark_suggestions: mergeRemarkSuggestions(remarkMedicineKeys),
+            medical_products: medicalProducts,
+            products: productMasters.products.get(medicine.id) || [],
+            radient_pharma_products: productMasters.radientPharmaProducts.get(medicine.id) || [],
+            handwritten_product_prices: productMasters.handwrittenProductPrices.get(medicine.id) || [],
+            _remark_medicine_keys: remarkMedicineKeys,
+        };
+    });
     const textMedicineRemarkRows = textMedicineRemarks.map(({ normalized_value: _normalizedValue, ...remark }) => remark);
 
     textMedicineRows.forEach((medicine) => {
-        const getVariantRemarkSuggestions = (variantLabel) => (
-            scopedRemarksBySelectionValue.get(
-                normalizeMasterValue(`${medicine.medicine_value} - ${variantLabel || ''}`)
-            ) || []
+        const getVariantRemarkSuggestions = (variantLabel) => mergeRemarkSuggestions(
+            (medicine._remark_medicine_keys || [normalizeMasterValue(medicine.medicine_value)])
+                .map((medicineKey) => normalizeMasterValue(`${medicineKey} - ${variantLabel || ''}`))
         );
+        const variantLabelForProduct = (product) => String(
+            product.packing || product.size_or_weight || product.product_name || product.category || 'N/A'
+        ).trim();
 
-        medicine.medical_products = (medicine.medical_products || []).map((product) => ({
-            ...product,
-            remark_suggestions: getVariantRemarkSuggestions(
-                product.packing || product.size_or_weight || product.product_name || product.category || 'N/A'
-            ),
-        }));
+        const productsByVariant = new Map();
+        (medicine.medical_products || []).forEach((product) => {
+            const variantLabel = variantLabelForProduct(product);
+            const variantKey = normalizeMasterValue(variantLabel);
+            if (!variantKey || variantKey === 'n/a') return;
+
+            const candidate = {
+                ...product,
+                remark_suggestions: getVariantRemarkSuggestions(variantLabel),
+            };
+            const existing = productsByVariant.get(variantKey);
+            const existingPriority = sourcePriority[existing?.source_type] || 99;
+            const candidatePriority = sourcePriority[candidate.source_type] || 99;
+            if (!existing || candidatePriority < existingPriority) {
+                productsByVariant.set(variantKey, candidate);
+            }
+        });
+        medicine.medical_products = Array.from(productsByVariant.values());
         medicine.products = (medicine.products || []).map((product) => ({
             ...product,
             remark_suggestions: getVariantRemarkSuggestions(product.packing || 'N/A'),
@@ -580,6 +633,7 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             ...product,
             remark_suggestions: getVariantRemarkSuggestions(product.product_name || product.category || 'N/A'),
         }));
+        delete medicine._remark_medicine_keys;
     });
     const labTestRows = labTests.map(({ normalized_test_name: _normalizedTestName, ...test }) => test);
 

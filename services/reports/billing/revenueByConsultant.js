@@ -23,19 +23,22 @@ const getRevenueByConsultantReport = async (filters) => {
             COALESCE(SUM(CASE WHEN b.bill_type = 'CONSULTATION' THEN b.paid_amount ELSE 0 END), 0) AS consultation_paid,
             COALESCE(SUM(CASE
                 WHEN b.bill_type = 'MEDICATION' AND bi.bill_id IS NULL THEN b.total_amount
-                WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') <> 'COURIER' THEN bi.medication_revenue
+                WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') <> 'COURIER' THEN GREATEST(0, bi.medication_revenue - COALESCE(di.medicine_discount, 0))
                 ELSE 0
             END), 0) AS medication_revenue,
-            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' THEN COALESCE(bi.test_lab_revenue, 0) ELSE 0 END), 0) AS test_lab_revenue,
-            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') = 'COURIER' THEN COALESCE(bi.medication_revenue, 0) ELSE 0 END), 0) AS courier_medicine_revenue,
-            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') = 'COURIER' THEN COALESCE(bi.courier_charge_revenue, 0) ELSE 0 END), 0) AS courier_charge_revenue,
+            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' THEN GREATEST(0, COALESCE(bi.test_lab_revenue, 0) - COALESCE(di.test_discount, 0)) ELSE 0 END), 0) AS test_lab_revenue,
+            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') = 'COURIER' THEN GREATEST(0, COALESCE(bi.medication_revenue, 0) - COALESCE(di.medicine_discount, 0)) ELSE 0 END), 0) AS courier_medicine_revenue,
+            COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') = 'COURIER' THEN GREATEST(0, COALESCE(bi.courier_charge_revenue, 0) - COALESCE(di.courier_discount, 0)) ELSE 0 END), 0) AS courier_charge_revenue,
             COALESCE(SUM(CASE
                 WHEN b.bill_type = 'MEDICATION' AND COALESCE(b.delivery_mode, 'HAND_DELIVERY') = 'COURIER'
-                THEN COALESCE(bi.medication_revenue, 0) + COALESCE(bi.courier_charge_revenue, 0)
+                THEN GREATEST(0, COALESCE(bi.medication_revenue, 0) - COALESCE(di.medicine_discount, 0))
+                   + GREATEST(0, COALESCE(bi.courier_charge_revenue, 0) - COALESCE(di.courier_discount, 0))
                 ELSE 0
             END), 0) AS courier_revenue,
             COALESCE(SUM(CASE WHEN b.bill_type = 'MEDICATION' THEN b.paid_amount ELSE 0 END), 0) AS medication_paid,
-            COALESCE(SUM(b.total_amount), 0) AS total_gross_revenue,
+            COALESCE(SUM(b.gross_amount), 0) AS total_gross_revenue,
+            COALESCE(SUM(b.discount_amount), 0) AS total_discount,
+            COALESCE(SUM(b.total_amount), 0) AS total_net_revenue,
             COALESCE(SUM(b.paid_amount), 0) AS total_paid_revenue,
             COALESCE(SUM(b.pending_amount), 0) AS total_pending_revenue,
             ${SESSION_TYPE_SQL} AS session_type
@@ -66,6 +69,15 @@ const getRevenueByConsultantReport = async (filters) => {
             JOIN scoped_bills item_bill ON item_bill.id = tbl_bill_items.bill_id
             GROUP BY bill_id
          ) bi ON bi.bill_id = b.id
+         LEFT JOIN (
+            SELECT bill_id,
+                COALESCE(SUM(CASE WHEN discount_category = 'MEDICINE' THEN discount_amount ELSE 0 END), 0) AS medicine_discount,
+                COALESCE(SUM(CASE WHEN discount_category = 'TEST' THEN discount_amount ELSE 0 END), 0) AS test_discount,
+                COALESCE(SUM(CASE WHEN discount_category = 'COURIER' THEN discount_amount ELSE 0 END), 0) AS courier_discount
+            FROM tbl_bill_discounts
+            WHERE status = 'ACTIVE'
+            GROUP BY bill_id
+         ) di ON di.bill_id = b.id
          LEFT JOIN tbl_consultations c ON (c.id = b.consultation_id OR c.appointment_id = b.appointment_id)
          LEFT JOIN master_users d ON d.id = c.doctor_id
          LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id

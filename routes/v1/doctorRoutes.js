@@ -12,6 +12,9 @@ const {
     activateDoctorFormulaSet,
     removeDoctorFormulaSet,
     previewDoctorFormulaParse,
+    listDoctorRemarkMaster,
+    createDoctorRemarkMaster,
+    updateDoctorRemarkMaster,
     listDoctorStaffAccess,
     updateDoctorStaffAccess,
     listAppointmentsForDoctor,
@@ -101,6 +104,9 @@ router.get('/formula-master/:set_id', getDoctorFormulaSet);
 router.put('/formula-master/:set_id', updateDoctorFormulaSet);
 router.delete('/formula-master/:set_id', removeDoctorFormulaSet);
 router.post('/formula-master/:set_id/activate', activateDoctorFormulaSet);
+router.get('/remark-master', listDoctorRemarkMaster);
+router.post('/remark-master', createDoctorRemarkMaster);
+router.put('/remark-master/:remark_id', updateDoctorRemarkMaster);
 router.get('/cms/homepage', getDoctorHomepageCms);
 router.post('/cms/uploads/image', uploadCmsImageFile, uploadDoctorCmsImage);
 router.post('/cms/uploads/video', uploadCmsVideoFiles, uploadDoctorCmsVideo);

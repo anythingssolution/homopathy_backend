@@ -11,6 +11,15 @@ const buildBillListReadSql = (pageSql) => `WITH page_bills AS (
     FROM page_bill_ids ids
     JOIN tbl_bill_items i ON i.bill_id = ids.bill_id
     GROUP BY i.bill_id
+), discount_totals AS (
+    SELECT d.bill_id,
+        SUM(CASE WHEN d.discount_category = 'CONSULTATION' THEN d.discount_amount ELSE 0 END) AS consultation_discount_amount,
+        SUM(CASE WHEN d.discount_category = 'MEDICINE' THEN d.discount_amount ELSE 0 END) AS medicine_discount_amount,
+        SUM(CASE WHEN d.discount_category = 'TEST' THEN d.discount_amount ELSE 0 END) AS test_discount_amount,
+        SUM(CASE WHEN d.discount_category = 'COURIER' THEN d.discount_amount ELSE 0 END) AS courier_discount_amount
+    FROM page_bill_ids ids
+    JOIN tbl_bill_discounts d ON d.bill_id = ids.bill_id AND d.status = 'ACTIVE'
+    GROUP BY d.bill_id
 ), own_payments AS (
     SELECT bp.bill_id,
         MAX(bp.id) AS latest_payment_id,
@@ -40,6 +49,10 @@ const buildBillListReadSql = (pageSql) => `WITH page_bills AS (
 SELECT page_bills.*,
     COALESCE(item_totals.test_amount, 0) AS test_amount,
     COALESCE(item_totals.courier_amount, 0) AS courier_amount,
+    COALESCE(discount_totals.consultation_discount_amount, 0) AS consultation_discount_amount,
+    COALESCE(discount_totals.medicine_discount_amount, 0) AS medicine_discount_amount,
+    COALESCE(discount_totals.test_discount_amount, 0) AS test_discount_amount,
+    COALESCE(discount_totals.courier_discount_amount, 0) AS courier_discount_amount,
     latest_payment.payment_mode,
     COALESCE(own_payments.cash_amount, 0) + COALESCE(source_payments.cash_amount, 0) AS cash_amount,
     COALESCE(own_payments.online_amount, 0) + COALESCE(source_payments.online_amount, 0) AS online_amount,
@@ -48,6 +61,7 @@ SELECT page_bills.*,
     COALESCE(own_payments.borrowed_amount_collected, 0) AS borrowed_amount_collected
 FROM page_bills
 LEFT JOIN item_totals ON item_totals.bill_id = page_bills.bill_id
+LEFT JOIN discount_totals ON discount_totals.bill_id = page_bills.bill_id
 LEFT JOIN own_payments ON own_payments.bill_id = page_bills.bill_id
 LEFT JOIN source_payments ON source_payments.bill_id = page_bills.bill_id
 LEFT JOIN tbl_bill_payments latest_payment ON latest_payment.id = own_payments.latest_payment_id

@@ -12,6 +12,7 @@ const {
     normalizeAmount,
     PAYMENT_SETTLEMENT_TYPES,
 } = require('../../services/billingService');
+const { replaceBillDiscounts } = require('../../services/billingDiscountService');
 const {
     QUEUE_STATUS,
     ACTIVE_QUEUE_STATUSES,
@@ -263,11 +264,6 @@ const parsePaymentCollectionPayload = (payload = {}) => {
     };
 };
 
-const validateSlotBookingCutoff = ({ appointmentDate, slotEndTime, now = new Date() }) => {
-    // Receptionist side cutoff condition disabled as per requirement
-    return;
-};
-
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
     if (forwarded) {
@@ -340,6 +336,60 @@ const appointmentSelectColumns = `
     ${getAppointmentPatientColumns()}
 `;
 
+const attachAccountPendingDues = async (appointments = []) => {
+    if (!Array.isArray(appointments) || appointments.length === 0) {
+        return appointments;
+    }
+
+    const patientIds = [...new Set(appointments
+        .map((appointment) => Number(appointment.fk_patient_id))
+        .filter((patientId) => Number.isInteger(patientId) && patientId > 0))];
+    const branchIds = [...new Set(appointments
+        .map((appointment) => Number(appointment.fk_branch_id))
+        .filter((branchId) => Number.isInteger(branchId) && branchId > 0))];
+
+    if (patientIds.length === 0 || branchIds.length === 0) {
+        return appointments;
+    }
+
+    const pendingRows = await query(
+        `SELECT
+            patient_id,
+            fk_branch_id,
+            ROUND(SUM(pending_amount), 2) AS account_pending_amount,
+            COUNT(*) AS pending_bills_count
+         FROM tbl_bills
+         WHERE status = 'ACTIVE'
+           AND pending_amount > 0
+           AND patient_id IN (${patientIds.map(() => '?').join(',')})
+           AND fk_branch_id IN (${branchIds.map(() => '?').join(',')})
+         GROUP BY patient_id, fk_branch_id`,
+        [...patientIds, ...branchIds]
+    );
+    const pendingByAccount = new Map(pendingRows.map((row) => [
+        `${Number(row.patient_id)}:${Number(row.fk_branch_id)}`,
+        {
+            account_pending_amount: Number(row.account_pending_amount || 0),
+            pending_bills_count: Number(row.pending_bills_count || 0),
+        },
+    ]));
+
+    return appointments.map((appointment) => {
+        const pending = pendingByAccount.get(
+            `${Number(appointment.fk_patient_id)}:${Number(appointment.fk_branch_id)}`
+        );
+        const accountPendingAmount = pending?.account_pending_amount || 0;
+        const pendingBillsCount = pending?.pending_bills_count || 0;
+
+        return {
+            ...appointment,
+            account_pending_amount: accountPendingAmount,
+            pending_bills_count: pendingBillsCount,
+            has_pending_dues: accountPendingAmount > 0 && pendingBillsCount > 0,
+        };
+    });
+};
+
 const getAppointmentDetailsById = async (appointmentId) => {
     const rows = await query(
         `SELECT ${appointmentSelectColumns}
@@ -390,6 +440,10 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
             c.sent_to_medical_at,
             c.medical_processed_at,
             c.medical_processed_by,
+            mb.id AS medication_bill_id,
+            mb.delivery_mode,
+            mb.delivery_details_json,
+            mb.created_at AS dispensed_at,
             c.created_at,
             c.updated_at,
             a.auid,
@@ -419,6 +473,13 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
           AND sto.fk_slot_id = a.fk_slot_id
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
+         LEFT JOIN (
+            SELECT consultation_id, MAX(id) AS bill_id
+            FROM tbl_bills
+            WHERE bill_type = 'MEDICATION' AND status = 'ACTIVE' AND consultation_id IS NOT NULL
+            GROUP BY consultation_id
+         ) medication_bill_ref ON medication_bill_ref.consultation_id = c.id
+         LEFT JOIN tbl_bills mb ON mb.id = medication_bill_ref.bill_id
          WHERE c.id = ?
          LIMIT 1`,
         [consultationId]
@@ -501,6 +562,17 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
         [consultationId]
     );
 
+    let deliveryDetails = null;
+    try {
+        deliveryDetails = consultationRows[0].delivery_details_json
+            ? (typeof consultationRows[0].delivery_details_json === 'string'
+                ? JSON.parse(consultationRows[0].delivery_details_json)
+                : consultationRows[0].delivery_details_json)
+            : null;
+    } catch {
+        deliveryDetails = null;
+    }
+
     return {
         ...decorateTokenFields(consultationRows[0], {
             slotNameField: 'slot_name',
@@ -508,6 +580,12 @@ const getPrescriptionDetailByConsultationId = async (consultationId) => {
         }),
         medications: Array.from(medicationMap.values()),
         tests: testRows,
+        dispensing: consultationRows[0].medication_bill_id ? {
+            medication_bill_id: Number(consultationRows[0].medication_bill_id),
+            delivery_mode: consultationRows[0].delivery_mode || null,
+            delivery_details: deliveryDetails,
+            dispensed_at: consultationRows[0].dispensed_at || null,
+        } : null,
     };
 };
 
@@ -664,6 +742,9 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             u.gender,
             u.email,
             u.mobile_no,
+            u.area_name,
+            u.pincode,
+            u.city,
             u.description,
             u.created_at,
             u.updated_at,
@@ -743,6 +824,13 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const mobileNo = req.body?.mobile_no !== undefined ? String(req.body.mobile_no).trim() : undefined;
     const gender = req.body?.gender !== undefined ? String(req.body.gender).trim().toLowerCase() : undefined;
     const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    const areaName = req.body?.area_name !== undefined
+        ? (String(req.body.area_name ?? '').trim() || null)
+        : undefined;
+    const pincode = req.body?.pincode !== undefined
+        ? (String(req.body.pincode ?? '').trim() || null)
+        : undefined;
+    const city = req.body?.city !== undefined ? String(req.body.city).trim() : undefined;
     const relationship =
         req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
     // Empty string clears the value; whitespace is stripped and upper-cased so "dth 1210" is stored as "DTH1210".
@@ -761,8 +849,9 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         if (fullName === undefined && gender === undefined && age === undefined && relationship === undefined) {
             throw new AppError('At least one of full_name, gender, age or relationship is required', 400);
         }
-    } else if (fullName === undefined && mobileNo === undefined && gender === undefined && clinicPatientNo === undefined) {
-        throw new AppError('At least one of full_name, mobile_no, gender or clinic_patient_no is required', 400);
+    } else if (fullName === undefined && mobileNo === undefined && gender === undefined && clinicPatientNo === undefined
+        && areaName === undefined && pincode === undefined && city === undefined) {
+        throw new AppError('At least one patient detail is required', 400);
     }
 
     if (fullName !== undefined && (!fullName || fullName.length > 100)) {
@@ -789,13 +878,26 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         throw new AppError('relationship must be between 1 and 50 characters', 400);
     }
 
+    if (areaName !== undefined && areaName !== null && areaName.length > 150) {
+        throw new AppError('area_name must be at most 150 characters', 400);
+    }
+
+    if (pincode !== undefined && pincode !== null && !/^\d{6}$/.test(pincode)) {
+        throw new AppError('pincode must contain exactly 6 digits', 400);
+    }
+
+    if (city !== undefined && (!city || city.length > 100)) {
+        throw new AppError('city must be between 1 and 100 characters', 400);
+    }
+
     const actorIp = getClientIp(req);
     const actorRole = req.user?.role_code || req.user?.role || null;
     const actorUserAgent = req.headers['user-agent'] || null;
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, clinic_patient_no, full_name, mobile_no, gender, age, role, is_active, updated_at
+            `SELECT id, uuid, clinic_patient_no, full_name, mobile_no, gender, age, address, area_name,
+                    ward_no, vidhan_sabha, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -964,6 +1066,9 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             mobile_no: mobileNo,
             gender,
             clinic_patient_no: clinicPatientNo,
+            area_name: areaName,
+            pincode,
+            city,
         };
 
         for (const [field, value] of Object.entries(requestedValues)) {
@@ -980,6 +1085,18 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city'].includes(field))) {
+            const effective = { ...patient, ...newValues };
+            const address = [
+                effective.area_name,
+                effective.ward_no ? `Ward ${effective.ward_no}` : null,
+                effective.vidhan_sabha,
+                effective.pincode,
+                effective.city,
+            ].filter(Boolean).join(', ') || null;
+            updateParts.push('address = ?');
+            updateValues.push(address);
+        }
         updateParts.push('updated_by = ?', 'updated_ip = ?');
         updateValues.push(req.user.id, actorIp, patientId);
 
@@ -1008,7 +1125,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
         const [updatedRows] = await connection.execute(
             `SELECT id AS patient_id, uuid AS patient_uuid, clinic_patient_no, full_name, age, gender, email, mobile_no,
-                    description, created_at, updated_at
+                    address, area_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,
@@ -1560,15 +1677,11 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
             connection,
         });
 
-        const effectiveTiming = await resolveEffectiveSlotTiming({
+        await resolveEffectiveSlotTiming({
             executor: connection,
             branchId,
             slotId,
             appointmentDate: appointment_date,
-        });
-        validateSlotBookingCutoff({
-            appointmentDate: appointment_date,
-            slotEndTime: effectiveTiming.effectiveEndTime,
         });
 
         const conflictCondition = buildBookingConflictCondition({
@@ -1972,11 +2085,12 @@ const listReceptionistAppointments = asyncHandler(async (req, res) => {
         timelineRows: queueTimelineRows,
         protectedWindowAppointmentIdsByGroup,
     });
+    const rowsWithPendingDues = await attachAccountPendingDues(decoratedRows);
 
     return res.status(200).json({
         success: true,
         message: 'Receptionist appointments fetched successfully',
-        data: decoratedRows,
+        data: rowsWithPendingDues,
         meta: {
             filters: {
                 branch_id: branchId,
@@ -1987,7 +2101,7 @@ const listReceptionistAppointments = asyncHandler(async (req, res) => {
                 booked_for_type: bookedForType,
                 reception_status: receptionStatus,
             },
-            total: decoratedRows.length,
+            total: rowsWithPendingDues.length,
         },
     });
 });
@@ -2447,15 +2561,11 @@ const rescheduleAppointmentByReceptionist = asyncHandler(async (req, res) => {
             ? PAYMENT_SETTLEMENT_TYPES.FOLLOW_UP
             : PAYMENT_SETTLEMENT_TYPES.COLLECTED;
 
-        const effectiveTiming = await resolveEffectiveSlotTiming({
+        await resolveEffectiveSlotTiming({
             executor: connection,
             branchId,
             slotId,
             appointmentDate: appointment_date,
-        });
-        validateSlotBookingCutoff({
-            appointmentDate: appointment_date,
-            slotEndTime: effectiveTiming.effectiveEndTime,
         });
 
         const [queueRows] = await connection.execute(
@@ -2852,8 +2962,28 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             billId = billResult.billId;
         }
 
-        if (!isFollowUpAutoPaid) {
+        let discountResult = null;
+        if (req.body?.discounts !== undefined) {
+            discountResult = await replaceBillDiscounts({
+                connection,
+                billId,
+                discounts: req.body.discounts,
+                actorUserId: req.user.id,
+            });
+        }
+
+        const [payableRows] = await connection.execute(
+            'SELECT pending_amount FROM tbl_bills WHERE id = ? LIMIT 1',
+            [billId]
+        );
+        const payableAmount = Number(Number(payableRows[0]?.pending_amount || 0).toFixed(2));
+        const hasPayableAmount = payableAmount > 0;
+
+        if (!isFollowUpAutoPaid && hasPayableAmount) {
             const payment = parsePaymentCollectionPayload(req.body);
+            if (Number(payment.amount.toFixed(2)) !== payableAmount) {
+                throw new AppError(`Full consultation payable amount of ₹${payableAmount.toFixed(2)} must be collected`, 400);
+            }
 
             await collectConsultationBillPayment({
                 connection,
@@ -2948,6 +3078,7 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             billId,
             appointmentWasAlreadyApproved: appointment.reception_status === 'APPROVED_BY_RECEPTION',
             approvedWithoutPaymentCollection: isFollowUpAutoPaid,
+            approvedByFullDiscount: !isFollowUpAutoPaid && !hasPayableAmount && Number(discountResult?.discount_amount || 0) > 0,
         };
     });
 
@@ -2966,6 +3097,8 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
     emitToRole('DOC', 'doctor.appointments.updated', {
         reason: transactionResult.approvedWithoutPaymentCollection
             ? 'RECEPTION_APPROVED_FOLLOW_UP'
+            : transactionResult.approvedByFullDiscount
+            ? 'RECEPTION_APPROVED_FULL_DISCOUNT'
             : transactionResult.appointmentWasAlreadyApproved
             ? 'CONSULTATION_PAYMENT_COLLECTED'
             : 'RECEPTION_APPROVED_AND_PAYMENT_COLLECTED',
@@ -2979,6 +3112,8 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             ? 'Consultation payment collected successfully for approved appointment'
             : transactionResult.approvedWithoutPaymentCollection
                 ? 'Follow-up appointment approved successfully'
+            : transactionResult.approvedByFullDiscount
+                ? 'Appointment approved with full consultation discount'
             : 'Appointment approved and consultation payment collected successfully',
         data: {
             appointment,

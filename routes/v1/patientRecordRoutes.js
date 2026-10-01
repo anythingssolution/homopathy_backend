@@ -3,6 +3,7 @@ const {
     listPatients,
     getPatientDetail,
     listPatientVisits,
+    listPatientPrescriptionTimeline,
     listPatientHistory,
     listTimeline,
     uploadDocument,
@@ -24,6 +25,7 @@ router.use(authenticate, authorizeRolesOrModuleAccess(['doctor', 'receptionist',
 router.get('/patients', listPatients);
 router.get('/patients/:patient_id', getPatientDetail);
 router.get('/patients/:patient_id/visits', listPatientVisits);
+router.get('/patients/:patient_id/prescription-timeline', listPatientPrescriptionTimeline);
 router.get('/patients/:patient_id/history', listPatientHistory);
 router.get('/timeline', listTimeline);
 router.post('/documents', uploadClinicalDocumentFile, uploadDocument);

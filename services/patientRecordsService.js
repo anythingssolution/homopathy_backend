@@ -18,7 +18,7 @@ const DOCUMENT_TYPES = new Set([
 ]);
 
 const DOCUMENT_STATUSES = new Set(['ACTIVE', 'ARCHIVED', 'DELETED']);
-const TIMELINE_TYPES = new Set(['APPOINTMENT', 'CONSULTATION', 'PRESCRIPTION', 'BILL', 'DOCUMENT']);
+const TIMELINE_TYPES = new Set(['APPOINTMENT', 'CONSULTATION', 'PRESCRIPTION', 'MEDICINE_PURCHASE', 'BILL', 'DOCUMENT']);
 const DEFAULT_DOCUMENT_STORAGE_ROOT = path.resolve(__dirname, '..', 'external_files', 'clinical-documents');
 
 const toPositiveInt = (value) => {
@@ -128,6 +128,13 @@ const safeJsonParse = (value, fallback = null) => {
     }
 };
 
+const sortPrescriptionTimelineItems = (items = []) => [...items].sort((a, b) => {
+    const timeDiff = new Date(b.event_at || b.event_date || 0).getTime()
+        - new Date(a.event_at || a.event_date || 0).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return Number(b.source_id || 0) - Number(a.source_id || 0);
+});
+
 const normalizeText = (value, maxLength = 255) => {
     if (value === undefined || value === null) {
         return null;
@@ -233,7 +240,7 @@ const REGISTRY_SORT_COLUMNS = Object.freeze({
     full_name: 'p.full_name',
     mobile_no: 'p.mobile_no',
     visits: 'completed_appointments_count',
-    latest_visit: 'latest_visit_date',
+    latest_visit: 'latest_activity_date',
 });
 
 const parseRegistryFilters = (rawFilters = {}, actor = {}) => {
@@ -293,6 +300,14 @@ const buildRegistryWhere = (filters) => {
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR a.auid LIKE ?
+            OR EXISTS (
+                SELECT 1
+                FROM tbl_bills search_bill
+                WHERE search_bill.patient_id = p.id
+                  AND search_bill.fk_branch_id = ?
+                  AND search_bill.status = 'ACTIVE'
+                  AND search_bill.bill_number LIKE ?
+            )
         )`);
         params.push(
             `%${filters.patientSearch}%`,
@@ -301,6 +316,8 @@ const buildRegistryWhere = (filters) => {
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
+            `%${filters.patientSearch}%`,
+            filters.branchId,
             `%${filters.patientSearch}%`
         );
     }
@@ -344,6 +361,10 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             p.ward_no,
             p.vidhan_sabha,
             MAX(a.appointment_date) AS latest_visit_date,
+            NULLIF(GREATEST(
+                COALESCE(MAX(a.appointment_date), '1000-01-01 00:00:00'),
+                COALESCE(pickups.latest_medicine_pickup_date, '1000-01-01 00:00:00')
+            ), '1000-01-01 00:00:00') AS latest_activity_date,
             COUNT(DISTINCT a.appointment_id) AS completed_appointments_count,
             COUNT(DISTINCT c.id) AS consultations_count,
             COUNT(DISTINCT CASE
@@ -351,6 +372,10 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
                 ELSE NULL
             END) AS prescriptions_count,
             COUNT(DISTINCT bills.id) AS bills_count,
+            COALESCE(pickups.medicine_pickups_count, 0) AS medicine_pickups_count,
+            COALESCE(pickups.direct_medicine_count, 0) AS direct_medicine_count,
+            COALESCE(pickups.repeat_medicine_count, 0) AS repeat_medicine_count,
+            COUNT(DISTINCT a.appointment_id) + COALESCE(pickups.medicine_pickups_count, 0) AS total_records_count,
             (
                 SELECT COUNT(*)
                 FROM tbl_patient_family_members family_count
@@ -363,6 +388,25 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
          LEFT JOIN tbl_patient_family_members fm ON fm.fk_primary_patient_id = p.id
          LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
          LEFT JOIN tbl_bills bills ON bills.appointment_id = a.appointment_id AND bills.status = 'ACTIVE'
+         LEFT JOIN (
+            SELECT rb.patient_id,
+                   COUNT(DISTINCT rb.id) AS medicine_pickups_count,
+                   COUNT(DISTINCT CASE
+                       WHEN rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%' THEN rb.id
+                       ELSE NULL
+                   END) AS direct_medicine_count,
+                   COUNT(DISTINCT CASE
+                       WHEN rb.consultation_id IS NOT NULL AND COALESCE(rb.remark, '') NOT LIKE '%Medical Only%' THEN rb.id
+                       ELSE NULL
+                   END) AS repeat_medicine_count,
+                   MAX(rb.created_at) AS latest_medicine_pickup_date
+            FROM tbl_bills rb
+            WHERE rb.fk_branch_id = ?
+              AND rb.bill_type = 'MEDICATION'
+              AND rb.appointment_id IS NULL
+              AND rb.status = 'ACTIVE'
+            GROUP BY rb.patient_id
+         ) pickups ON pickups.patient_id = p.id
          LEFT JOIN (
             SELECT consultation_id, COUNT(*) AS medicine_count
             FROM tbl_consultation_medications
@@ -377,7 +421,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
          GROUP BY p.id
          ORDER BY ${orderBy}
          LIMIT ? OFFSET ?`,
-        [filters.branchId, ...params, filters.pageSize, offset]
+        [filters.branchId, filters.branchId, ...params, filters.pageSize, offset]
     );
 
     return {
@@ -394,11 +438,16 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             ward_no: row.ward_no,
             vidhan_sabha: row.vidhan_sabha,
             latest_visit_date: row.latest_visit_date,
+            latest_activity_date: row.latest_activity_date,
             summary: {
                 completed_appointments_count: Number(row.completed_appointments_count || 0),
                 consultations_count: Number(row.consultations_count || 0),
                 prescriptions_count: Number(row.prescriptions_count || 0),
                 bills_count: Number(row.bills_count || 0),
+                medicine_pickups_count: Number(row.medicine_pickups_count || 0),
+                direct_medicine_count: Number(row.direct_medicine_count || 0),
+                repeat_medicine_count: Number(row.repeat_medicine_count || 0),
+                total_records_count: Number(row.total_records_count || 0),
                 family_members_count: Number(row.family_members_count || 0),
             },
         })),
@@ -443,6 +492,61 @@ const getSubjectSummaryRows = async ({ branchId, patientId }) => query(
     [branchId, patientId]
 );
 
+const getMedicinePurchaseSummaryRows = async ({ branchId, patientId }) => query(
+    `SELECT
+        CASE
+            WHEN source_a.booked_for_type = 'FAMILY_MEMBER' THEN source_a.fk_patient_family_member_id
+            ELSE 0
+        END AS subject_id,
+        CASE
+            WHEN source_a.booked_for_type = 'FAMILY_MEMBER' THEN 'FAMILY_MEMBER'
+            ELSE 'SELF'
+        END AS subject_type,
+        COUNT(DISTINCT rb.id) AS medicine_pickups_count,
+        COUNT(DISTINCT CASE
+            WHEN rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%' THEN rb.id
+            ELSE NULL
+        END) AS direct_medicine_count,
+        COUNT(DISTINCT CASE
+            WHEN rb.consultation_id IS NOT NULL AND COALESCE(rb.remark, '') NOT LIKE '%Medical Only%' THEN rb.id
+            ELSE NULL
+        END) AS repeat_medicine_count,
+        MAX(rb.created_at) AS latest_medicine_pickup_date
+     FROM tbl_bills rb
+     LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
+     LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
+     WHERE rb.fk_branch_id = ?
+       AND rb.patient_id = ?
+       AND rb.bill_type = 'MEDICATION'
+       AND rb.appointment_id IS NULL
+       AND rb.status = 'ACTIVE'
+     GROUP BY subject_type, subject_id`,
+    [branchId, patientId]
+);
+
+const mergeSubjectSummary = (visitSummary = {}, purchaseSummary = {}) => {
+    const latestVisitDate = visitSummary.latest_visit_date || null;
+    const latestMedicinePickupDate = purchaseSummary.latest_medicine_pickup_date || null;
+    const latestActivityDate = [latestVisitDate, latestMedicinePickupDate]
+        .filter(Boolean)
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
+    const completedAppointments = Number(visitSummary.completed_appointments_count || 0);
+    const medicinePickups = Number(purchaseSummary.medicine_pickups_count || 0);
+
+    return {
+        completed_appointments_count: completedAppointments,
+        consultations_count: Number(visitSummary.consultations_count || 0),
+        prescriptions_count: Number(visitSummary.prescriptions_count || 0),
+        medicine_pickups_count: medicinePickups,
+        direct_medicine_count: Number(purchaseSummary.direct_medicine_count || 0),
+        repeat_medicine_count: Number(purchaseSummary.repeat_medicine_count || 0),
+        total_records_count: completedAppointments + medicinePickups,
+        latest_visit_date: latestVisitDate,
+        latest_medicine_pickup_date: latestMedicinePickupDate,
+        latest_activity_date: latestActivityDate,
+    };
+};
+
 const getPatientRecordDetail = async ({ patientId, actor }) => {
     const branchId = toPositiveInt(actor.selected_branch_id);
     if (!branchId) {
@@ -472,7 +576,7 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
         throw new AppError('Patient not found', 404);
     }
 
-    const [familyRows, subjectSummaryRows] = await Promise.all([
+    const [familyRows, subjectSummaryRows, purchaseSummaryRows] = await Promise.all([
         query(
             `SELECT id AS family_member_id,
                     full_name,
@@ -488,10 +592,13 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
             [patientId]
         ),
         getSubjectSummaryRows({ branchId, patientId }),
+        getMedicinePurchaseSummaryRows({ branchId, patientId }),
     ]);
 
     const summaryByKey = new Map(subjectSummaryRows.map((row) => [`${row.subject_type}:${Number(row.subject_id || 0)}`, row]));
+    const purchaseSummaryByKey = new Map(purchaseSummaryRows.map((row) => [`${row.subject_type}:${Number(row.subject_id || 0)}`, row]));
     const selfSummary = summaryByKey.get('SELF:0') || {};
+    const selfPurchaseSummary = purchaseSummaryByKey.get('SELF:0') || {};
 
     return {
         patient: {
@@ -501,12 +608,7 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
         self: {
             subject_scope: 'SELF',
             label: 'Self',
-            summary: {
-                completed_appointments_count: Number(selfSummary.completed_appointments_count || 0),
-                consultations_count: Number(selfSummary.consultations_count || 0),
-                prescriptions_count: Number(selfSummary.prescriptions_count || 0),
-                latest_visit_date: selfSummary.latest_visit_date || null,
-            },
+            summary: mergeSubjectSummary(selfSummary, selfPurchaseSummary),
         },
         family_members: familyRows.map((row) => {
             const summary = summaryByKey.get(`FAMILY_MEMBER:${Number(row.family_member_id)}`) || {};
@@ -517,12 +619,10 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
                 age: row.age,
                 gender: row.gender,
                 description: row.description,
-                summary: {
-                    completed_appointments_count: Number(summary.completed_appointments_count || 0),
-                    consultations_count: Number(summary.consultations_count || 0),
-                    prescriptions_count: Number(summary.prescriptions_count || 0),
-                    latest_visit_date: summary.latest_visit_date || null,
-                },
+                summary: mergeSubjectSummary(
+                    summary,
+                    purchaseSummaryByKey.get(`FAMILY_MEMBER:${Number(row.family_member_id)}`) || {}
+                ),
             };
         }),
     };
@@ -656,12 +756,151 @@ const buildVisitRecord = (row) => ({
         total_amount: row.total_amount || null,
         paid_amount: row.paid_amount || null,
         pending_amount: row.pending_amount || null,
+        medication_bill_id: row.medication_bill_id || null,
+        delivery_mode: row.delivery_mode || null,
+        delivery_details: safeJsonParse(row.delivery_details_json, null),
+        dispensed_at: row.dispensed_at || null,
         documents_count: Number(row.documents_count || 0),
         document_types: row.document_types || null,
         ward_no: row.primary_patient_ward_no || null,
         vidhan_sabha: row.primary_patient_vidhan_sabha || null,
     },
 });
+
+const buildMedicinePurchaseVisitRecord = (row) => {
+    const isDirectMedicine = Boolean(Number(row.is_direct_medicine));
+    return {
+        timeline_type: 'MEDICINE_PURCHASE',
+        record_type: isDirectMedicine ? 'DIRECT_MEDICINE' : 'REPEAT_MEDICINE',
+        source_id: Number(row.bill_id),
+        event_date: row.event_date,
+        title: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
+        status: row.payment_status || null,
+        branch_id: Number(row.fk_branch_id),
+        branch_name: row.branch_name || null,
+        doctor_id: row.doctor_id ? Number(row.doctor_id) : null,
+        doctor_full_name: row.doctor_full_name || null,
+        appointment_id: null,
+        consultation_id: null,
+        bill_id: Number(row.bill_id),
+        document_id: null,
+        document_type: 'BILL',
+        subject: buildSubject(row),
+        details: {
+            is_medicine_purchase: true,
+            is_direct_medicine: isDirectMedicine,
+            source_consultation_id: row.source_consultation_id || null,
+            bill_number: row.bill_number || null,
+            bill_type: row.bill_type || null,
+            payment_status: row.payment_status || null,
+            total_amount: row.total_amount || null,
+            paid_amount: row.paid_amount || null,
+            pending_amount: row.pending_amount || null,
+            treatment_name: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
+            slot_name: isDirectMedicine ? 'Medical Only' : 'Repeat Medicine',
+            has_prescription: false,
+            has_medical_items: Number(row.medicine_count || 0) > 0,
+            medicine_count: Number(row.medicine_count || 0),
+            medicine_summary: row.medicine_summary || null,
+            bills_count: 1,
+            delivery_mode: row.delivery_mode || null,
+            remark: row.remark || null,
+            branch_name: row.branch_name || null,
+            documents_count: 0,
+        },
+    };
+};
+
+const fetchStandaloneMedicinePurchaseRows = async (filters) => {
+    const conditions = [
+        "rb.bill_type = 'MEDICATION'",
+        'rb.appointment_id IS NULL',
+        "rb.status = 'ACTIVE'",
+        'rb.fk_branch_id = ?',
+    ];
+    const params = [filters.branchId];
+    if (filters.patientId) {
+        conditions.push('rb.patient_id = ?');
+        params.push(filters.patientId);
+    }
+    if (filters.familyMemberId) {
+        conditions.push('source_a.fk_patient_family_member_id = ?');
+        params.push(filters.familyMemberId);
+    } else if (filters.subjectScope === 'SELF') {
+        conditions.push('source_a.fk_patient_family_member_id IS NULL');
+    }
+    if (filters.doctorId) {
+        conditions.push('source_c.doctor_id = ?');
+        params.push(filters.doctorId);
+    }
+    if (filters.fromDate) {
+        conditions.push('DATE(rb.created_at) >= ?');
+        params.push(filters.fromDate);
+    }
+    if (filters.toDate) {
+        conditions.push('DATE(rb.created_at) <= ?');
+        params.push(filters.toDate);
+    }
+    if (filters.patientSearch) {
+        conditions.push(`(
+            p.full_name LIKE ? OR p.mobile_no LIKE ? OR p.uuid LIKE ? OR p.clinic_patient_no LIKE ?
+            OR fm.full_name LIKE ? OR fm.relationship LIKE ? OR rb.bill_number LIKE ?
+        )`);
+        params.push(...Array(7).fill(`%${filters.patientSearch}%`));
+    }
+
+    return query(
+        `SELECT rb.id AS bill_id,
+                rb.bill_number,
+                rb.bill_type,
+                rb.consultation_id AS source_consultation_id,
+                rb.payment_status,
+                rb.total_amount,
+                rb.paid_amount,
+                rb.pending_amount,
+                rb.delivery_mode,
+                rb.remark,
+                rb.created_at AS event_date,
+                rb.fk_branch_id,
+                branch.branch_name,
+                source_c.doctor_id,
+                doctor.full_name AS doctor_full_name,
+                source_a.booked_for_type,
+                source_a.fk_patient_family_member_id,
+                CASE WHEN source_a.booked_for_type = 'FAMILY_MEMBER' THEN 1 ELSE 0 END AS is_family_member_booking,
+                fm.relationship AS family_member_relationship,
+                fm.full_name AS family_member_full_name,
+                fm.age AS family_member_age,
+                fm.gender AS family_member_gender,
+                p.id AS patient_id,
+                p.uuid AS patient_uuid,
+                p.full_name AS primary_patient_full_name,
+                p.mobile_no AS primary_patient_mobile_no,
+                COALESCE(fm.full_name, p.full_name) AS patient_full_name,
+                COALESCE(fm.age, p.age) AS patient_age,
+                COALESCE(fm.gender, p.gender) AS patient_gender,
+                COUNT(DISTINCT bi.id) AS medicine_count,
+                GROUP_CONCAT(DISTINCT bi.item_name ORDER BY bi.id SEPARATOR ', ') AS medicine_summary,
+                (rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%') AS is_direct_medicine
+         FROM tbl_bills rb
+         JOIN master_users p ON p.id = rb.patient_id
+         JOIN master_clinic_branches branch ON branch.id = rb.fk_branch_id
+         LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
+         LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
+         LEFT JOIN tbl_patient_family_members fm ON fm.id = source_a.fk_patient_family_member_id
+         LEFT JOIN master_users doctor ON doctor.id = source_c.doctor_id
+         LEFT JOIN tbl_bill_items bi ON bi.bill_id = rb.id
+           AND LOWER(COALESCE(bi.item_name, '')) <> 'courier charge'
+         WHERE ${conditions.join(' AND ')}
+         GROUP BY rb.id
+         ORDER BY rb.created_at DESC, rb.id DESC`,
+        params
+    );
+};
+
+const fetchMedicinePurchaseTimeline = async (filters) => (
+    (await fetchStandaloneMedicinePurchaseRows(filters)).map(buildMedicinePurchaseVisitRecord)
+);
 
 const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
     const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
@@ -704,48 +943,8 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
 
     const documentTypeJoinFilter = filters.documentType ? 'AND document_type = ?' : '';
     const documentJoinParams = filters.documentType ? [filters.documentType] : [];
-    const countParams = [...documentJoinParams, ...params];
-
-    const countRows = await query(
-        `SELECT COUNT(DISTINCT a.appointment_id) AS total
-         FROM tbl_appointments a
-         JOIN master_users p ON p.id = a.fk_patient_id
-         LEFT JOIN tbl_patient_family_members fm ON fm.id = a.fk_patient_family_member_id
-         LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
-         LEFT JOIN (
-            SELECT consultation_id, COUNT(*) AS medicine_count
-            FROM tbl_consultation_medications
-            GROUP BY consultation_id
-         ) med ON med.consultation_id = c.id
-         LEFT JOIN (
-            SELECT consultation_id, COUNT(*) AS test_count
-            FROM tbl_consultation_tests
-            GROUP BY consultation_id
-         ) test ON test.consultation_id = c.id
-         LEFT JOIN (
-            SELECT appointment_id, COUNT(DISTINCT id) AS bills_count
-            FROM tbl_bills
-            WHERE status = 'ACTIVE'
-            GROUP BY appointment_id
-         ) bill ON bill.appointment_id = a.appointment_id
-         LEFT JOIN (
-            SELECT appointment_id, COUNT(DISTINCT id) AS documents_count
-            FROM tbl_patient_clinical_documents
-            WHERE status = 'ACTIVE'
-              ${documentTypeJoinFilter}
-            GROUP BY appointment_id
-         ) doc ON doc.appointment_id = a.appointment_id
-         WHERE ${conditions.join(' AND ')}`,
-        countParams
-    );
-
-    const total = Number(countRows[0]?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
-    const currentPage = Math.min(filters.page, totalPages);
-    const offset = (currentPage - 1) * filters.pageSize;
-    const rowsParams = [...documentJoinParams, ...params, filters.pageSize, offset];
-
-    const rows = await query(
+    const shouldLoadVisits = filters.timelineType !== 'MEDICINE_PURCHASE';
+    const visitRows = shouldLoadVisits ? await query(
         `SELECT
             a.appointment_id,
             a.auid,
@@ -777,6 +976,10 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
             bill.total_amount,
             bill.paid_amount,
             bill.pending_amount,
+            bill.medication_bill_id,
+            bill.delivery_mode,
+            bill.delivery_details_json,
+            bill.dispensed_at,
             doc.documents_count,
             doc.document_types,
             ${PATIENT_SELECT}
@@ -810,7 +1013,11 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
                    MAX(payment_status) AS payment_status,
                    SUM(total_amount) AS total_amount,
                    SUM(paid_amount) AS paid_amount,
-                   SUM(pending_amount) AS pending_amount
+                   SUM(pending_amount) AS pending_amount,
+                   MAX(CASE WHEN bill_type = 'MEDICATION' THEN id END) AS medication_bill_id,
+                   MAX(CASE WHEN bill_type = 'MEDICATION' THEN delivery_mode END) AS delivery_mode,
+                   MAX(CASE WHEN bill_type = 'MEDICATION' THEN CAST(delivery_details_json AS CHAR) END) AS delivery_details_json,
+                   MAX(CASE WHEN bill_type = 'MEDICATION' THEN created_at END) AS dispensed_at
             FROM tbl_bills
             WHERE status = 'ACTIVE'
             GROUP BY appointment_id
@@ -825,21 +1032,259 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
             GROUP BY appointment_id
          ) doc ON doc.appointment_id = a.appointment_id
          WHERE ${conditions.join(' AND ')}
-         ORDER BY a.appointment_date DESC, a.current_token_number ASC, a.appointment_id DESC
-         LIMIT ? OFFSET ?`,
-        rowsParams
-    );
+         ORDER BY a.appointment_date DESC, a.current_token_number ASC, a.appointment_id DESC`,
+        [...documentJoinParams, ...params]
+    ) : [];
+
+    const shouldLoadMedicinePurchases = !filters.timelineType
+        || filters.timelineType === 'MEDICINE_PURCHASE'
+        || filters.timelineType === 'BILL';
+    const medicinePurchaseRows = shouldLoadMedicinePurchases
+        ? await fetchStandaloneMedicinePurchaseRows(filters)
+        : [];
+
+    const allItems = [
+        ...visitRows.map(buildVisitRecord),
+        ...medicinePurchaseRows.map(buildMedicinePurchaseVisitRecord),
+    ].sort((a, b) => {
+        const timeDifference = new Date(b.event_date || 0).getTime() - new Date(a.event_date || 0).getTime();
+        if (timeDifference !== 0) return timeDifference;
+        return Number(b.source_id || 0) - Number(a.source_id || 0);
+    });
+    const total = allItems.length;
+    const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
+    const currentPage = Math.min(filters.page, totalPages);
+    const offset = (currentPage - 1) * filters.pageSize;
 
     return {
         filters,
-        items: rows.map(buildVisitRecord),
+        items: allItems.slice(offset, offset + filters.pageSize),
         meta: {
             page: currentPage,
             page_size: filters.pageSize,
             total,
             total_pages: totalPages,
+            breakdown: {
+                clinical_visits: visitRows.length,
+                medicine_pickups: medicinePurchaseRows.length,
+                direct_medicine: medicinePurchaseRows.filter((row) => Boolean(Number(row.is_direct_medicine))).length,
+                repeat_medicine: medicinePurchaseRows.filter((row) => !Boolean(Number(row.is_direct_medicine))).length,
+            },
         },
     };
+};
+
+const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters, actor }) => {
+    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
+    if (!branchId) {
+        throw new AppError('branch_id is required for prescription timeline', 400);
+    }
+
+    const familyMemberId = toPositiveInt(rawFilters.family_member_id);
+    const subjectScope = normalizeSubjectScope(rawFilters.subject_scope);
+    await assertPatientHistoryScope({ patientId, familyMemberId, subjectScope, branchId });
+
+    const fromDate = normalizeDateFilter(rawFilters.from_date, 'from_date');
+    const toDate = normalizeDateFilter(rawFilters.to_date, 'to_date');
+    if (fromDate && toDate && fromDate > toDate) {
+        throw new AppError('from_date cannot be after to_date', 400);
+    }
+
+    const consultationConditions = [
+        'a.is_active = 1',
+        "a.status = 'Completed'",
+        'a.fk_patient_id = ?',
+        'a.fk_branch_id = ?',
+    ];
+    const consultationParams = [patientId, branchId];
+    if (familyMemberId) {
+        consultationConditions.push('a.fk_patient_family_member_id = ?');
+        consultationParams.push(familyMemberId);
+    } else if (subjectScope === 'SELF') {
+        consultationConditions.push('a.fk_patient_family_member_id IS NULL');
+    }
+    if (fromDate) {
+        consultationConditions.push('DATE(COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, a.appointment_date)) >= ?');
+        consultationParams.push(fromDate);
+    }
+    if (toDate) {
+        consultationConditions.push('DATE(COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, a.appointment_date)) <= ?');
+        consultationParams.push(toDate);
+    }
+
+    const consultationRows = await query(
+        `SELECT c.id AS consultation_id, c.appointment_id,
+                COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, a.appointment_date) AS event_at,
+                a.auid, a.appointment_date, a.current_token_number AS token_number,
+                a.fk_patient_family_member_id, a.booked_for_type,
+                b.branch_name, t.treatment_name, s.slot_name,
+                mb.id AS medication_bill_id,
+                mb.delivery_mode,
+                mb.delivery_details_json,
+                mb.created_at AS dispensed_at,
+                d.full_name AS doctor_full_name
+         FROM tbl_consultations c
+         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+         JOIN master_treatments t ON t.id = a.fk_treatment_id
+         JOIN master_slots s ON s.id = a.fk_slot_id
+         LEFT JOIN master_users d ON d.id = c.doctor_id
+         LEFT JOIN (
+            SELECT consultation_id, MAX(id) AS bill_id
+            FROM tbl_bills
+            WHERE bill_type = 'MEDICATION' AND status = 'ACTIVE' AND consultation_id IS NOT NULL
+            GROUP BY consultation_id
+         ) medication_bill_ref ON medication_bill_ref.consultation_id = c.id
+         LEFT JOIN tbl_bills mb ON mb.id = medication_bill_ref.bill_id
+         WHERE ${consultationConditions.join(' AND ')}`,
+        consultationParams
+    );
+
+    // Reuse the same clinical aggregate used by the existing prescription views.
+    const { getConsultationAggregateByAppointmentId } = require('../controllers/v1/doctor/shared');
+    const consultationItems = (await Promise.all(consultationRows.map(async (row) => {
+        const consultation = await getConsultationAggregateByAppointmentId(row.appointment_id);
+        if (!consultation) return null;
+        const deliveryDetails = safeJsonParse(row.delivery_details_json, null);
+        const dispensing = row.medication_bill_id ? {
+            medication_bill_id: Number(row.medication_bill_id),
+            delivery_mode: row.delivery_mode || null,
+            delivery_details: deliveryDetails,
+            dispensed_at: row.dispensed_at || null,
+        } : null;
+        return {
+            record_type: 'CONSULTATION',
+            timeline_type: 'PRESCRIPTION',
+            source_id: row.consultation_id,
+            event_at: row.event_at,
+            event_date: row.event_at,
+            consultation_id: row.consultation_id,
+            appointment_id: row.appointment_id,
+            auid: row.auid,
+            treatment_name: row.treatment_name,
+            slot_name: row.slot_name,
+            doctor_full_name: row.doctor_full_name,
+            consultation: { ...consultation, dispensing },
+            appointment: { ...row, appointment_date: row.appointment_date },
+            details: { ...row, appointment_date: row.appointment_date, delivery_details: deliveryDetails, dispensing },
+        };
+    }))).filter(Boolean);
+
+    const billConditions = [
+        "rb.bill_type = 'MEDICATION'",
+        'rb.appointment_id IS NULL',
+        "rb.status = 'ACTIVE'",
+        'rb.patient_id = ?',
+        'rb.fk_branch_id = ?',
+    ];
+    const billParams = [patientId, branchId];
+    if (familyMemberId) {
+        billConditions.push('source_a.fk_patient_family_member_id = ?');
+        billParams.push(familyMemberId);
+    } else if (subjectScope === 'SELF') {
+        billConditions.push('(rb.consultation_id IS NULL OR source_a.fk_patient_family_member_id IS NULL)');
+    }
+    if (fromDate) {
+        billConditions.push('DATE(rb.created_at) >= ?');
+        billParams.push(fromDate);
+    }
+    if (toDate) {
+        billConditions.push('DATE(rb.created_at) <= ?');
+        billParams.push(toDate);
+    }
+
+    const billRows = await query(
+        `SELECT rb.id AS bill_id, rb.bill_number, rb.consultation_id AS source_consultation_id,
+                rb.created_at AS event_at, rb.total_amount, rb.paid_amount, rb.pending_amount,
+                rb.payment_status, rb.remark, rb.delivery_mode, rb.delivery_details_json,
+                b.branch_name, source_c.doctor_id, d.full_name AS doctor_full_name,
+                source_a.fk_patient_family_member_id,
+                (rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%') AS is_direct_medicine
+         FROM tbl_bills rb
+         JOIN master_clinic_branches b ON b.id = rb.fk_branch_id
+         LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
+         LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
+         LEFT JOIN master_users d ON d.id = source_c.doctor_id
+         WHERE ${billConditions.join(' AND ')}`,
+        billParams
+    );
+
+    const billIds = billRows.map((row) => Number(row.bill_id)).filter(Boolean);
+    const billItemRows = billIds.length > 0
+        ? await query(
+            `SELECT bill_id, id AS bill_item_id, consultation_medication_id,
+                    item_type, item_name, quantity, unit_price, amount
+             FROM tbl_bill_items
+             WHERE bill_id IN (${billIds.map(() => '?').join(',')})
+             ORDER BY bill_id ASC, id ASC`,
+            billIds
+        )
+        : [];
+    const itemsByBillId = new Map();
+    billItemRows.forEach((item) => {
+        const id = Number(item.bill_id);
+        if (!itemsByBillId.has(id)) itemsByBillId.set(id, []);
+        itemsByBillId.get(id).push(item);
+    });
+
+    const medicinePurchaseItems = billRows.map((row) => {
+        const isDirectMedicine = Boolean(Number(row.is_direct_medicine));
+        const billItems = (itemsByBillId.get(Number(row.bill_id)) || [])
+            .filter((item) => String(item.item_name || '').trim().toLowerCase() !== 'courier charge');
+        return {
+            record_type: isDirectMedicine ? 'DIRECT_MEDICINE' : 'REPEAT_MEDICINE',
+            timeline_type: 'MEDICINE_PURCHASE',
+            source_id: row.bill_id,
+            event_at: row.event_at,
+            event_date: row.event_at,
+            consultation_id: null,
+            source_consultation_id: row.source_consultation_id || null,
+            appointment_id: null,
+            auid: row.bill_number,
+            treatment_name: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
+            slot_name: isDirectMedicine ? 'Medical Only' : 'Repeat Medicine',
+            doctor_full_name: row.doctor_full_name || null,
+            consultation: {
+                medications: billItems.map((item) => ({
+                    consultation_medication_id: item.consultation_medication_id || `bill-${row.bill_id}-${item.bill_item_id}`,
+                    medicine_type: 'TEXT',
+                    medicine_value: item.item_name,
+                    added_by_role: item.item_type === 'ADDITIONAL_MEDICATION' ? 'MEDICAL' : 'DOCTOR',
+                    amount: item.amount,
+                    quantity: item.quantity,
+                    unit_price: item.unit_price,
+                    doses: [],
+                })),
+                tests: [],
+            },
+            appointment: {
+                appointment_date: row.event_at,
+                branch_name: row.branch_name,
+                treatment_name: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
+                slot_name: isDirectMedicine ? 'Medical Only' : 'Repeat Medicine',
+            },
+            details: {
+                is_medicine_purchase: true,
+                bill_id: row.bill_id,
+                bill_number: row.bill_number,
+                source_consultation_id: row.source_consultation_id || null,
+                total_amount: row.total_amount,
+                paid_amount: row.paid_amount,
+                pending_amount: row.pending_amount,
+                payment_status: row.payment_status,
+                remark: row.remark,
+                delivery_mode: row.delivery_mode,
+                delivery_details: safeJsonParse(row.delivery_details_json, null),
+                branch_name: row.branch_name,
+                doctor_full_name: row.doctor_full_name || null,
+                medications: billItems,
+            },
+        };
+    });
+
+    const items = sortPrescriptionTimelineItems([...consultationItems, ...medicinePurchaseItems]);
+
+    return { items, meta: { total: items.length, order: 'event_time_desc' } };
 };
 
 const fetchConsultationTimeline = async (filters) => {
@@ -1267,15 +1712,51 @@ const assertPatientHistoryScope = async ({ patientId, familyMemberId = null, sub
         }
     }
 
+    const appointmentScope = [];
+    const billScope = [];
+    const scopeParams = [];
+    if (familyMemberId) {
+        appointmentScope.push('a.fk_patient_family_member_id = ?');
+        billScope.push('source_a.fk_patient_family_member_id = ?');
+        scopeParams.push(familyMemberId, familyMemberId);
+    } else if (subjectScope === 'SELF') {
+        appointmentScope.push('a.fk_patient_family_member_id IS NULL');
+        billScope.push('(rb.consultation_id IS NULL OR source_a.fk_patient_family_member_id IS NULL)');
+    }
+
     const accessRows = await query(
         `SELECT 1
-         FROM tbl_appointments
-         WHERE fk_patient_id = ?
-           AND fk_branch_id = ?
-           AND is_active = 1
-           AND status = 'Completed'
+         FROM (
+            SELECT a.appointment_id AS source_id
+            FROM tbl_appointments a
+            WHERE a.fk_patient_id = ?
+              AND a.fk_branch_id = ?
+              AND a.is_active = 1
+              AND a.status = 'Completed'
+              ${appointmentScope.length ? `AND ${appointmentScope.join(' AND ')}` : ''}
+
+            UNION ALL
+
+            SELECT rb.id AS source_id
+            FROM tbl_bills rb
+            LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
+            LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
+            WHERE rb.patient_id = ?
+              AND rb.fk_branch_id = ?
+              AND rb.bill_type = 'MEDICATION'
+              AND rb.appointment_id IS NULL
+              AND rb.status = 'ACTIVE'
+              ${billScope.length ? `AND ${billScope.join(' AND ')}` : ''}
+         ) patient_records
          LIMIT 1`,
-        [patientId, branchId]
+        [
+            patientId,
+            branchId,
+            ...(familyMemberId ? [scopeParams[0]] : []),
+            patientId,
+            branchId,
+            ...(familyMemberId ? [scopeParams[1]] : []),
+        ]
     );
 
     if (accessRows.length === 0) {
@@ -1330,6 +1811,10 @@ const listPatientTimeline = async ({ filters: rawFilters, actor }) => {
 
     if (!timelineType || timelineType === 'BILL') {
         fetchers.push(fetchBillTimeline(filters));
+    }
+
+    if (!timelineType || timelineType === 'BILL' || timelineType === 'MEDICINE_PURCHASE') {
+        fetchers.push(fetchMedicinePurchaseTimeline(filters));
     }
 
     if (!timelineType || timelineType === 'DOCUMENT') {
@@ -1744,6 +2229,7 @@ module.exports = {
     listPatientRegistry,
     getPatientRecordDetail,
     listPatientVisits,
+    listPatientPrescriptionTimeline,
     listPatientHistory,
     listPatientTimeline,
     createClinicalDocument,
@@ -1752,6 +2238,9 @@ module.exports = {
     buildRequestMeta,
     toPositiveInt,
     safeJsonParse,
+    sortPrescriptionTimelineItems,
+    assertPatientHistoryScope,
     buildSubject,
     buildVisitRecord,
+    buildMedicinePurchaseVisitRecord,
 };

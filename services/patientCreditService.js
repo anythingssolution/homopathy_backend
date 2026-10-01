@@ -40,12 +40,15 @@ const outstandingSelectSql = `
     b.appointment_id,
     b.patient_id,
     b.fk_branch_id AS branch_id,
+    b.gross_amount,
+    b.discount_amount,
     b.total_amount,
     b.paid_amount,
     b.pending_amount,
     b.payment_status,
     b.remark,
     b.created_at,
+    (b.appointment_id IS NULL AND (b.consultation_id IS NULL OR COALESCE(b.remark, '') LIKE '%Medical Only%')) AS is_direct_medicine,
     COALESCE(a.appointment_date, DATE(b.created_at)) AS due_date,
     a.auid,
     a.current_token_number AS token_number,
@@ -74,6 +77,8 @@ const mapOutstandingBill = (row) => decorateTokenFields({
     appointment_id: row.appointment_id ? Number(row.appointment_id) : null,
     patient_id: Number(row.patient_id),
     branch_id: row.branch_id ? Number(row.branch_id) : null,
+    gross_amount: normalizeAmount(row.gross_amount) ?? 0,
+    discount_amount: normalizeAmount(row.discount_amount) ?? 0,
     total_amount: normalizeAmount(row.total_amount) ?? 0,
     paid_amount: normalizeAmount(row.paid_amount) ?? 0,
     pending_amount: normalizeAmount(row.pending_amount) ?? 0,
@@ -83,11 +88,14 @@ const mapOutstandingBill = (row) => decorateTokenFields({
     due_date: row.due_date,
     auid: row.auid || null,
     token_number: row.token_number || null,
-    treatment_name: row.appointment_id ? (row.treatment_name || null) : 'Repeat Medicine',
+    treatment_name: row.appointment_id
+        ? (row.treatment_name || null)
+        : (Boolean(Number(row.is_direct_medicine)) ? 'Direct Medicine' : 'Repeat Medicine'),
     doctor_name: row.doctor_name || null,
     branch_name: row.branch_name || null,
     patient_full_name: row.patient_full_name || null,
     is_repeat_medicine: !row.appointment_id,
+    is_direct_medicine: Boolean(Number(row.is_direct_medicine)),
 });
 
 const summarizeOutstandingBills = (bills = []) => {
@@ -581,5 +589,6 @@ module.exports = {
     getMedicationOutstandingMap,
     getPatientMedicationOutstanding,
     listOutstandingMedicationBills,
+    mapOutstandingBill,
     summarizeOutstandingBills,
 };

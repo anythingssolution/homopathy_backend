@@ -7,8 +7,8 @@ const {
     formatDateTimeForSql,
 } = require('./liveQueueService');
 
-const DEFAULT_AUTO_CALL_DELAY_MS = 3000;
-const DEFAULT_RESUME_AUTO_CALL_DELAY_MS = 3000;
+const DEFAULT_AUTO_CALL_DELAY_MS = 0;
+const DEFAULT_RESUME_AUTO_CALL_DELAY_MS = 0;
 const AUTO_CALL_NEXT_WORKER_INTERVAL_MS = 1000;
 
 const scheduledQueueTimers = new Map();

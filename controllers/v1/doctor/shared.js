@@ -103,6 +103,7 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
     COALESCE(sto.override_end_time, s.end_time) AS end_time,
     s.default_consult_minutes,
     a.current_token_number AS token_number,
+    ${consultationPositionSql} AS queue_position,
     a.appointment_date,
     a.original_token_number,
     a.current_token_number,
@@ -295,6 +296,33 @@ const parseTextMedicineDisplayParts = (medicineValue) => {
     };
 };
 
+const buildTextMedicineSuggestionKeyFromMedication = (medication) => {
+    const displayParts = parseTextMedicineDisplayParts(medication?.medicine_value);
+    const medicineValue = String(
+        medication?.master_medicine_value || displayParts.medicine_value || ''
+    ).trim();
+    const variantValue = String(
+        medication?.variant_value || displayParts.variant_value || ''
+    ).trim();
+
+    if (!medicineValue) {
+        return null;
+    }
+
+    const selectionValue = variantValue
+        ? `${medicineValue} - ${variantValue}`
+        : medicineValue;
+
+    return {
+        medicine_value: medicineValue,
+        variant_value: variantValue,
+        selection_value: selectionValue,
+        normalized_medicine_value: normalizeMasterValue(medicineValue),
+        normalized_variant_value: normalizeMasterValue(variantValue),
+        normalized_selection_value: normalizeMasterValue(selectionValue),
+    };
+};
+
 const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManual = false) => {
     const trimmedValue = String(medicineValue || '').trim().toUpperCase();
     const normalizedValue = normalizeMasterValue(trimmedValue);
@@ -399,7 +427,7 @@ const saveTextMedicineRemarkSuggestion = async (connection, medication) => {
         return;
     }
 
-    const suggestionKey = buildTextMedicineSuggestionKey(medication.medicine_value);
+    const suggestionKey = buildTextMedicineSuggestionKeyFromMedication(medication);
     if (!suggestionKey) {
         return;
     }
@@ -705,11 +733,22 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             c.reception_rejection_reason,
             c.sent_to_medical_at,
             c.medical_processed_at,
+            mb.id AS medication_bill_id,
+            mb.delivery_mode,
+            mb.delivery_details_json,
+            mb.created_at AS dispensed_at,
             c.created_at,
             c.updated_at
          FROM tbl_consultations c
          JOIN master_users d ON d.id = c.doctor_id
          LEFT JOIN tbl_appointment_vitals v ON v.appointment_id = c.appointment_id
+         LEFT JOIN (
+            SELECT consultation_id, MAX(id) AS bill_id
+            FROM tbl_bills
+            WHERE bill_type = 'MEDICATION' AND status = 'ACTIVE' AND consultation_id IS NOT NULL
+            GROUP BY consultation_id
+         ) medication_bill_ref ON medication_bill_ref.consultation_id = c.id
+         LEFT JOIN tbl_bills mb ON mb.id = medication_bill_ref.bill_id
          WHERE c.appointment_id = ?
          LIMIT 1`,
         [appointmentId]
@@ -774,7 +813,26 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
         [consultationRows[0].consultation_id]
     );
 
-    return mapConsultationResponse(consultationRows[0], medicationRows, testRows);
+    const response = mapConsultationResponse(consultationRows[0], medicationRows, testRows);
+    let deliveryDetails = null;
+    try {
+        deliveryDetails = consultationRows[0].delivery_details_json
+            ? (typeof consultationRows[0].delivery_details_json === 'string'
+                ? JSON.parse(consultationRows[0].delivery_details_json)
+                : consultationRows[0].delivery_details_json)
+            : null;
+    } catch {
+        deliveryDetails = null;
+    }
+    return {
+        ...response,
+        dispensing: consultationRows[0].medication_bill_id ? {
+            medication_bill_id: Number(consultationRows[0].medication_bill_id),
+            delivery_mode: consultationRows[0].delivery_mode || null,
+            delivery_details: deliveryDetails,
+            dispensed_at: consultationRows[0].dispensed_at || null,
+        } : null,
+    };
 };
 
 const getMedicalPricingAggregateByConsultationId = async (consultationId) => {
@@ -862,6 +920,7 @@ const getConsultationHistoryRows = async ({
     toDate = null,
     patientSearch = null,
     status = null,
+    sessionType = 'all',
     page = 1,
     pageSize = 8,
 }) => {
@@ -886,6 +945,18 @@ const getConsultationHistoryRows = async ({
     if (status && status !== 'all') {
         conditions.push('a.status = ?');
         params.push(status);
+    }
+
+    if (sessionType !== 'all') {
+        conditions.push(`(CASE
+            WHEN LOWER(s.slot_name) LIKE '%morning%' THEN 'morning'
+            WHEN LOWER(s.slot_name) LIKE '%evening%'
+              OR LOWER(s.slot_name) LIKE '%afternoon%'
+              OR LOWER(s.slot_name) LIKE '%night%' THEN 'evening'
+            WHEN HOUR(s.start_time) < 12 THEN 'morning'
+            ELSE 'evening'
+        END) = ?`);
+        params.push(sessionType);
     }
 
     if (patientSearch) {
@@ -914,6 +985,10 @@ const getConsultationHistoryRows = async ({
     if (branchId) { payConditions.push('pb.fk_branch_id = ?'); payParams.push(branchId); }
     if (fromDate) { payConditions.push('DATE(bp.collected_at) >= ?'); payParams.push(fromDate); }
     if (toDate) { payConditions.push('DATE(bp.collected_at) <= ?'); payParams.push(toDate); }
+    if (sessionType !== 'all') {
+        payConditions.push("(CASE WHEN HOUR(bp.collected_at) < 12 THEN 'morning' ELSE 'evening' END) = ?");
+        payParams.push(sessionType);
+    }
     if (patientSearch) {
         payConditions.push('(COALESCE(pfm.full_name, pp.full_name) LIKE ? OR pp.full_name LIKE ? OR pp.mobile_no LIKE ? OR pp.uuid LIKE ?)');
         payParams.push(...Array(4).fill(`%${patientSearch}%`));
@@ -931,6 +1006,10 @@ const getConsultationHistoryRows = async ({
     if (branchId) { repeatConditions.push('rb.fk_branch_id = ?'); repeatParams.push(branchId); }
     if (fromDate) { repeatConditions.push('DATE(rb.created_at) >= ?'); repeatParams.push(fromDate); }
     if (toDate) { repeatConditions.push('DATE(rb.created_at) <= ?'); repeatParams.push(toDate); }
+    if (sessionType !== 'all') {
+        repeatConditions.push("(CASE WHEN HOUR(rb.created_at) < 12 THEN 'morning' ELSE 'evening' END) = ?");
+        repeatParams.push(sessionType);
+    }
     if (patientSearch) {
         repeatConditions.push('(rp.full_name LIKE ? OR rp.mobile_no LIKE ? OR rp.uuid LIKE ?)');
         repeatParams.push(...Array(3).fill(`%${patientSearch}%`));
@@ -1417,6 +1496,7 @@ module.exports = {
     saveUniversalRemarkSuggestion,
     UNIVERSAL_REMARK_SELECTION_VALUE,
     parseTextMedicineDisplayParts,
+    buildTextMedicineSuggestionKeyFromMedication,
     upsertMasterTextMedicine,
     upsertDoctorManualVariant,
     getDoctorAppointmentById,

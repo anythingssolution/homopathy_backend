@@ -4,6 +4,7 @@ const {
     listMedicalPrescriptions,
     listPricedMedicalPrescriptions,
     getMedicalPrescription,
+    getPatientLastCourierDelivery,
     listRepeatMedicinePatients,
     getRepeatMedicineLastPrescription,
     createRepeatMedicineBillController,
@@ -39,6 +40,7 @@ router.use(authenticate, authorizeModuleAccess('MEDICAL'), enforceSelectedBranch
 router.get('/masters/text-medicines', getDoctorTextMedicineMasters);
 router.get('/repeat-medicine/patients', listRepeatMedicinePatients);
 router.get('/repeat-medicine/patients/:patient_id/last-prescription', getRepeatMedicineLastPrescription);
+router.get('/patients/:patient_id/last-courier-delivery', getPatientLastCourierDelivery);
 router.post('/repeat-medicine/bills', createRepeatMedicineBillController);
 router.get('/master-medical-products/template', downloadMedicalProductImportTemplate);
 router.post('/master-medical-products/import', upload.single('file'), importMedicalProducts);

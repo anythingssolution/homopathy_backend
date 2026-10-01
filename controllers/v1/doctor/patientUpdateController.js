@@ -27,13 +27,21 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
     const mobileNo = req.body?.mobile_no !== undefined ? String(req.body.mobile_no).trim() : undefined;
     const gender = req.body?.gender !== undefined ? String(req.body.gender).trim().toLowerCase() : undefined;
     const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    const areaName = req.body?.area_name !== undefined
+        ? (String(req.body.area_name ?? '').trim() || null)
+        : undefined;
+    const pincode = req.body?.pincode !== undefined
+        ? (String(req.body.pincode ?? '').trim() || null)
+        : undefined;
+    const city = req.body?.city !== undefined ? String(req.body.city).trim() : undefined;
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
     }
 
-    if (fullName === undefined && mobileNo === undefined && gender === undefined && age === undefined) {
-        throw new AppError('At least one of full_name, mobile_no, gender or age is required', 400);
+    if (fullName === undefined && mobileNo === undefined && gender === undefined && age === undefined
+        && areaName === undefined && pincode === undefined && city === undefined) {
+        throw new AppError('At least one patient detail is required', 400);
     }
 
     if (fullName !== undefined && (!fullName || fullName.length > 100)) {
@@ -52,13 +60,26 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
         throw new AppError('age must be between 1 and 120', 400);
     }
 
+    if (areaName !== undefined && areaName !== null && areaName.length > 150) {
+        throw new AppError('area_name must be at most 150 characters', 400);
+    }
+
+    if (pincode !== undefined && pincode !== null && !/^\d{6}$/.test(pincode)) {
+        throw new AppError('pincode must contain exactly 6 digits', 400);
+    }
+
+    if (city !== undefined && (!city || city.length > 100)) {
+        throw new AppError('city must be between 1 and 100 characters', 400);
+    }
+
     const actorIp = getClientIp(req);
     const actorRole = req.user?.role_code || req.user?.role || 'doctor';
     const actorUserAgent = req.headers['user-agent'] || null;
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, mobile_no, gender, age, role, is_active, updated_at
+            `SELECT id, uuid, full_name, mobile_no, gender, age, address, area_name, ward_no,
+                    vidhan_sabha, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -142,6 +163,41 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                 fmNewValues.mobile_no = mobileNo;
             }
 
+            const accountAddressValues = { area_name: areaName, pincode, city };
+            const accountAddressChanges = {};
+            for (const [field, value] of Object.entries(accountAddressValues)) {
+                if (value !== undefined && String(value) !== String(patient[field] ?? '')) {
+                    accountAddressChanges[field] = value;
+                    fmChangedFields.push(field);
+                    fmOldValues[field] = patient[field];
+                    fmNewValues[field] = value;
+                }
+            }
+
+            if (Object.keys(accountAddressChanges).length > 0) {
+                const effective = { ...patient, ...accountAddressChanges };
+                const address = [
+                    effective.area_name,
+                    effective.ward_no ? `Ward ${effective.ward_no}` : null,
+                    effective.vidhan_sabha,
+                    effective.pincode,
+                    effective.city,
+                ].filter(Boolean).join(', ') || null;
+                const accountFields = Object.keys(accountAddressChanges);
+                await connection.execute(
+                    `UPDATE master_users
+                     SET ${accountFields.map((field) => `${field} = ?`).join(', ')}, address = ?, updated_by = ?, updated_ip = ?
+                     WHERE id = ?`,
+                    [
+                        ...accountFields.map((field) => accountAddressChanges[field]),
+                        address,
+                        req.user.id,
+                        actorIp,
+                        patientId,
+                    ]
+                );
+            }
+
             if (fmChangedFields.length === 0) {
                 throw new AppError('No patient details were changed', 400);
             }
@@ -173,7 +229,11 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     actorRole,
                     actorIp,
                     actorUserAgent,
-                    JSON.stringify(fmChangedFields.map((f) => `family_member.${f}`)),
+                    JSON.stringify(fmChangedFields.map((field) =>
+                        ['full_name', 'gender', 'age'].includes(field)
+                            ? `family_member.${field}`
+                            : field
+                    )),
                     JSON.stringify(fmOldValues),
                     JSON.stringify(fmNewValues),
                 ]
@@ -187,6 +247,9 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     age: fmNewValues.age ?? fm.age,
                     gender: fmNewValues.gender ?? fm.gender,
                     mobile_no: mobileNo ?? patient.mobile_no,
+                    area_name: areaName ?? patient.area_name,
+                    pincode: pincode ?? patient.pincode,
+                    city: city ?? patient.city,
                 },
                 changed_fields: fmChangedFields,
                 entity_type: 'FAMILY_MEMBER',
@@ -216,6 +279,9 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             mobile_no: mobileNo,
             gender,
             age,
+            area_name: areaName,
+            pincode,
+            city,
         };
 
         for (const [field, value] of Object.entries(requestedValues)) {
@@ -232,6 +298,18 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city'].includes(field))) {
+            const effective = { ...patient, ...newValues };
+            const address = [
+                effective.area_name,
+                effective.ward_no ? `Ward ${effective.ward_no}` : null,
+                effective.vidhan_sabha,
+                effective.pincode,
+                effective.city,
+            ].filter(Boolean).join(', ') || null;
+            updateParts.push('address = ?');
+            updateValues.push(address);
+        }
         updateParts.push('updated_by = ?', 'updated_ip = ?');
         updateValues.push(req.user.id, actorIp, patientId);
 
@@ -260,7 +338,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
         const [updatedRows] = await connection.execute(
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, gender, email, mobile_no,
-                    description, created_at, updated_at
+                    address, area_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,

@@ -6,6 +6,7 @@ const {
     listPatientRegistry,
     getPatientRecordDetail,
     listPatientVisits,
+    listPatientPrescriptionTimeline,
     listPatientHistory,
     listPatientTimeline,
     createClinicalDocument,
@@ -78,6 +79,21 @@ const listPatientVisitsController = asyncHandler(async (req, res) => {
         success: true,
         data: result,
     });
+});
+
+const listPatientPrescriptionTimelineController = asyncHandler(async (req, res) => {
+    const patientId = toPositiveInt(req.params.patient_id);
+    if (!patientId) {
+        throw new AppError('Valid patient_id is required', 400);
+    }
+
+    const result = await listPatientPrescriptionTimeline({
+        patientId,
+        filters: req.query || {},
+        actor: req.user,
+    });
+
+    return res.status(200).json({ success: true, data: result });
 });
 
 const listTimeline = asyncHandler(async (req, res) => {
@@ -175,6 +191,7 @@ module.exports = {
     listPatients,
     getPatientDetail,
     listPatientVisits: listPatientVisitsController,
+    listPatientPrescriptionTimeline: listPatientPrescriptionTimelineController,
     listPatientHistory: listPatientHistoryController,
     listTimeline,
     uploadDocument,

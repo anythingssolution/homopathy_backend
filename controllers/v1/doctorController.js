@@ -4,6 +4,7 @@ module.exports = {
     ...require('./doctor/appointmentsController'),
     ...require('./doctor/consultationController'),
     ...require('./doctor/formulaMasterController'),
+    ...require('./doctor/remarkMasterController'),
     ...require('./doctor/cmsController'),
     ...require('./doctor/cmsUploadController'),
     ...require('./doctor/patientUpdateController'),

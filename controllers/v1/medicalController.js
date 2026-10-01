@@ -42,6 +42,8 @@ const {
     validatePrescribedDispensingItems,
     validatePrescribedTests,
 } = require('../../services/dispensaryPricingService');
+const { normalizeDiscounts, replaceBillDiscounts } = require('../../services/billingDiscountService');
+const { getLastCourierDelivery } = require('../../services/courierDeliveryService');
 
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 
@@ -312,7 +314,9 @@ const finalizeMedicalPrescription = async ({
 
 const getMedicalPricingByConsultationId = async (consultationId) => {
     const pricingRows = await query(
-        `SELECT id AS pricing_id, consultation_id, total_amount, remark, created_by, updated_by, created_at, updated_at
+        `SELECT id AS pricing_id, consultation_id, total_amount, remark, discounts_json,
+                delivery_mode, courier_charge, delivery_details_json,
+                created_by, updated_by, created_at, updated_at
          FROM tbl_medical_prescription_pricing
          WHERE consultation_id = ?
          LIMIT 1`,
@@ -375,6 +379,26 @@ const getMedicalPricingByConsultationId = async (consultationId) => {
 
     return {
         ...pricingRows[0],
+        discounts: (() => {
+            try {
+                return typeof pricingRows[0].discounts_json === 'string'
+                    ? JSON.parse(pricingRows[0].discounts_json)
+                    : (pricingRows[0].discounts_json || []);
+            } catch {
+                return [];
+            }
+        })(),
+        discounts_json: undefined,
+        delivery_details: (() => {
+            try {
+                return typeof pricingRows[0].delivery_details_json === 'string'
+                    ? JSON.parse(pricingRows[0].delivery_details_json)
+                    : (pricingRows[0].delivery_details_json || null);
+            } catch {
+                return null;
+            }
+        })(),
+        delivery_details_json: undefined,
         medications: items.map((item) => ({
             ...item,
             dispense_status: item.dispense_status || 'ACTIVE',
@@ -622,7 +646,8 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
     );
 
     const pricing = await getMedicalPricingByConsultationId(consultationId);
-    const billRows = await query(`SELECT id AS bill_id, total_amount, paid_amount, pending_amount, payment_status
+    const billRows = await query(`SELECT id AS bill_id, total_amount, paid_amount, pending_amount, payment_status,
+            delivery_mode, delivery_details_json, created_at AS dispensed_at
         FROM tbl_bills WHERE consultation_id = ? AND bill_type = 'MEDICATION' AND status = 'ACTIVE' LIMIT 1`, [consultationId]);
     const pricingByMedicationId = new Map(
         (pricing?.medications || []).map((item) => [Number(item.consultation_medication_id), item])
@@ -812,6 +837,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     const submittedAdditional = Array.isArray(req.body?.additional_medications) ? req.body.additional_medications : [];
     const remark = req.body?.remark ? String(req.body.remark).trim() : null;
     const payment = normalizeMedicalPaymentPayload(req.body?.payment);
+    const discounts = normalizeDiscounts(req.body?.discounts) || [];
     const delivery = req.body?.delivery && typeof req.body.delivery === 'object' && !Array.isArray(req.body.delivery)
         ? req.body.delivery
         : {};
@@ -955,7 +981,14 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
 
         billId = billResult.billId;
 
-        if (payment) {
+        await replaceBillDiscounts({
+            connection,
+            billId,
+            discounts,
+            actorUserId: req.user.id,
+        });
+
+        if (payment && Number(payment.amount || 0) > 0) {
             paymentAllocation = await applyMedicationReceipts({
                 connection,
                 patientId,
@@ -1139,7 +1172,6 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     const page = toPositiveInt(req.query.page) || 1;
     const requestedPageSize = toPositiveInt(req.query.page_size) || 20;
     const pageSize = Math.min(requestedPageSize, 100);
-    const offset = (page - 1) * pageSize;
 
     if (req.query.branch_id !== undefined && !branchId) {
         throw new AppError('branch_id must be a positive integer', 400);
@@ -1205,27 +1237,75 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
     const repeatWhereClause = `WHERE ${repeatConditions.join(' AND ')}`;
+    const consultationFrom = `FROM tbl_consultations c
+        JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+        ${getAppointmentPatientJoin()}
+        JOIN master_users d ON d.id = c.doctor_id
+        JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+        JOIN master_treatments t ON t.id = a.fk_treatment_id
+        JOIN master_slots s ON s.id = a.fk_slot_id
+        LEFT JOIN tbl_doctor_slot_time_overrides sto
+          ON sto.fk_branch_id = a.fk_branch_id
+         AND sto.fk_slot_id = a.fk_slot_id
+         AND sto.appointment_date = a.appointment_date
+         AND sto.status = 'ACTIVE'
+        JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id
+        ${whereClause}`;
+    const repeatFrom = `FROM tbl_bills b
+        JOIN master_users p ON p.id = b.patient_id
+        LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
+        LEFT JOIN tbl_consultations c ON c.id = b.consultation_id
+        LEFT JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+        LEFT JOIN master_users d ON d.id = c.doctor_id
+        LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
+        ${repeatWhereClause}`;
+    const timelineSql = `SELECT 'CONSULTATION' AS record_type, c.id AS record_id,
+            GREATEST(
+                COALESCE(mpp.updated_at, c.updated_at, c.created_at, a.appointment_date),
+                COALESCE((
+                    SELECT MAX(bp.collected_at)
+                    FROM tbl_bills activity_bill
+                    JOIN tbl_bill_payments bp ON bp.bill_id = activity_bill.id
+                    WHERE activity_bill.consultation_id = c.id
+                      AND activity_bill.bill_type = 'MEDICATION'
+                      AND activity_bill.status = 'ACTIVE'
+                      AND bp.status = 'SUCCESS'
+                ), '1000-01-01 00:00:00')
+            ) AS event_at
+        ${consultationFrom}
+        UNION ALL
+        SELECT 'MEDICINE_PURCHASE' AS record_type, b.id AS record_id,
+            GREATEST(
+                COALESCE(b.updated_at, b.created_at),
+                COALESCE((
+                    SELECT MAX(bp.collected_at)
+                    FROM tbl_bill_payments bp
+                    WHERE bp.bill_id = b.id
+                      AND bp.status = 'SUCCESS'
+                ), '1000-01-01 00:00:00')
+            ) AS event_at
+        ${repeatFrom}`;
+    const timelineParams = [...params, ...repeatParams];
+    const countRows = await query(`SELECT COUNT(*) AS total FROM (${timelineSql}) priced_history`, timelineParams);
+    const total = Number(countRows[0]?.total || 0);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const offset = (currentPage - 1) * pageSize;
+    const timeline = await query(
+        `SELECT * FROM (${timelineSql}) priced_history
+         ORDER BY event_at DESC, record_type ASC, record_id DESC
+         LIMIT ${pageSize} OFFSET ${offset}`,
+        timelineParams
+    );
+    const consultationIds = timeline
+        .filter((item) => item.record_type === 'CONSULTATION')
+        .map((item) => Number(item.record_id));
+    const repeatBillIds = timeline
+        .filter((item) => item.record_type === 'MEDICINE_PURCHASE')
+        .map((item) => Number(item.record_id));
 
-    const [countRows, rows, repeatCountRows, repeatRows] = await Promise.all([
-        query(
-            `SELECT COUNT(*) AS total
-             FROM tbl_consultations c
-             JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-             ${getAppointmentPatientJoin()}
-             JOIN master_users d ON d.id = c.doctor_id
-             JOIN master_clinic_branches b ON b.id = a.fk_branch_id
-             JOIN master_treatments t ON t.id = a.fk_treatment_id
-             JOIN master_slots s ON s.id = a.fk_slot_id
-             LEFT JOIN tbl_doctor_slot_time_overrides sto
-               ON sto.fk_branch_id = a.fk_branch_id
-              AND sto.fk_slot_id = a.fk_slot_id
-              AND sto.appointment_date = a.appointment_date
-              AND sto.status = 'ACTIVE'
-             JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id
-             ${whereClause}`,
-            params
-        ),
-        query(
+    const [rows, repeatRows] = await Promise.all([
+        consultationIds.length > 0 ? query(
             `SELECT
                 c.id AS consultation_id,
                 c.appointment_id,
@@ -1251,33 +1331,11 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 s.slot_name,
                 COALESCE(sto.override_start_time, s.start_time) AS start_time,
                 COALESCE(sto.override_end_time, s.end_time) AS end_time
-             FROM tbl_consultations c
-             JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-             ${getAppointmentPatientJoin()}
-             JOIN master_users d ON d.id = c.doctor_id
-             JOIN master_clinic_branches b ON b.id = a.fk_branch_id
-             JOIN master_treatments t ON t.id = a.fk_treatment_id
-             JOIN master_slots s ON s.id = a.fk_slot_id
-             LEFT JOIN tbl_doctor_slot_time_overrides sto
-               ON sto.fk_branch_id = a.fk_branch_id
-              AND sto.fk_slot_id = a.fk_slot_id
-              AND sto.appointment_date = a.appointment_date
-              AND sto.status = 'ACTIVE'
-             JOIN tbl_medical_prescription_pricing mpp ON mpp.consultation_id = c.id
-             ${whereClause}
-             ORDER BY mpp.updated_at DESC, c.id DESC
-             LIMIT ${pageSize} OFFSET ${offset}`,
-            params
-        ),
-        query(
-            `SELECT COUNT(*) AS total
-             FROM tbl_bills b
-             JOIN master_users p ON p.id = b.patient_id
-             LEFT JOIN tbl_consultations c ON c.id = b.consultation_id
-             ${repeatWhereClause}`,
-            repeatParams
-        ),
-        query(
+             ${consultationFrom}
+             AND c.id IN (${consultationIds.map(() => '?').join(',')})`,
+            [...params, ...consultationIds]
+        ) : [],
+        repeatBillIds.length > 0 ? query(
             `SELECT
                 b.id AS bill_id,
                 b.bill_number,
@@ -1302,21 +1360,11 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 c.doctor_id,
                 d.full_name AS doctor_name,
                 t.treatment_name
-             FROM tbl_bills b
-             JOIN master_users p ON p.id = b.patient_id
-             LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
-             LEFT JOIN tbl_consultations c ON c.id = b.consultation_id
-             LEFT JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
-             LEFT JOIN master_users d ON d.id = c.doctor_id
-             LEFT JOIN master_treatments t ON t.id = a.fk_treatment_id
-             ${repeatWhereClause}
-             ORDER BY b.created_at DESC, b.id DESC
-             LIMIT ${pageSize} OFFSET ${offset}`,
-            repeatParams
-        ),
+             ${repeatFrom}
+             AND b.id IN (${repeatBillIds.map(() => '?').join(',')})`,
+            [...repeatParams, ...repeatBillIds]
+        ) : [],
     ]);
-
-    const repeatBillIds = repeatRows.map((row) => row.bill_id);
     const repeatItemRows = repeatBillIds.length > 0
         ? await query(
             `SELECT bill_id, consultation_medication_id, item_type, item_name, amount
@@ -1333,15 +1381,11 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
         repeatItemsByBillId.set(item.bill_id, billItems);
     });
 
-    const total = Number(countRows[0]?.total || 0) + Number(repeatCountRows[0]?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
-
     const prescriptionData = await attachAccountDuesToItems(
         await Promise.all(rows.map(buildMedicalPrescriptionListItem)),
         rows,
         { branchId: req.selectedBranchId || branchId }
     );
-    const consultationIds = rows.map((row) => Number(row.consultation_id)).filter(Boolean);
     const medicationBillRows = consultationIds.length > 0
         ? await query(
             `SELECT
@@ -1492,17 +1536,24 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     const repeatWithDues = await attachAccountDuesToItems(repeatData, repeatRows, {
         branchId: req.selectedBranchId || branchId,
     });
-    const data = [...prescriptionData, ...repeatWithDues]
-        .sort((a, b) => new Date(b.updated_at || b.created_at || b.appointment?.appointment_date || 0).getTime()
-            - new Date(a.updated_at || a.created_at || a.appointment?.appointment_date || 0).getTime())
-        .slice(0, pageSize);
+    const prescriptionsById = new Map(
+        prescriptionData.map((item) => [Number(item.consultation_id), item])
+    );
+    const medicinePurchasesById = new Map(
+        repeatWithDues.map((item) => [Number(item.bill_id), item])
+    );
+    const data = timeline.map((event) => (
+        event.record_type === 'CONSULTATION'
+            ? prescriptionsById.get(Number(event.record_id))
+            : medicinePurchasesById.get(Number(event.record_id))
+    )).filter(Boolean);
 
     return res.status(200).json({
         success: true,
         message: 'Priced medical prescriptions fetched successfully',
         data,
         meta: {
-            page,
+            page: currentPage,
             page_size: pageSize,
             total,
             total_pages: totalPages,
@@ -1545,6 +1596,24 @@ const getMedicalPrescription = asyncHandler(async (req, res) => {
     });
 });
 
+const getPatientLastCourierDelivery = asyncHandler(async (req, res) => {
+    const patientId = toPositiveInt(req.params.patient_id);
+    if (!patientId) {
+        throw new AppError('Valid patient_id is required', 400);
+    }
+
+    const delivery = await getLastCourierDelivery({
+        patientId,
+        branchId: req.selectedBranchId || null,
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: delivery ? 'Last courier address fetched successfully' : 'No saved courier address found',
+        data: delivery,
+    });
+});
+
 const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
     const consultationId = toPositiveInt(req.params.consultation_id || req.body?.consultation_id);
     const remark = req.body?.remark ? String(req.body.remark).trim() : null;
@@ -1553,6 +1622,10 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
     const submittedTests = Array.isArray(req.body?.tests) ? req.body.tests : null;
     const processAfterSave = toBoolean(req.body?.process_after_save);
     const receivedCorrection = req.body?.received_correction || null;
+    const submittedDiscounts = normalizeDiscounts(req.body?.discounts);
+    const submittedDelivery = req.body?.delivery && typeof req.body.delivery === 'object' && !Array.isArray(req.body.delivery)
+        ? req.body.delivery
+        : null;
     const payment = normalizeMedicalPaymentPayload(req.body?.payment);
     const submittedRequestKey = String(
         req.get('Idempotency-Key') || req.body?.request_key || randomUUID()
@@ -1647,7 +1720,7 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
         });
 
         const [existingPricingRows] = await connection.execute(
-            `SELECT id
+            `SELECT id, delivery_mode, courier_charge, delivery_details_json
              FROM tbl_medical_prescription_pricing
              WHERE consultation_id = ?
              LIMIT 1
@@ -1726,27 +1799,85 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
                 void_reason: row.dispense_status === 'VOID' ? row.void_reason || null : null,
             }));
 
-        const totalAmount = calculateDispensingTotal({
+        const existingPricing = existingPricingRows[0] || null;
+        let existingDeliveryDetails = {};
+        try {
+            existingDeliveryDetails = typeof existingPricing?.delivery_details_json === 'string'
+                ? JSON.parse(existingPricing.delivery_details_json)
+                : (existingPricing?.delivery_details_json || {});
+        } catch {
+            existingDeliveryDetails = {};
+        }
+        const deliveryMode = submittedDelivery
+            ? (String(submittedDelivery.delivery_mode || 'HAND_DELIVERY').trim().toUpperCase() === 'COURIER' ? 'COURIER' : 'HAND_DELIVERY')
+            : (String(existingPricing?.delivery_mode || 'HAND_DELIVERY').toUpperCase() === 'COURIER' ? 'COURIER' : 'HAND_DELIVERY');
+        const courierCharge = deliveryMode === 'COURIER'
+            ? toPositiveAmount(submittedDelivery ? submittedDelivery.courier_charge || 0 : existingPricing?.courier_charge || 0)
+            : 0;
+        const deliveryDetails = submittedDelivery ? {
+            courier_address: submittedDelivery.courier_address ? String(submittedDelivery.courier_address).trim() : null,
+            tracking_no: submittedDelivery.tracking_no ? String(submittedDelivery.tracking_no).trim() : null,
+            delivery_remark: submittedDelivery.delivery_remark ? String(submittedDelivery.delivery_remark).trim() : null,
+        } : existingDeliveryDetails;
+        if (courierCharge === null) {
+            throw new AppError('delivery.courier_charge must be a valid non-negative number', 400);
+        }
+        if (deliveryMode === 'COURIER' && !String(deliveryDetails.courier_address || '').trim()) {
+            throw new AppError('Courier address is required for courier delivery', 400);
+        }
+
+        const dispensingSubtotal = calculateDispensingTotal({
             prescribedItems: normalizedItems,
             additionalItems: normalizedAdditionalItems,
             tests: normalizedTests,
         });
+        const totalAmount = Number((dispensingSubtotal + Number(courierCharge || 0)).toFixed(2));
+        const medicineGross = calculateDispensingTotal({
+            prescribedItems: normalizedItems,
+            additionalItems: normalizedAdditionalItems,
+            tests: [],
+        });
+        const testGross = calculateDispensingTotal({ prescribedItems: [], additionalItems: [], tests: normalizedTests });
+        const effectiveDiscounts = submittedDiscounts === null
+            ? null
+            : submittedDiscounts;
+        for (const discount of effectiveDiscounts || []) {
+            if (!['MEDICINE', 'TEST', 'COURIER'].includes(discount.category)) {
+                throw new AppError('Regular dispensing supports only MEDICINE, TEST and COURIER discounts', 400);
+            }
+            const eligibleGross = discount.category === 'TEST'
+                ? testGross
+                : discount.category === 'COURIER'
+                    ? Number(courierCharge || 0)
+                    : medicineGross;
+            if (discount.amount > eligibleGross) {
+                throw new AppError(`${discount.category.toLowerCase()} discount cannot exceed ₹${eligibleGross.toFixed(2)}`, 400);
+            }
+        }
+        const discountsJson = effectiveDiscounts === null ? null : JSON.stringify(effectiveDiscounts);
 
         if (existingPricingRows.length > 0) {
             await connection.execute(
                 `UPDATE tbl_medical_prescription_pricing
                  SET total_amount = ?,
                      remark = ?,
+                     discounts_json = COALESCE(?, discounts_json),
+                     delivery_mode = ?,
+                     courier_charge = ?,
+                     delivery_details_json = ?,
                      updated_by = ?
                  WHERE id = ?`,
-                [totalAmount, remark, req.user.id, pricingId]
+                [totalAmount, remark, discountsJson, deliveryMode, courierCharge,
+                    JSON.stringify(deliveryDetails), req.user.id, pricingId]
             );
         } else {
             const [insertPricing] = await connection.execute(
                 `INSERT INTO tbl_medical_prescription_pricing
-                 (consultation_id, total_amount, remark, created_by, updated_by)
-                 VALUES (?, ?, ?, ?, ?)`,
-                [consultationId, totalAmount, remark, req.user.id, req.user.id]
+                 (consultation_id, total_amount, remark, discounts_json, delivery_mode, courier_charge,
+                  delivery_details_json, created_by, updated_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [consultationId, totalAmount, remark, discountsJson || JSON.stringify([]), deliveryMode,
+                    courierCharge, JSON.stringify(deliveryDetails), req.user.id, req.user.id]
             );
             pricingId = insertPricing.insertId;
         }
@@ -2111,6 +2242,7 @@ module.exports = {
     listMedicalPrescriptions,
     listPricedMedicalPrescriptions,
     getMedicalPrescription,
+    getPatientLastCourierDelivery,
     saveMedicalPrescriptionPricing,
     processMedicalPrescription,
     downloadMedicalProductImportTemplate,

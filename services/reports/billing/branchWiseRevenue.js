@@ -8,6 +8,8 @@ const getBranchWiseRevenueReport = async (filters) => {
             br.id AS branch_id,
             br.branch_name,
             COUNT(b.id) AS total_bills,
+            COALESCE(SUM(b.gross_amount), 0) AS gross_amount,
+            COALESCE(SUM(b.discount_amount), 0) AS discount_amount,
             COALESCE(SUM(b.total_amount), 0) AS total_amount,
             COALESCE(SUM(b.paid_amount), 0) AS paid_amount,
             COALESCE(SUM(b.pending_amount), 0) AS pending_amount

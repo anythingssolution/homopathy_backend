@@ -55,6 +55,13 @@ const formatTokenDisplay = (tokenNumber, context = {}) => {
 };
 
 const extractTimeFromDateTime = (value) => {
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return null;
+        return [value.getHours(), value.getMinutes(), value.getSeconds()]
+            .map((part) => String(part).padStart(2, '0'))
+            .join(':');
+    }
+
     const normalizedValue = String(value || '').trim();
 
     if (!normalizedValue) {
@@ -165,7 +172,10 @@ const decorateTokenFields = (
         live_estimated_start_at: liveEstimatedStartAt,
         live_estimated_end_at: payload.live_estimated_end_at ?? null,
         live_delay_minutes: liveDelayMinutes,
-        template_start_time: templateStartTime,
+        // Extension tokens are outside the static base plate. Their planned
+        // time is persisted by recalculateQueuePlan, so expose that time to
+        // existing dashboard consumers when no base-plate template exists.
+        template_start_time: templateStartTime || plannedStartTime,
     };
 };
 

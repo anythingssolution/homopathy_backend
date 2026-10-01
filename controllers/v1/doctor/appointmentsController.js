@@ -26,6 +26,7 @@ const {
 } = require('../../../services/liveQueueService');
 const { resolveDoctorVisibleSlotId } = require('../../../services/doctorSessionService');
 const { getConsultationEditAccess } = require('./consultationController');
+const { sortCompletedAppointmentsRecentFirst } = require('../../../utils/doctorAppointmentOrder');
 
 const normalizeQueueDateKey = (value) => {
     if (!value) {
@@ -235,7 +236,11 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
         protectedWindowAppointmentIdsByGroup,
     });
 
-    const data = await Promise.all(sortedAppointments.map(async (appointment) => {
+    const displayAppointments = status === 'Completed'
+        ? sortCompletedAppointmentsRecentFirst(appointments.map((appointment) => decorateTokenFields(appointment)))
+        : sortedAppointments;
+
+    const data = await Promise.all(displayAppointments.map(async (appointment) => {
         const isCompleted = String(appointment.status || '').toLowerCase() === 'completed';
         const consultationId = Number(appointment.consultation_id || 0);
 
@@ -277,6 +282,9 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
 
     const status = req.query.status ? String(req.query.status).trim() : null;
+    const sessionType = req.query.session_type
+        ? String(req.query.session_type).trim().toLowerCase()
+        : 'all';
 
     if (req.query.branch_id !== undefined && !branchId) {
         throw new AppError('branch_id must be a positive integer', 400);
@@ -287,6 +295,9 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
     if (toDate && !isValidDateString(toDate)) {
         throw new AppError('to_date must be in YYYY-MM-DD format', 400);
     }
+    if (!['all', 'morning', 'evening'].includes(sessionType)) {
+        throw new AppError('session_type must be all, morning or evening', 400);
+    }
 
     const { page, pageSize } = parsePagination(req.query);
     const { rows: consultationRows, pagination, timeline, paymentRows, repeatRows } = await getConsultationHistoryRows({
@@ -295,6 +306,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
         toDate,
         patientSearch,
         status,
+        sessionType,
         page,
         pageSize,
     });
@@ -385,6 +397,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
                 to_date: toDate,
                 patient_search: patientSearch,
                 status: status || 'all',
+                session_type: sessionType,
             },
             total: pagination.total,
         },

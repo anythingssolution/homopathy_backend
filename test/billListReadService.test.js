@@ -8,6 +8,10 @@ const { buildBillListReadSql } = require('../services/billListReadService');
 const legacyAggregates = `
     COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.bill_id AND i.item_type = 'TEST'), 0) AS test_amount,
     COALESCE((SELECT SUM(i.amount) FROM tbl_bill_items i WHERE i.bill_id = b.bill_id AND LOWER(i.item_name) = 'courier charge'), 0) AS courier_amount,
+    COALESCE((SELECT SUM(d.discount_amount) FROM tbl_bill_discounts d WHERE d.bill_id = b.bill_id AND d.status = 'ACTIVE' AND d.discount_category = 'CONSULTATION'), 0) AS consultation_discount_amount,
+    COALESCE((SELECT SUM(d.discount_amount) FROM tbl_bill_discounts d WHERE d.bill_id = b.bill_id AND d.status = 'ACTIVE' AND d.discount_category = 'MEDICINE'), 0) AS medicine_discount_amount,
+    COALESCE((SELECT SUM(d.discount_amount) FROM tbl_bill_discounts d WHERE d.bill_id = b.bill_id AND d.status = 'ACTIVE' AND d.discount_category = 'TEST'), 0) AS test_discount_amount,
+    COALESCE((SELECT SUM(d.discount_amount) FROM tbl_bill_discounts d WHERE d.bill_id = b.bill_id AND d.status = 'ACTIVE' AND d.discount_category = 'COURIER'), 0) AS courier_discount_amount,
     (SELECT bp.payment_mode FROM tbl_bill_payments bp WHERE bp.bill_id = b.bill_id AND bp.status = 'SUCCESS' ORDER BY bp.id DESC LIMIT 1) AS payment_mode,
     COALESCE((SELECT SUM(bp.amount) FROM tbl_bill_payments bp WHERE bp.status = 'SUCCESS' AND UPPER(bp.payment_mode) = 'CASH'
         AND (bp.settlement_source_bill_id = b.bill_id OR (bp.settlement_source_bill_id IS NULL AND bp.bill_id = b.bill_id))), 0) AS cash_amount,
@@ -30,6 +34,7 @@ const fixture = () => {
         actual_completed_at TEXT, appointment_date TEXT, start_time TEXT, token_number INTEGER
     );
     CREATE TABLE tbl_bill_items (bill_id INTEGER, item_type TEXT, item_name TEXT, amount NUMERIC);
+    CREATE TABLE tbl_bill_discounts (bill_id INTEGER, discount_category TEXT, discount_amount NUMERIC, status TEXT);
     CREATE TABLE tbl_bill_payments (
         id INTEGER PRIMARY KEY, bill_id INTEGER, settlement_source_bill_id INTEGER,
         status TEXT, allocation_kind TEXT, payment_mode TEXT, amount NUMERIC
@@ -44,6 +49,12 @@ const fixture = () => {
         (2, 'MEDICINE', 'Syrup', 120.25), (2, 'TEST', 'CBC', 50.5),
         (2, 'TEST', 'TSH', 60), (2, 'DELIVERY', 'Courier Charge', 40),
         (2, 'DELIVERY', 'courier charge', 5.5), (1, 'TEST', 'Old test', 30);
+    INSERT INTO tbl_bill_discounts VALUES
+        (1, 'CONSULTATION', 25, 'ACTIVE'),
+        (2, 'MEDICINE', 10, 'ACTIVE'),
+        (2, 'TEST', 5, 'ACTIVE'),
+        (2, 'COURIER', 2.5, 'ACTIVE'),
+        (2, 'MEDICINE', 999, 'VOID');
     INSERT INTO tbl_bill_payments VALUES
         (1, 1, NULL, 'SUCCESS', NULL, 'CASH', 100),
         (2, 1, 2, 'SUCCESS', 'PREVIOUS', 'CASH', 50.5),
@@ -72,6 +83,9 @@ test('batched bill aggregates preserve current, previous, self-source and failed
         const repeat = rows.find((row) => row.bill_id === 2);
         assert.equal(repeat.test_amount, 110.5);
         assert.equal(repeat.courier_amount, 45.5);
+        assert.equal(repeat.medicine_discount_amount, 10);
+        assert.equal(repeat.test_discount_amount, 5);
+        assert.equal(repeat.courier_discount_amount, 2.5);
         assert.equal(repeat.cash_amount, 100.5);
         assert.equal(repeat.online_amount, 162.25);
         assert.equal(repeat.paid_towards_this_bill, 170.25);

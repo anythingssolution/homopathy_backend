@@ -19,6 +19,8 @@ const getPendingAmountReport = async (filters) => {
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             p.mobile_no AS patient_mobile_no,
             br.branch_name,
+            b.gross_amount,
+            b.discount_amount,
             b.total_amount,
             b.paid_amount,
             b.pending_amount,

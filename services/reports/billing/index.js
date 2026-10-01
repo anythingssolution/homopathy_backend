@@ -8,6 +8,7 @@ const getBranchWiseRevenueReport = require('./branchWiseRevenue');
 const getPatientBillingHistoryReport = require('./patientBillingHistory');
 const getRevenueByConsultantReport = require('./revenueByConsultant');
 const getRevenueByMedicineReport = require('./revenueByMedicine');
+const getDiscountSummaryReport = require('./discountSummary');
 const AppError = require('../../../utils/AppError');
 
 const BILLING_REPORTS = {
@@ -21,6 +22,7 @@ const BILLING_REPORTS = {
     patient_billing_history: getPatientBillingHistoryReport,
     revenue_by_consultant: getRevenueByConsultantReport,
     revenue_by_medicine: getRevenueByMedicineReport,
+    discount_summary: getDiscountSummaryReport,
 };
 
 const getBillingReports = async (filters, { reportKeys } = {}) => {

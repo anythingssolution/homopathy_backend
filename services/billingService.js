@@ -3,6 +3,7 @@ const AppError = require('../utils/AppError');
 const { query } = require('../config/db');
 const { decorateTokenFields } = require('../utils/tokenDisplay');
 const { getBillableDispensingItems } = require('./dispensaryPricingService');
+const { listBillDiscounts, parseStoredDiscounts, replaceBillDiscounts } = require('./billingDiscountService');
 
 const PAYMENT_MODES = new Set(['CASH', 'ONLINE']);
 const PAYMENT_STATUSES = new Set(['UNPAID', 'PAID', 'PARTIAL']);
@@ -105,6 +106,7 @@ const replaceMedicationBillItems = async ({
     billId,
     pricingId,
     consultationId,
+    courierCharge = 0,
 }) => {
     await connection.execute(
         `DELETE FROM tbl_bill_items
@@ -159,6 +161,16 @@ const replaceMedicationBillItems = async ({
              (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
              VALUES (?, NULL, ?, 'TEST', ?, 1, ?, ?)`,
             [billId, test.consultation_test_id, test.test_name, testAmount, testAmount]
+        );
+    }
+
+    const normalizedCourierCharge = normalizeAmount(courierCharge) ?? 0;
+    if (normalizedCourierCharge > 0) {
+        await connection.execute(
+            `INSERT INTO tbl_bill_items
+             (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
+             VALUES (?, NULL, NULL, 'DELIVERY', 'Courier charge', 1, ?, ?)`,
+            [billId, normalizedCourierCharge, normalizedCourierCharge]
         );
     }
 };
@@ -492,6 +504,8 @@ const collectBillPayment = async ({
             b.appointment_id,
             b.consultation_id,
             b.patient_id,
+            b.gross_amount,
+            b.discount_amount,
             b.total_amount,
             b.paid_amount,
             b.pending_amount,
@@ -619,6 +633,8 @@ const getBillSummaryById = async (billId) => {
             b.consultation_id,
             b.patient_id,
             b.fk_branch_id AS branch_id,
+            b.gross_amount,
+            b.discount_amount,
             b.total_amount,
             b.paid_amount,
             b.pending_amount,
@@ -676,7 +692,7 @@ const getBillDetailById = async (billId) => {
         return null;
     }
 
-    const [paymentRows, previousPendingRows, items] = await Promise.all([
+    const [paymentRows, previousPendingRows, items, discounts] = await Promise.all([
         query(
             `SELECT ${billPaymentSelectSql}
              ${billPaymentFromSql}
@@ -710,6 +726,7 @@ const getBillDetailById = async (billId) => {
              ORDER BY id ASC`,
             [billId]
         ),
+        listBillDiscounts(billId),
     ]);
 
     const payments = paymentRows.map(mapBillPaymentRow);
@@ -746,6 +763,7 @@ const getBillDetailById = async (billId) => {
                 collected_at: payment.collected_at,
             })),
         },
+        discounts,
         items,
     };
 };
@@ -929,13 +947,14 @@ const createConsultationBillForAppointment = async ({
 
     const [insertResult] = await connection.execute(
         `INSERT INTO tbl_bills
-         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, total_amount, paid_amount, pending_amount, payment_status, payment_settlement_type, status, remark, created_by, updated_by)
-         VALUES (?, 'CONSULTATION', ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
+         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, gross_amount, discount_amount, total_amount, paid_amount, pending_amount, payment_status, payment_settlement_type, status, remark, created_by, updated_by)
+         VALUES (?, 'CONSULTATION', ?, NULL, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?)`,
         [
             billNumber,
             appointmentId,
             patientId,
             branchId,
+            totalAmount,
             totalAmount,
             paidAmount,
             pendingAmount,
@@ -1088,6 +1107,10 @@ const createMedicationBillFromConsultation = async ({
             a.fk_branch_id AS branch_id,
             mpp.id AS pricing_id,
             mpp.total_amount,
+            mpp.discounts_json,
+            COALESCE(mpp.delivery_mode, 'HAND_DELIVERY') AS delivery_mode,
+            COALESCE(mpp.courier_charge, 0) AS courier_charge,
+            mpp.delivery_details_json,
             COALESCE(mpp.remark, '') AS pricing_remark
          FROM tbl_consultations c
          JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
@@ -1105,6 +1128,9 @@ const createMedicationBillFromConsultation = async ({
     const consultation = consultationRows[0];
     const totalAmount = normalizeAmount(consultation.total_amount) ?? 0;
     const billRemark = remark || consultation.pricing_remark || null;
+    const deliveryDetailsJson = typeof consultation.delivery_details_json === 'string'
+        ? consultation.delivery_details_json
+        : JSON.stringify(consultation.delivery_details_json || {});
 
     if (existingRows.length > 0) {
         const existingBill = existingRows[0];
@@ -1126,9 +1152,12 @@ const createMedicationBillFromConsultation = async ({
                  pending_amount = ?,
                  payment_status = ?,
                  remark = ?,
+                 delivery_mode = ?,
+                 delivery_details_json = ?,
                  updated_by = ?
              WHERE id = ?`,
-            [totalAmount, pendingAmount, newPaymentStatus, billRemark, createdByUserId, existingBill.id]
+            [totalAmount, pendingAmount, newPaymentStatus, billRemark, consultation.delivery_mode,
+                deliveryDetailsJson, createdByUserId, existingBill.id]
         );
 
         await replaceMedicationBillItems({
@@ -1136,6 +1165,14 @@ const createMedicationBillFromConsultation = async ({
             billId: existingBill.id,
             pricingId: consultation.pricing_id,
             consultationId,
+            courierCharge: consultation.delivery_mode === 'COURIER' ? consultation.courier_charge : 0,
+        });
+
+        await replaceBillDiscounts({
+            connection,
+            billId: existingBill.id,
+            discounts: parseStoredDiscounts(consultation.discounts_json),
+            actorUserId: createdByUserId,
         });
 
         return {
@@ -1148,8 +1185,8 @@ const createMedicationBillFromConsultation = async ({
 
     const [insertResult] = await connection.execute(
         `INSERT INTO tbl_bills
-         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, total_amount, paid_amount, pending_amount, payment_status, status, remark, created_by, updated_by)
-         VALUES (?, 'MEDICATION', ?, ?, ?, ?, ?, 0, ?, 'UNPAID', 'ACTIVE', ?, ?, ?)`,
+         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, gross_amount, discount_amount, total_amount, paid_amount, pending_amount, payment_status, status, remark, delivery_mode, delivery_details_json, created_by, updated_by)
+         VALUES (?, 'MEDICATION', ?, ?, ?, ?, ?, 0, ?, 0, ?, 'UNPAID', 'ACTIVE', ?, ?, ?, ?, ?)`,
         [
             billNumber,
             consultation.appointment_id,
@@ -1158,7 +1195,10 @@ const createMedicationBillFromConsultation = async ({
             consultation.branch_id,
             totalAmount,
             totalAmount,
+            totalAmount,
             billRemark,
+            consultation.delivery_mode,
+            deliveryDetailsJson,
             createdByUserId,
             createdByUserId,
         ]
@@ -1169,6 +1209,14 @@ const createMedicationBillFromConsultation = async ({
         billId: insertResult.insertId,
         pricingId: consultation.pricing_id,
         consultationId,
+        courierCharge: consultation.delivery_mode === 'COURIER' ? consultation.courier_charge : 0,
+    });
+
+    await replaceBillDiscounts({
+        connection,
+        billId: insertResult.insertId,
+        discounts: parseStoredDiscounts(consultation.discounts_json),
+        actorUserId: createdByUserId,
     });
 
     return {
@@ -1218,13 +1266,14 @@ const createRepeatMedicineBill = async ({
 
     const [insertResult] = await connection.execute(
         `INSERT INTO tbl_bills
-         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, total_amount, paid_amount, pending_amount, payment_status, status, remark, delivery_mode, delivery_details_json, created_by, updated_by)
-         VALUES (?, 'MEDICATION', NULL, ?, ?, ?, ?, 0, ?, 'UNPAID', 'ACTIVE', ?, ?, ?, ?, ?)`,
+         (bill_number, bill_type, appointment_id, consultation_id, patient_id, fk_branch_id, gross_amount, discount_amount, total_amount, paid_amount, pending_amount, payment_status, status, remark, delivery_mode, delivery_details_json, created_by, updated_by)
+         VALUES (?, 'MEDICATION', NULL, ?, ?, ?, ?, 0, ?, 0, ?, 'UNPAID', 'ACTIVE', ?, ?, ?, ?, ?)`,
         [
             billNumber,
             sourceConsultationId,
             patientId,
             branchId,
+            totalAmount,
             totalAmount,
             totalAmount,
             billRemark,
@@ -1265,7 +1314,7 @@ const createRepeatMedicineBill = async ({
         await connection.execute(
             `INSERT INTO tbl_bill_items
              (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
-             VALUES (?, NULL, NULL, 'ADDITIONAL_MEDICATION', 'Courier Charge', 1, ?, ?)`,
+             VALUES (?, NULL, NULL, 'DELIVERY', 'Courier Charge', 1, ?, ?)`,
             [billId, normalizedCourierCharge, normalizedCourierCharge]
         );
     }

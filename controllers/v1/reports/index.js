@@ -4,4 +4,6 @@ module.exports = {
     ...require('./patientReportController'),
     ...require('./billingReportController'),
     ...require('./medicalReportController'),
+    ...require('./testRegisterReportController'),
+    ...require('./courierRegisterReportController'),
 };

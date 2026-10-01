@@ -8,6 +8,8 @@ const getTotalRevenueReport = async (filters) => {
             COUNT(b.id) AS total_bills,
             SUM(CASE WHEN b.paid_amount > 0 THEN 1 ELSE 0 END) AS paid_or_partial_bills,
             SUM(CASE WHEN b.paid_amount <= 0 THEN 1 ELSE 0 END) AS unpaid_bills,
+            COALESCE(SUM(b.gross_amount), 0) AS gross_amount,
+            COALESCE(SUM(b.discount_amount), 0) AS discount_amount,
             COALESCE(SUM(b.total_amount), 0) AS total_amount,
             COALESCE(SUM(b.paid_amount), 0) AS paid_amount,
             COALESCE(SUM(b.pending_amount), 0) AS pending_amount,

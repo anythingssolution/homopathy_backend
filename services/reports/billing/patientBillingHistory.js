@@ -9,6 +9,8 @@ const getPatientBillingHistoryReport = async (filters) => {
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             p.mobile_no AS patient_mobile_no,
             COUNT(b.id) AS total_bills,
+            COALESCE(SUM(b.gross_amount), 0) AS gross_amount,
+            COALESCE(SUM(b.discount_amount), 0) AS discount_amount,
             COALESCE(SUM(b.total_amount), 0) AS total_amount,
             COALESCE(SUM(b.paid_amount), 0) AS paid_amount,
             COALESCE(SUM(b.pending_amount), 0) AS pending_amount,

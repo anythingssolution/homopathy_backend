@@ -20,6 +20,7 @@ const {
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 const { buildBillListReadSql } = require('../../services/billListReadService');
+const { replaceBillDiscounts } = require('../../services/billingDiscountService');
 
 // Bills Next is a selected-branch read view, like the existing billing reports.
 const isBranchBillingRead = (req) => req.user.role === 'doctor'
@@ -143,15 +144,29 @@ const createConsultationBill = asyncHandler(async (req, res) => {
     if (req.user.role === 'patient' && Number(appointment.fk_patient_id) !== Number(req.user.id)) {
         throw new AppError('You can only create bills for your own appointments', 403);
     }
+    if ((req.user.role === 'patient' || req.user.role_code === 'PAT') && req.body?.discounts !== undefined) {
+        throw new AppError('Patients cannot apply billing discounts', 403);
+    }
 
-    const result = await withTransaction(async (connection) => createConsultationBillForAppointment({
-        connection,
-        appointmentId: appointment.appointment_id,
-        patientId: appointment.fk_patient_id,
-        branchId: appointment.fk_branch_id,
-        treatmentId: appointment.fk_treatment_id,
-        actorUserId: req.user.id,
-    }));
+    const result = await withTransaction(async (connection) => {
+        const created = await createConsultationBillForAppointment({
+            connection,
+            appointmentId: appointment.appointment_id,
+            patientId: appointment.fk_patient_id,
+            branchId: appointment.fk_branch_id,
+            treatmentId: appointment.fk_treatment_id,
+            actorUserId: req.user.id,
+        });
+        if (req.body?.discounts !== undefined) {
+            await replaceBillDiscounts({
+                connection,
+                billId: created.billId,
+                discounts: req.body.discounts,
+                actorUserId: req.user.id,
+            });
+        }
+        return created;
+    });
 
     const bill = await getBillDetailById(result.billId);
 
@@ -333,6 +348,8 @@ const listBills = asyncHandler(async (req, res) => {
             b.consultation_id,
             b.patient_id,
             b.fk_branch_id AS branch_id,
+            b.gross_amount,
+            b.discount_amount,
             b.total_amount,
             b.paid_amount,
             b.pending_amount,
