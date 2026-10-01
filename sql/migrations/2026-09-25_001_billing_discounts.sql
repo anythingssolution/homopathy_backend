@@ -1,6 +1,8 @@
+-- migration: retry-safe
+-- migration: compatible-checksum 8343ba8b2adccfd81387dce99321cb4d33c4ba9c56d3cd6c07e38be6f53d4e96
 ALTER TABLE tbl_bills
-  ADD COLUMN gross_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER fk_branch_id,
-  ADD COLUMN discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER gross_amount;
+  ADD COLUMN IF NOT EXISTS gross_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER fk_branch_id,
+  ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER gross_amount;
 
 UPDATE tbl_bills
 SET gross_amount = total_amount,
@@ -9,7 +11,7 @@ WHERE gross_amount = 0.00
   AND discount_amount = 0.00;
 
 ALTER TABLE tbl_medical_prescription_pricing
-  ADD COLUMN discounts_json JSON NULL AFTER remark;
+  ADD COLUMN IF NOT EXISTS discounts_json JSON NULL AFTER remark;
 
 CREATE TABLE IF NOT EXISTS tbl_bill_discounts (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

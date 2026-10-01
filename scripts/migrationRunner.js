@@ -11,6 +11,13 @@ const MAX_ERROR_MESSAGE_LENGTH = 4000;
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
+const getMigrationRecoveryMetadata = (sql) => ({
+    retrySafe: /^\s*--\s*migration:\s*retry-safe\s*$/im.test(sql),
+    compatibleChecksums: Array.from(sql.matchAll(
+        /^\s*--\s*migration:\s*compatible-checksum\s+([a-f0-9]{64})\s*$/gim
+    )).map((match) => match[1].toLowerCase()),
+});
+
 const validateMigrationSql = (name, sql) => {
     if (!sql.trim()) {
         throw new Error(`Migration ${name} is empty`);
@@ -65,12 +72,14 @@ const discoverMigrations = async (migrationsDir) => {
         const contents = await fs.readFile(filePath);
         const sql = contents.toString('utf8');
         validateMigrationSql(entry.name, sql);
+        const recoveryMetadata = getMigrationRecoveryMetadata(sql);
 
         migrations.push({
             name: entry.name,
             version,
             checksum: sha256(contents),
             sql,
+            ...recoveryMetadata,
         });
     }
 
@@ -229,10 +238,17 @@ const assertMigrationHistory = (migrations, records) => {
             );
         }
 
-        if (record.status === 'APPLIED' && record.checksum !== migration.checksum) {
+        const checksumIsCompatible = record.checksum === migration.checksum
+            || migration.compatibleChecksums?.includes(String(record.checksum || '').toLowerCase());
+
+        if (record.status === 'APPLIED' && !checksumIsCompatible) {
             throw new Error(
                 `Applied migration was modified: ${record.migration_name}. Create a new migration instead.`
             );
+        }
+
+        if (record.status === 'FAILED' && migration.retrySafe) {
+            continue;
         }
 
         if (record.status === 'RUNNING' || record.status === 'FAILED') {
@@ -304,8 +320,11 @@ const runMigrations = async ({
             );
         }
 
-        const appliedNames = new Set(records.map((record) => record.migration_name));
-        const pending = migrations.filter((migration) => !appliedNames.has(migration.name));
+        const recordsByName = new Map(records.map((record) => [record.migration_name, record]));
+        const pending = migrations.filter((migration) => {
+            const record = recordsByName.get(migration.name);
+            return !record || (record.status === 'FAILED' && migration.retrySafe);
+        });
         const knownAppliedCount = migrations.length - pending.length;
 
         if (pending.length === 0) {
@@ -318,12 +337,25 @@ const runMigrations = async ({
             const startedAt = Date.now();
             logger.log(`[migrations] Applying ${migration.name}`);
 
-            await connection.query(
-                `INSERT INTO \`${TRACKING_TABLE}\`
-                    (migration_name, checksum, status, started_at, applied_by, app_revision)
-                 VALUES (?, ?, 'RUNNING', CURRENT_TIMESTAMP, ?, ?)`,
-                [migration.name, migration.checksum, os.hostname(), getAppRevision(environment)]
-            );
+            const existingRecord = recordsByName.get(migration.name);
+            if (existingRecord) {
+                logger.warn?.(`[migrations] Retrying verified retry-safe migration ${migration.name}`);
+                await connection.query(
+                    `UPDATE \`${TRACKING_TABLE}\`
+                     SET checksum = ?, status = 'RUNNING', started_at = CURRENT_TIMESTAMP,
+                         applied_at = NULL, execution_ms = NULL, applied_by = ?, app_revision = ?,
+                         error_message = NULL
+                     WHERE migration_name = ?`,
+                    [migration.checksum, os.hostname(), getAppRevision(environment), migration.name]
+                );
+            } else {
+                await connection.query(
+                    `INSERT INTO \`${TRACKING_TABLE}\`
+                        (migration_name, checksum, status, started_at, applied_by, app_revision)
+                     VALUES (?, ?, 'RUNNING', CURRENT_TIMESTAMP, ?, ?)`,
+                    [migration.name, migration.checksum, os.hostname(), getAppRevision(environment)]
+                );
+            }
 
             try {
                 await connection.query(migration.sql);
@@ -403,7 +435,8 @@ const getMigrationStatus = async ({
                 return {
                     migration: migration.name,
                     status: record.status,
-                    checksum_ok: record.checksum === migration.checksum,
+                    checksum_ok: record.checksum === migration.checksum
+                        || migration.compatibleChecksums?.includes(String(record.checksum || '').toLowerCase()),
                     applied_at: record.applied_at,
                 };
             }),

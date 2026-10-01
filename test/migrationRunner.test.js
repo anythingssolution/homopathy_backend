@@ -64,6 +64,17 @@ class FakeConnection {
             return [{ affectedRows: 1 }, []];
         }
 
+        if (normalized.startsWith('UPDATE `schema_migrations` SET checksum = ?')) {
+            const record = this.records.find((item) => item.migration_name === params[3]);
+            record.checksum = params[0];
+            record.status = 'RUNNING';
+            record.started_at = new Date();
+            record.applied_at = null;
+            record.execution_ms = null;
+            record.error_message = null;
+            return [{ affectedRows: 1 }, []];
+        }
+
         if (normalized.startsWith("UPDATE `schema_migrations` SET status = 'APPLIED'")) {
             const record = this.records.find((item) => item.migration_name === params[1]);
             record.status = 'APPLIED';
@@ -304,6 +315,61 @@ test('blocks stale failed or running records rather than replaying partial DDL',
         );
         assert.deepEqual(connection.executedMigrations, []);
     }
+});
+
+test('retries only an explicitly retry-safe failed migration', async () => {
+    const sql = '-- migration: retry-safe\nALTER TABLE sample ADD COLUMN IF NOT EXISTS x int;';
+    const migration = {
+        ...buildMigration('2026-08-11_001_retry.sql', sql),
+        retrySafe: true,
+        compatibleChecksums: [],
+    };
+    const connection = new FakeConnection({
+        records: [{
+            migration_name: migration.name,
+            checksum: sha256(Buffer.from('older retry-safe revision')),
+            status: 'FAILED',
+        }],
+    });
+
+    const result = await runMigrations({
+        connection,
+        migrations: [migration],
+        databaseName: 'clinic',
+        logger: silentLogger,
+    });
+
+    assert.equal(result.applied, 1);
+    assert.deepEqual(connection.executedMigrations, [migration.sql]);
+    assert.equal(connection.records[0].status, 'APPLIED');
+    assert.equal(connection.records[0].checksum, migration.checksum);
+});
+
+test('accepts a declared compatible checksum for an already applied migration', async () => {
+    const previousChecksum = sha256(Buffer.from('previous safe migration revision'));
+    const migration = {
+        ...buildMigration('2026-08-11_001_compatible.sql', 'SELECT 1;'),
+        retrySafe: true,
+        compatibleChecksums: [previousChecksum],
+    };
+    const connection = new FakeConnection({
+        records: [{
+            migration_name: migration.name,
+            checksum: previousChecksum,
+            status: 'APPLIED',
+        }],
+    });
+
+    const result = await runMigrations({
+        connection,
+        migrations: [migration],
+        databaseName: 'clinic',
+        logger: silentLogger,
+    });
+
+    assert.equal(result.applied, 0);
+    assert.equal(result.skipped, 1);
+    assert.deepEqual(connection.executedMigrations, []);
 });
 
 test('does not proceed when the advisory lock cannot be acquired', async () => {
