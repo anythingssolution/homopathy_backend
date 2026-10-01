@@ -1,8 +1,35 @@
 -- migration: retry-safe
 -- migration: compatible-checksum 8343ba8b2adccfd81387dce99321cb4d33c4ba9c56d3cd6c07e38be6f53d4e96
-ALTER TABLE tbl_bills
-  ADD COLUMN IF NOT EXISTS gross_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER fk_branch_id,
-  ADD COLUMN IF NOT EXISTS discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER gross_amount;
+-- migration: compatible-checksum 7c26574ca26773b5424578cd350ff3283df1928272b7455b9ec90b14764310f4
+SET @migration_sql = IF(
+  EXISTS(
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tbl_bills'
+      AND COLUMN_NAME = 'gross_amount'
+  ),
+  'SELECT 1',
+  'ALTER TABLE tbl_bills ADD COLUMN gross_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER fk_branch_id'
+);
+PREPARE migration_statement FROM @migration_sql;
+EXECUTE migration_statement;
+DEALLOCATE PREPARE migration_statement;
+
+SET @migration_sql = IF(
+  EXISTS(
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tbl_bills'
+      AND COLUMN_NAME = 'discount_amount'
+  ),
+  'SELECT 1',
+  'ALTER TABLE tbl_bills ADD COLUMN discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER gross_amount'
+);
+PREPARE migration_statement FROM @migration_sql;
+EXECUTE migration_statement;
+DEALLOCATE PREPARE migration_statement;
 
 UPDATE tbl_bills
 SET gross_amount = total_amount,
@@ -10,8 +37,20 @@ SET gross_amount = total_amount,
 WHERE gross_amount = 0.00
   AND discount_amount = 0.00;
 
-ALTER TABLE tbl_medical_prescription_pricing
-  ADD COLUMN IF NOT EXISTS discounts_json JSON NULL AFTER remark;
+SET @migration_sql = IF(
+  EXISTS(
+    SELECT 1
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tbl_medical_prescription_pricing'
+      AND COLUMN_NAME = 'discounts_json'
+  ),
+  'SELECT 1',
+  'ALTER TABLE tbl_medical_prescription_pricing ADD COLUMN discounts_json JSON NULL AFTER remark'
+);
+PREPARE migration_statement FROM @migration_sql;
+EXECUTE migration_statement;
+DEALLOCATE PREPARE migration_statement;
 
 CREATE TABLE IF NOT EXISTS tbl_bill_discounts (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
