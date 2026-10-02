@@ -296,6 +296,48 @@ const parseTextMedicineDisplayParts = (medicineValue) => {
     };
 };
 
+const buildConsistentHistoricalManualProducts = (rows = []) => {
+    const grouped = new Map();
+
+    rows.forEach((row) => {
+        const parts = parseTextMedicineDisplayParts(row?.medicine_value);
+        const medicineValue = String(parts.medicine_value || '').trim().toUpperCase();
+        const variantValue = String(parts.variant_value || '').trim();
+        const quantity = Number(parts.quantity) > 0 ? Number(parts.quantity) : 1;
+        const amount = Number(row?.amount);
+        const normalizedMedicine = normalizeMasterValue(medicineValue);
+        const normalizedVariant = normalizeMasterValue(variantValue);
+
+        if (!normalizedMedicine || !Number.isFinite(amount) || amount <= 0) {
+            return;
+        }
+
+        const unitPrice = Number((amount / quantity).toFixed(2));
+        const key = `${normalizedMedicine}|${normalizedVariant || 'n/a'}`;
+        if (!grouped.has(key)) {
+            grouped.set(key, {
+                medicine_value: medicineValue,
+                variant_value: variantValue,
+                normalized_medicine_value: normalizedMedicine,
+                normalized_variant_value: normalizedVariant,
+                prices: new Set(),
+            });
+        }
+        grouped.get(key).prices.add(unitPrice);
+    });
+
+    return Array.from(grouped.values()).map((entry) => ({
+        medicine_value: entry.medicine_value,
+        variant_value: entry.variant_value,
+        normalized_medicine_value: entry.normalized_medicine_value,
+        normalized_variant_value: entry.normalized_variant_value,
+        historical_unit_price: entry.prices.size === 1
+            ? Array.from(entry.prices)[0]
+            : null,
+        historical_price_conflict: entry.prices.size > 1,
+    }));
+};
+
 const buildTextMedicineSuggestionKeyFromMedication = (medication) => {
     const displayParts = parseTextMedicineDisplayParts(medication?.medicine_value);
     const medicineValue = String(
@@ -368,14 +410,17 @@ const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManua
 
 const upsertDoctorManualVariant = async (connection, medicineTextId, medicineValue, variantLabel, unitPrice) => {
     const packing = String(variantLabel || '').trim();
-    if (!medicineTextId || !packing || packing.toUpperCase() === 'N/A') {
+    if (!medicineTextId || !packing) {
         return;
     }
 
     const productName = String(medicineValue || packing).trim().toUpperCase();
     const normalizedProductName = normalizeMasterValue(productName);
     const dedupeKey = [normalizedProductName, normalizeMasterValue(packing)].join('|');
-    const mrpRate = Number.isFinite(Number(unitPrice)) ? Number(Number(unitPrice).toFixed(2)) : null;
+    const parsedUnitPrice = Number(unitPrice);
+    const mrpRate = Number.isFinite(parsedUnitPrice) && parsedUnitPrice > 0
+        ? Number(parsedUnitPrice.toFixed(2))
+        : null;
 
     await connection.execute(
         `INSERT INTO master_medical_products
@@ -1355,6 +1400,11 @@ const validateConsultationPayload = (body) => {
         const variantUnitPrice = medicineType === 'TEXT'
             ? toNonNegativeAmount(medication?.variant_unit_price)
             : null;
+        const persistManualMaster = medicineType === 'TEXT' && (
+            medication?.persist_manual_master === true
+            || medication?.persist_manual_master === 1
+            || String(medication?.persist_manual_master || '').toLowerCase() === 'true'
+        );
 
         return {
             medicine_type: medicineType,
@@ -1363,6 +1413,7 @@ const validateConsultationPayload = (body) => {
             variant_value: variantValue,
             quantity,
             variant_unit_price: variantUnitPrice,
+            persist_manual_master: persistManualMaster,
             remark: medicineType === 'TEXT' ? remark : null,
             remark_hi: medicineType === 'TEXT' ? remarkHi : null,
             is_manual_entry: medicineType === 'TEXT' ? isManualEntry : false,
@@ -1496,6 +1547,7 @@ module.exports = {
     saveUniversalRemarkSuggestion,
     UNIVERSAL_REMARK_SELECTION_VALUE,
     parseTextMedicineDisplayParts,
+    buildConsistentHistoricalManualProducts,
     buildTextMedicineSuggestionKeyFromMedication,
     upsertMasterTextMedicine,
     upsertDoctorManualVariant,

@@ -13,6 +13,9 @@ const {
     validateConsultationPayload,
     saveTextMedicineRemarkSuggestion,
     saveUniversalRemarkSuggestion,
+    parseTextMedicineDisplayParts,
+    upsertMasterTextMedicine,
+    upsertDoctorManualVariant,
 } = require('./shared');
 const {
     createNextFollowUpIfNeeded,
@@ -448,6 +451,33 @@ const createConsultation = asyncHandler(async (req, res) => {
         const pricingItems = [];
 
         for (const medication of medications) {
+            if (medication.medicine_type === 'TEXT' && medication.persist_manual_master) {
+                const displayParts = parseTextMedicineDisplayParts(medication.medicine_value);
+                const masterMedicineValue = medication.master_medicine_value
+                    || displayParts.medicine_value;
+                const variantValue = medication.variant_value || displayParts.variant_value;
+                const medicineTextId = await upsertMasterTextMedicine(
+                    connection,
+                    masterMedicineValue,
+                    true
+                );
+
+                if (medicineTextId && (variantValue || Number(medication.variant_unit_price) > 0)) {
+                    const qty = medication.quantity || displayParts.quantity || 1;
+                    const unitPrice = medication.variant_unit_price != null
+                        ? medication.variant_unit_price
+                        : (qty > 0 ? Number((Number(medication.amount || 0) / qty).toFixed(2)) : medication.amount);
+
+                    await upsertDoctorManualVariant(
+                        connection,
+                        medicineTextId,
+                        masterMedicineValue,
+                        variantValue || 'N/A',
+                        unitPrice
+                    );
+                }
+            }
+
             await saveTextMedicineRemarkSuggestion(connection, medication);
 
             const [medicationResult] = await connection.execute(

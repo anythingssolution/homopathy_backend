@@ -10,6 +10,7 @@ const {
     DOCTOR_APPOINTMENT_SELECT,
     normalizeMasterValue,
     buildTextMedicineProductMasters,
+    buildConsistentHistoricalManualProducts,
     UNIVERSAL_REMARK_SELECTION_VALUE,
 } = require('./shared');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
@@ -447,12 +448,14 @@ const getDoctorReports = asyncHandler(async (req, res) => {
 });
 
 const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
-    const [textMedicines, textMedicineRemarks, scopedTextMedicineRemarks, labTests] = await Promise.all([
+    const [textMedicines, textMedicineRemarks, scopedTextMedicineRemarks, labTests, historicalManualRows] = await Promise.all([
         query(
             `SELECT id, UPPER(medicine_value) AS medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
              FROM master_text_medicines mtm
              WHERE mtm.is_active = 1
-               AND EXISTS (
+               AND (
+                    mtm.is_doctor_manual = 1
+                    OR EXISTS (
                     SELECT 1
                     FROM master_medical_products mmp
                     WHERE mmp.is_active = 1
@@ -463,6 +466,7 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
                                 AND mmp.normalized_product_name = mtm.normalized_value
                            )
                       )
+                    )
                )
              ORDER BY medicine_value ASC`
         ),
@@ -506,9 +510,27 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
              WHERE is_active = 1
              ORDER BY test_type ASC, test_name ASC`
         ),
+        query(
+            `SELECT cm.medicine_value, mppi.amount
+             FROM tbl_consultation_medications cm
+             JOIN tbl_medical_prescription_pricing_items mppi
+               ON mppi.consultation_medication_id = cm.id
+             WHERE cm.medicine_type = 'TEXT'
+               AND cm.is_manual_entry = 1
+               AND mppi.amount > 0
+               AND COALESCE(mppi.dispense_status, 'ACTIVE') <> 'VOID'`
+        ),
     ]);
 
     const productMasters = await buildTextMedicineProductMasters(textMedicines);
+    const historicalManualProducts = buildConsistentHistoricalManualProducts(historicalManualRows);
+    const historicalProductsByMedicine = new Map();
+    historicalManualProducts.forEach((product) => {
+        if (!historicalProductsByMedicine.has(product.normalized_medicine_value)) {
+            historicalProductsByMedicine.set(product.normalized_medicine_value, []);
+        }
+        historicalProductsByMedicine.get(product.normalized_medicine_value).push(product);
+    });
     const scopedRemarksBySelectionValue = new Map();
     const universalRemarkSelectionKey = normalizeMasterValue(UNIVERSAL_REMARK_SELECTION_VALUE);
     const universalRemarkRows = [];
@@ -555,6 +577,7 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
         RADIENT_PHARMA: 2,
         MEDICAL_PRODUCT_PRICE: 3,
         DOCTOR_MANUAL: 4,
+        DOCTOR_MANUAL_HISTORY: 5,
     };
     const mergeRemarkSuggestions = (keys) => {
         const byId = new Map();
@@ -569,8 +592,58 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
         ));
     };
     const textMedicineRows = textMedicines.map(({ normalized_value: normalizedMedicineValue, ...medicine }) => {
-        const medicalProducts = productMasters.medicalProducts.get(medicine.id) || [];
-        const canonicalProduct = [...medicalProducts].sort((left, right) => {
+        const allMedicalProducts = productMasters.medicalProducts.get(medicine.id) || [];
+        const historicalProducts = historicalProductsByMedicine.get(normalizedMedicineValue) || [];
+        const defaultMasterProduct = allMedicalProducts.find((product) => (
+            normalizeMasterValue(product.packing || product.size_or_weight) === 'n/a'
+        ));
+        const historicalDefaultProduct = historicalProducts.find((product) => (
+            !product.normalized_variant_value
+        ));
+        const defaultMasterPrice = [
+            defaultMasterProduct?.mrp_rate,
+            defaultMasterProduct?.price_max,
+            defaultMasterProduct?.price_min,
+            historicalDefaultProduct?.historical_unit_price,
+        ].map(Number).find((price) => Number.isFinite(price) && price > 0) || null;
+        const medicalProducts = allMedicalProducts.filter((product) => (
+            normalizeMasterValue(product.packing || product.size_or_weight) !== 'n/a'
+        ));
+        const historicalByVariant = new Map(
+            historicalProducts
+                .filter((product) => product.normalized_variant_value)
+                .map((product) => [product.normalized_variant_value, product]),
+        );
+        const enrichedMedicalProducts = medicalProducts.map((product) => {
+            const variantLabel = String(
+                product.packing || product.size_or_weight || product.product_name || product.category || ''
+            ).trim();
+            const historical = historicalByVariant.get(normalizeMasterValue(variantLabel));
+            if (!historical) return product;
+
+            historicalByVariant.delete(historical.normalized_variant_value);
+            return {
+                ...product,
+                historical_unit_price: historical.historical_unit_price,
+                historical_price_conflict: historical.historical_price_conflict,
+            };
+        });
+        historicalByVariant.forEach((historical) => {
+            enrichedMedicalProducts.push({
+                id: null,
+                medicine_text_id: medicine.id,
+                source_type: 'DOCTOR_MANUAL_HISTORY',
+                product_name: medicine.medicine_value,
+                packing: historical.variant_value,
+                mrp_rate: null,
+                price_min: null,
+                price_max: null,
+                historical_unit_price: historical.historical_unit_price,
+                historical_price_conflict: historical.historical_price_conflict,
+                is_active: 1,
+            });
+        });
+        const canonicalProduct = [...enrichedMedicalProducts].sort((left, right) => {
             const leftPriority = sourcePriority[left.source_type] || 99;
             const rightPriority = sourcePriority[right.source_type] || 99;
             return leftPriority - rightPriority || Number(left.id || 0) - Number(right.id || 0);
@@ -584,8 +657,9 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
         return {
             ...medicine,
             medicine_value: medicineValue,
+            default_manual_price: defaultMasterPrice,
             remark_suggestions: mergeRemarkSuggestions(remarkMedicineKeys),
-            medical_products: medicalProducts,
+            medical_products: enrichedMedicalProducts,
             products: productMasters.products.get(medicine.id) || [],
             radient_pharma_products: productMasters.radientPharmaProducts.get(medicine.id) || [],
             handwritten_product_prices: productMasters.handwrittenProductPrices.get(medicine.id) || [],
