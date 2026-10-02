@@ -91,6 +91,34 @@ const getCategoryGross = async (connection, bill) => {
     };
 };
 
+const setReceptionistConsultationFee = async ({ connection, billId, amount, actorUserId }) => {
+    if (!['number', 'string'].includes(typeof amount) || String(amount).trim() === '') {
+        throw new AppError('consultation_fee must be a valid non-negative number', 400);
+    }
+    const fee = toMoney(amount, 'consultation_fee');
+    if (fee > 99999999.99) throw new AppError('consultation_fee exceeds the supported amount', 400);
+    const [rows] = await connection.execute(
+        `SELECT id, bill_type, status, gross_amount, paid_amount
+         FROM tbl_bills WHERE id = ? LIMIT 1 FOR UPDATE`,
+        [billId]
+    );
+    const bill = rows[0];
+    if (!bill) throw new AppError('Bill not found', 404);
+    if (bill.bill_type !== 'CONSULTATION' || bill.status !== 'ACTIVE') {
+        throw new AppError('Fee can be set only for an active consultation bill', 409);
+    }
+    if (Number(bill.paid_amount) > 0) {
+        if (fee !== Number(bill.gross_amount)) {
+            throw new AppError('Consultation fee cannot be changed after payment collection', 409);
+        }
+        return;
+    }
+    await connection.execute(
+        'UPDATE tbl_bills SET gross_amount = ?, updated_by = ? WHERE id = ?',
+        [fee, actorUserId, billId]
+    );
+};
+
 const replaceBillDiscounts = async ({ connection, billId, discounts, actorUserId }) => {
     const normalized = normalizeDiscounts(discounts);
     if (normalized === null) return null;
@@ -173,6 +201,7 @@ const listBillDiscounts = async (billId) => {
 };
 
 module.exports = {
+    setReceptionistConsultationFee,
     DISCOUNT_CATEGORIES,
     normalizeDiscounts,
     parseStoredDiscounts,

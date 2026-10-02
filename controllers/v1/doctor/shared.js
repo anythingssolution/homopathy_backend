@@ -134,6 +134,11 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
     a.reception_approved_by,
     a.consultation_payment_status,
     a.consultation_bill_id,
+    CASE
+        WHEN cb.paid_amount > 0 OR a.reception_status = 'APPROVED_BY_RECEPTION'
+        THEN cb.paid_amount
+        ELSE NULL
+    END AS consultation_collected_amount,
     a.payment_collected_at,
     a.payment_collected_by,
     a.reception_rejected_at,
@@ -179,6 +184,11 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
  JOIN master_clinic_branches b ON b.id = a.fk_branch_id
  JOIN master_treatments t ON t.id = a.fk_treatment_id
  JOIN master_slots s ON s.id = a.fk_slot_id
+ LEFT JOIN tbl_bills cb
+   ON cb.id = a.consultation_bill_id
+  AND cb.appointment_id = a.appointment_id
+  AND cb.bill_type = 'CONSULTATION'
+  AND cb.status = 'ACTIVE'
  LEFT JOIN tbl_doctor_slot_time_overrides sto
    ON sto.fk_branch_id = a.fk_branch_id
   AND sto.fk_slot_id = a.fk_slot_id

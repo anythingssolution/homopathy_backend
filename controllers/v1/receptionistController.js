@@ -12,7 +12,7 @@ const {
     normalizeAmount,
     PAYMENT_SETTLEMENT_TYPES,
 } = require('../../services/billingService');
-const { replaceBillDiscounts } = require('../../services/billingDiscountService');
+const { replaceBillDiscounts, setReceptionistConsultationFee } = require('../../services/billingDiscountService');
 const {
     QUEUE_STATUS,
     ACTIVE_QUEUE_STATUSES,
@@ -2962,12 +2962,22 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             billId = billResult.billId;
         }
 
+        const hasReceptionistFee = !isFollowUpAutoPaid && req.body?.consultation_fee !== undefined;
+        if (hasReceptionistFee) {
+            await setReceptionistConsultationFee({
+                connection,
+                billId,
+                amount: req.body.consultation_fee,
+                actorUserId: req.user.id,
+            });
+        }
+
         let discountResult = null;
-        if (req.body?.discounts !== undefined) {
+        if (req.body?.discounts !== undefined || hasReceptionistFee) {
             discountResult = await replaceBillDiscounts({
                 connection,
                 billId,
-                discounts: req.body.discounts,
+                discounts: req.body.discounts ?? [],
                 actorUserId: req.user.id,
             });
         }
@@ -2978,6 +2988,13 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
         );
         const payableAmount = Number(Number(payableRows[0]?.pending_amount || 0).toFixed(2));
         const hasPayableAmount = payableAmount > 0;
+        if (hasReceptionistFee && (
+            !['number', 'string'].includes(typeof req.body.amount)
+            || String(req.body.amount).trim() === ''
+            || normalizeAmount(req.body.amount) !== payableAmount
+        )) {
+            throw new AppError(`Full consultation payable amount of ₹${payableAmount.toFixed(2)} must be collected`, 400);
+        }
 
         if (!isFollowUpAutoPaid && hasPayableAmount) {
             const payment = parsePaymentCollectionPayload(req.body);
@@ -3079,6 +3096,7 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             appointmentWasAlreadyApproved: appointment.reception_status === 'APPROVED_BY_RECEPTION',
             approvedWithoutPaymentCollection: isFollowUpAutoPaid,
             approvedByFullDiscount: !isFollowUpAutoPaid && !hasPayableAmount && Number(discountResult?.discount_amount || 0) > 0,
+            approvedWithoutCharge: !isFollowUpAutoPaid && !hasPayableAmount,
         };
     });
 
@@ -3114,6 +3132,8 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
                 ? 'Follow-up appointment approved successfully'
             : transactionResult.approvedByFullDiscount
                 ? 'Appointment approved with full consultation discount'
+            : transactionResult.approvedWithoutCharge
+                ? 'Appointment approved without consultation charge'
             : 'Appointment approved and consultation payment collected successfully',
         data: {
             appointment,
