@@ -90,6 +90,15 @@ const validateEnv = () => {
     const nodeEnv = getStringEnv('NODE_ENV', 'development');
     const defaultOtp = validateOtpValue('DEFAULT_OTP', getStringEnv('DEFAULT_OTP', '123456'));
     const useDefaultOtpInProduction = getBooleanEnv('USE_DEFAULT_OTP_IN_PRODUCTION', false);
+    const smsProvider = getStringEnv('SMS_PROVIDER', 'mock').toLowerCase();
+    const smsApiKey = getStringEnv('TWOFACTOR_API_KEY');
+    const smsTemplateName = getStringEnv('TWOFACTOR_TEMPLATE_NAME', 'DTH_OTP');
+    if (!['mock', '2factor'].includes(smsProvider)) {
+        throw new Error('SMS_PROVIDER must be mock or 2factor');
+    }
+    if (smsProvider === '2factor' && !smsApiKey) {
+        throw new Error('TWOFACTOR_API_KEY is required when SMS_PROVIDER is 2factor');
+    }
     const otpExpiresInSec = getNumberEnv('OTP_EXPIRES_IN_SEC', 300);
     const otpResendIntervalSec = getNumberEnv('OTP_RESEND_INTERVAL_SEC', 60);
     const authWindowMs = getNumberEnv('AUTH_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000);
@@ -134,6 +143,12 @@ const validateEnv = () => {
             useDefaultInProduction: useDefaultOtpInProduction,
             expiresInSec: otpExpiresInSec,
             resendIntervalSec: otpResendIntervalSec,
+        },
+        sms: {
+            provider: smsProvider,
+            apiKey: smsApiKey,
+            templateName: smsTemplateName,
+            requestTimeoutMs: getNumberEnv('SMS_REQUEST_TIMEOUT_MS', 10000),
         },
         whatsapp: {
             accessToken: getStringEnv('WHATSAPP_ACCESS_TOKEN'),

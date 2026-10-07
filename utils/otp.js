@@ -4,9 +4,10 @@ const generateOtp = ({
     nodeEnv,
     defaultOtp,
     useDefaultInProduction = false,
+    forceRandom = false,
     randomIntFn = randomInt,
 }) => {
-    const shouldUseDefaultOtp = nodeEnv !== 'production' || useDefaultInProduction === true;
+    const shouldUseDefaultOtp = !forceRandom && (nodeEnv !== 'production' || useDefaultInProduction === true);
 
     if (shouldUseDefaultOtp) {
         return String(defaultOtp);

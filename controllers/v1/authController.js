@@ -10,6 +10,7 @@ const { getModuleAccessFromUser } = require('../../utils/moduleAccess');
 const { isBranchScopedRole } = require('../../utils/branchScope');
 const { sendRegistrationWelcomeWhatsApp } = require('../../utils/whatsappService');
 const { generateOtp } = require('../../utils/otp');
+const { createOtpSmsSender } = require('../../services/otpSmsService');
 const { generatePatientUuid } = require('../../utils/patientUuid');
 
 const getClientIp = (req) => {
@@ -54,12 +55,10 @@ const generateOtpForCurrentEnvironment = () => generateOtp({
     nodeEnv: env.nodeEnv,
     defaultOtp: env.otp.defaultOtp,
     useDefaultInProduction: env.otp.useDefaultInProduction,
+    forceRandom: env.sms.provider === '2factor',
 });
 
-const sendOtpToMobile = async (mobileNo, otp) => {
-    // Replace this with a real SMS gateway integration in production.
-    console.log(`Sending OTP ${otp} to ${mobileNo}`);
-};
+const sendOtpToMobile = createOtpSmsSender({ config: env.sms, nodeEnv: env.nodeEnv });
 
 const getRolePayload = (value) => {
     const roleMeta = getRoleMeta(value);
@@ -543,7 +542,7 @@ const requestRegistrationOtp = asyncHandler(async (req, res) => {
         },
     };
 
-    if (env.nodeEnv !== 'production') {
+    if (env.nodeEnv !== 'production' && env.sms.provider === 'mock') {
         response.data.default_otp = otpRecord.otp;
     }
 
@@ -865,7 +864,7 @@ const requestLoginOtp = asyncHandler(async (req, res) => {
         },
     };
 
-    if (env.nodeEnv !== 'production') {
+    if (env.nodeEnv !== 'production' && env.sms.provider === 'mock') {
         response.data.default_otp = otp;
     }
 
@@ -1285,7 +1284,7 @@ const requestForgotPasswordOtp = asyncHandler(async (req, res) => {
         },
     };
 
-    if (env.nodeEnv !== 'production') {
+    if (env.nodeEnv !== 'production' && env.sms.provider === 'mock') {
         response.data.default_otp = otpRecord.otp;
     }
 

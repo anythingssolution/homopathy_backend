@@ -55,6 +55,12 @@ test('production generates a random six-digit OTP when the toggle is false', () 
     assert.match(otp, /^\d{6}$/);
 });
 
+test('real SMS mode forces random OTP even in development or with the fixed OTP toggle', () => {
+    for (const nodeEnv of ['development', 'production']) {
+        assert.equal(generateOtp({ nodeEnv, defaultOtp: '123456', useDefaultInProduction: true, forceRandom: true, randomIntFn: () => 654321 }), '654321');
+    }
+});
+
 test('boolean environment values accept only true or false', (t) => {
     const key = 'TEST_OTP_BOOLEAN_VALUE';
     const originalValue = process.env[key];
