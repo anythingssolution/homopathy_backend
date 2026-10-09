@@ -1232,6 +1232,7 @@ const createRepeatMedicineBill = async ({
     sourceConsultationId,
     prescribedItems,
     additionalItems = [],
+    tests = [],
     courierCharge = 0,
     deliveryMode = 'HAND_DELIVERY',
     deliveryDetails = null,
@@ -1244,6 +1245,7 @@ const createRepeatMedicineBill = async ({
     const totalAmount = normalizeAmount(
         normalizedPrescribedItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
         + normalizedAdditionalItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+        + tests.reduce((sum, item) => sum + Number(item.amount), 0)
         + normalizedCourierCharge
     ) ?? 0;
 
@@ -1307,6 +1309,15 @@ const createRepeatMedicineBill = async ({
              (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
              VALUES (?, NULL, NULL, 'ADDITIONAL_MEDICATION', ?, 1, ?, ?)`,
             [billId, itemName, itemAmount, itemAmount]
+        );
+    }
+
+    for (const test of tests) {
+        await connection.execute(
+            `INSERT INTO tbl_bill_items
+             (bill_id, consultation_medication_id, consultation_test_id, item_type, item_name, quantity, unit_price, amount)
+             VALUES (?, NULL, NULL, 'TEST', ?, 1, ?, ?)`,
+            [billId, test.test_name, test.amount, test.amount]
         );
     }
 

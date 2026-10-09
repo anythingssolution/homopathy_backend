@@ -18,14 +18,14 @@ db.withTransaction = async fn => fn({execute: async (sql, params) => {
 const controller = require('../controllers/v1/receptionistController');
 const invoke = (fn, req) => new Promise((resolve, reject) => fn(req, {status() {return this;}, json: resolve}, reject));
 
-test('ID lookup searches both IDs only and binds exact-match priority after filter parameters', async () => {
+test('ID lookup searches registration ID only and binds exact-match priority after filter parameters', async () => {
   calls = [];
   await invoke(controller.listReceptionistPatients, {query: {search: 'DTH42', search_by: 'id'}});
   const list = calls.find(c => c.sql.includes('LIMIT'));
-  assert.match(list.sql, /u\.uuid LIKE \? OR u\.clinic_patient_no LIKE \?/);
+  assert.match(list.sql, /u\.uuid LIKE \?/);
   assert.doesNotMatch(list.sql, /u\.full_name LIKE|u\.mobile_no LIKE/);
-  assert.match(list.sql, /CASE WHEN u\.uuid = \? OR u\.clinic_patient_no = \? THEN 0/);
-  assert.deepEqual(list.params, ['%DTH42%', '%DTH42%', 'DTH42', 'DTH42']);
+  assert.match(list.sql, /CASE WHEN u\.uuid = \? THEN 0/);
+  assert.deepEqual(list.params, ['%DTH42%', 'DTH42']);
   assert.match(list.sql, /u\.is_active = 1/);
   assert.doesNotMatch(list.sql, /a_branch/);
 });
@@ -35,7 +35,7 @@ test('name/mobile search retains its existing matching fields', async () => {
   await invoke(controller.listReceptionistPatients, {query: {search: 'Ravi'}});
   const list = calls.find(c => c.sql.includes('LIMIT'));
   assert.match(list.sql, /u\.full_name LIKE \? OR u\.mobile_no LIKE/);
-  assert.equal(list.params.length, 5);
+  assert.equal(list.params.length, 4);
   assert.doesNotMatch(list.sql, /CASE WHEN/);
 });
 

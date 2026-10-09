@@ -113,15 +113,15 @@ test('patient registry sorting preserves global registrations and branch-scoped 
     for (const { sql, params } of registryQueries) {
         assert.ok(sql.includes("a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?"));
         assert.ok(sql.includes("p.role = 'PAT' AND p.is_active = 1"));
-        assert.ok(sql.includes('p.clinic_patient_no LIKE ?'));
+        assert.ok(sql.includes('p.uuid LIKE ?'));
         assert.equal(params[0], 2);
         if (sql.includes('pickups.latest_medicine_pickup_date')) {
             assert.equal(params[1], 2);
-            assert.deepEqual(params.slice(2, 9), Array(7).fill('%DTH22%'));
-            assert.deepEqual(params.slice(9, 11), [2, '%DTH22%']);
-        } else {
-            assert.deepEqual(params.slice(1, 8), Array(7).fill('%DTH22%'));
+            assert.deepEqual(params.slice(2, 8), Array(6).fill('%DTH22%'));
             assert.deepEqual(params.slice(8, 10), [2, '%DTH22%']);
+        } else {
+            assert.deepEqual(params.slice(1, 7), Array(6).fill('%DTH22%'));
+            assert.deepEqual(params.slice(7, 9), [2, '%DTH22%']);
         }
         assert.ok(sql.includes('search_bill.bill_number LIKE ?'));
     }

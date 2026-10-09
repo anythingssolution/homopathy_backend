@@ -53,6 +53,12 @@ router.get('/booking-form-data', getReceptionistFormData);
 router.get('/booking-patients', listReceptionistPatients);
 router.get('/token-plate', getBookingTokenPlate);
 
+// Patient accounts are shared across clinics, including patients without a visit.
+router.get('/patients', listReceptionistPatients);
+router.patch('/patients/:patient_id', updateReceptionistPatient);
+router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdateHistory);
+router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
+
 router.use(enforceSelectedBranchScope);
 router.get('/form-data', getReceptionistFormData);
 router.get('/appointments', listReceptionistAppointments);
@@ -64,11 +70,7 @@ router.post('/appointments/:appointment_id/approve', authorizeAppointmentBranchS
 router.post('/appointments/:appointment_id/reject', authorizeAppointmentBranchScope, rejectReceptionistAppointment);
 router.post('/appointments/bulk-reject', bulkRejectReceptionistAppointments);
 router.put('/appointments/:appointment_id/vitals', authorizeAppointmentBranchScope, saveReceptionistAppointmentVitals);
-router.get('/patients', listReceptionistPatients);
 router.get('/patients/:patient_id', getReceptionistPatientDetail);
-router.patch('/patients/:patient_id', updateReceptionistPatient);
-router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdateHistory);
-router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
 router.post('/appointments/:appointment_id/not-available', authorizeAppointmentBranchScope, markAppointmentNotAvailable);
 router.post('/appointments/:appointment_id/reschedule', authorizeAppointmentBranchScope, rescheduleAppointmentByReceptionist);
 router.post('/appointments/:appointment_id/transfer', authorizeAppointmentBranchScope, transferAppointmentByReceptionist);

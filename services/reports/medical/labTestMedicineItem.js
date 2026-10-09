@@ -1,9 +1,10 @@
+const { getRepeatBillTestRows } = require('./repeatBillTests');
 const { buildMedicalReportScope, query } = require('./shared');
 
 const getLabTestMedicineItemReport = async (filters) => {
     const { whereClause, params } = buildMedicalReportScope(filters);
 
-    return query(
+    const rows = await query(
         `SELECT
             item_type,
             item_name,
@@ -41,6 +42,14 @@ const getLabTestMedicineItemReport = async (filters) => {
          ORDER BY total_items DESC, item_type ASC, item_name ASC`,
         [...params, ...params]
     );
+    const extra = await getRepeatBillTestRows(filters);
+    const groups = new Map(rows.map(row => [`${row.item_type}:${row.item_name}:${row.added_by_role}`, { ...row, total_items: Number(row.total_items), total_amount: Number(row.total_amount) }]));
+    for (const test of extra) {
+        const key = `LAB_TEST:${test.test_name}:MEDICAL`;
+        const group = groups.get(key) || { item_type: 'LAB_TEST', item_name: test.test_name, added_by_role: 'MEDICAL', total_items: 0, total_amount: 0 };
+        group.total_items += 1; group.total_amount += Number(test.amount); groups.set(key, group);
+    }
+    return [...groups.values()].sort((a, b) => b.total_items - a.total_items || String(a.item_name).localeCompare(String(b.item_name)));
 };
 
 module.exports = getLabTestMedicineItemReport;

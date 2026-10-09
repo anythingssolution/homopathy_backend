@@ -1,3 +1,4 @@
+const { partitionMedicinePurchaseItems } = require('../utils/medicinePurchaseItems');
 const crypto = require('crypto');
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -208,13 +209,11 @@ const appendCommonFilters = ({ conditions, params, filters, aliases = {} }) => {
             ${patientAlias}.full_name LIKE ?
             OR ${patientAlias}.mobile_no LIKE ?
             OR ${patientAlias}.uuid LIKE ?
-            OR ${patientAlias}.clinic_patient_no LIKE ?
             OR ${familyAlias}.full_name LIKE ?
             OR ${familyAlias}.relationship LIKE ?
             OR ${appointmentAlias}.auid LIKE ?
         )`);
         params.push(
-            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
@@ -296,7 +295,6 @@ const buildRegistryWhere = (filters) => {
             p.full_name LIKE ?
             OR p.mobile_no LIKE ?
             OR p.uuid LIKE ?
-            OR p.clinic_patient_no LIKE ?
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR a.auid LIKE ?
@@ -310,7 +308,6 @@ const buildRegistryWhere = (filters) => {
             )
         )`);
         params.push(
-            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
@@ -351,7 +348,6 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
         `SELECT
             p.id AS patient_id,
             p.uuid AS patient_uuid,
-            p.clinic_patient_no,
             p.full_name,
             p.age,
             p.gender,
@@ -428,7 +424,6 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
         items: rows.map((row) => ({
             patient_id: Number(row.patient_id),
             patient_uuid: row.patient_uuid,
-            clinic_patient_no: row.clinic_patient_no || null,
             full_name: row.full_name,
             age: row.age,
             gender: row.gender,
@@ -799,9 +794,10 @@ const buildMedicinePurchaseVisitRecord = (row) => {
             treatment_name: isDirectMedicine ? 'Direct Medicine' : 'Repeat Medicine',
             slot_name: isDirectMedicine ? 'Medical Only' : 'Repeat Medicine',
             has_prescription: false,
-            has_medical_items: Number(row.medicine_count || 0) > 0,
+            has_medical_items: Number(row.medicine_count || 0) > 0 || Number(row.test_count || 0) > 0,
             medicine_count: Number(row.medicine_count || 0),
             medicine_summary: row.medicine_summary || null,
+            test_count: Number(row.test_count || 0),
             bills_count: 1,
             delivery_mode: row.delivery_mode || null,
             remark: row.remark || null,
@@ -843,10 +839,10 @@ const fetchStandaloneMedicinePurchaseRows = async (filters) => {
     }
     if (filters.patientSearch) {
         conditions.push(`(
-            p.full_name LIKE ? OR p.mobile_no LIKE ? OR p.uuid LIKE ? OR p.clinic_patient_no LIKE ?
+            p.full_name LIKE ? OR p.mobile_no LIKE ? OR p.uuid LIKE ?
             OR fm.full_name LIKE ? OR fm.relationship LIKE ? OR rb.bill_number LIKE ?
         )`);
-        params.push(...Array(7).fill(`%${filters.patientSearch}%`));
+        params.push(...Array(6).fill(`%${filters.patientSearch}%`));
     }
 
     return query(
@@ -879,8 +875,9 @@ const fetchStandaloneMedicinePurchaseRows = async (filters) => {
                 COALESCE(fm.full_name, p.full_name) AS patient_full_name,
                 COALESCE(fm.age, p.age) AS patient_age,
                 COALESCE(fm.gender, p.gender) AS patient_gender,
-                COUNT(DISTINCT bi.id) AS medicine_count,
-                GROUP_CONCAT(DISTINCT bi.item_name ORDER BY bi.id SEPARATOR ', ') AS medicine_summary,
+                COUNT(DISTINCT CASE WHEN bi.item_type <> 'TEST' THEN bi.id END) AS medicine_count,
+                COUNT(DISTINCT CASE WHEN bi.item_type = 'TEST' THEN bi.id END) AS test_count,
+                GROUP_CONCAT(DISTINCT CASE WHEN bi.item_type <> 'TEST' THEN bi.item_name END ORDER BY bi.id SEPARATOR ', ') AS medicine_summary,
                 (rb.consultation_id IS NULL OR COALESCE(rb.remark, '') LIKE '%Medical Only%') AS is_direct_medicine
          FROM tbl_bills rb
          JOIN master_users p ON p.id = rb.patient_id
@@ -1229,8 +1226,7 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
 
     const medicinePurchaseItems = billRows.map((row) => {
         const isDirectMedicine = Boolean(Number(row.is_direct_medicine));
-        const billItems = (itemsByBillId.get(Number(row.bill_id)) || [])
-            .filter((item) => String(item.item_name || '').trim().toLowerCase() !== 'courier charge');
+        const { medications: billItems, tests: billTests } = partitionMedicinePurchaseItems(itemsByBillId.get(Number(row.bill_id)) || []);
         return {
             record_type: isDirectMedicine ? 'DIRECT_MEDICINE' : 'REPEAT_MEDICINE',
             timeline_type: 'MEDICINE_PURCHASE',
@@ -1255,7 +1251,7 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
                     unit_price: item.unit_price,
                     doses: [],
                 })),
-                tests: [],
+                tests: billTests,
             },
             appointment: {
                 appointment_date: row.event_at,
@@ -1278,6 +1274,7 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
                 branch_name: row.branch_name,
                 doctor_full_name: row.doctor_full_name || null,
                 medications: billItems,
+                tests: billTests,
             },
         };
     });
@@ -1551,14 +1548,12 @@ const appendDocumentFilters = ({ conditions, params, filters }) => {
             p.full_name LIKE ?
             OR p.mobile_no LIKE ?
             OR p.uuid LIKE ?
-            OR p.clinic_patient_no LIKE ?
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR doc.title LIKE ?
             OR doc.original_filename LIKE ?
         )`);
         params.push(
-            `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,

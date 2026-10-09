@@ -8,6 +8,7 @@ const {
     listRepeatMedicinePatients,
     getRepeatMedicineLastPrescription,
     createRepeatMedicineBillController,
+    listRepeatMedicineTests,
     saveMedicalPrescriptionPricing,
     processMedicalPrescription,
     downloadMedicalProductImportTemplate,
@@ -38,6 +39,7 @@ const upload = multer({
 router.use(authenticate, authorizeModuleAccess('MEDICAL'), enforceSelectedBranchScope);
 
 router.get('/masters/text-medicines', getDoctorTextMedicineMasters);
+router.get('/repeat-medicine/tests', listRepeatMedicineTests);
 router.get('/repeat-medicine/patients', listRepeatMedicinePatients);
 router.get('/repeat-medicine/patients/:patient_id/last-prescription', getRepeatMedicineLastPrescription);
 router.get('/patients/:patient_id/last-courier-delivery', getPatientLastCourierDelivery);

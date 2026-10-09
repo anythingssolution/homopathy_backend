@@ -333,6 +333,7 @@ class MetaWhatsAppProvider extends WhatsAppProviderInterface {
     async sendDocumentMessage({
         mobileNo,
         documentUrl,
+        documentBuffer,
         filename,
         caption = '',
         patientId = null,
@@ -378,6 +379,20 @@ class MetaWhatsAppProvider extends WhatsAppProviderInterface {
         let errorMessage = null;
 
         try {
+            let mediaId;
+            if (documentBuffer) {
+                const form = new FormData();
+                form.append('messaging_product', 'whatsapp');
+                form.append('type', 'application/pdf');
+                form.append('file', new Blob([documentBuffer], { type: 'application/pdf' }), filename);
+                const upload = await fetch(`https://graph.facebook.com/${env.whatsapp.apiVersion}/${env.whatsapp.phoneNumberId}/media`, {
+                    method: 'POST', headers: { Authorization: `Bearer ${env.whatsapp.accessToken}` }, body: form,
+                    signal: AbortSignal.timeout(env.whatsapp.requestTimeoutMs),
+                });
+                const uploaded = await upload.json();
+                if (!upload.ok || !uploaded.id) throw new Error('WhatsApp PDF upload failed. Check provider configuration.');
+                mediaId = uploaded.id;
+            }
             response = await this.postJson(
                 `https://graph.facebook.com/${env.whatsapp.apiVersion}/${env.whatsapp.phoneNumberId}/messages`,
                 {
@@ -386,7 +401,7 @@ class MetaWhatsAppProvider extends WhatsAppProviderInterface {
                     to,
                     type: 'document',
                     document: {
-                        link: documentUrl,
+                        ...(mediaId ? { id: mediaId } : { link: documentUrl }),
                         filename,
                         ...(caption ? { caption } : {}),
                     },

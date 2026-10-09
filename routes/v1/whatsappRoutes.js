@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate, authorizeRolesOrModuleAccess } = require('../../middleware/authMiddleware');
+const dispensarySharing = require('../../controllers/v1/dispensaryWhatsAppController');
+const { authenticate, authorizeRolesOrModuleAccess, authorizeModuleAccess, enforceSelectedBranchScope, authorizeBillBranchScope } = require('../../middleware/authMiddleware');
 const {
     sendWhatsAppMessage,
     sendWhatsAppDocument,
@@ -21,6 +22,12 @@ router.use(authenticate);
 
 // Role guards allowing Doctor
 const staffGuard = authorizeRolesOrModuleAccess(['doctor', 'DOC']);
+
+// Dispensary sharing uses the same module and branch access as Dispensary History.
+const dispensaryGuards = [authorizeModuleAccess('MEDICAL'), enforceSelectedBranchScope, authorizeBillBranchScope];
+router.post('/dispensary/:bill_id/preview', ...dispensaryGuards, dispensarySharing.preview);
+router.post('/dispensary/:bill_id/send', ...dispensaryGuards, dispensarySharing.send);
+router.get('/dispensary/:bill_id/messages/:message_id', ...dispensaryGuards, dispensarySharing.status);
 
 // Analytics & Insights
 router.get('/analytics', staffGuard, getWhatsAppAnalytics);

@@ -2,7 +2,6 @@
 CREATE TABLE IF NOT EXISTS `master_users` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `uuid` CHAR(36) NOT NULL,
-  `clinic_patient_no` VARCHAR(50) NULL,
   `full_name` VARCHAR(100) NOT NULL,
   `age` TINYINT UNSIGNED NOT NULL DEFAULT 18,
   `gender` ENUM('male', 'female', 'other') NOT NULL DEFAULT 'other',
@@ -27,7 +26,6 @@ CREATE TABLE IF NOT EXISTS `master_users` (
   `updated_ip` VARCHAR(45) NULL,
   PRIMARY KEY (`id`),
   UNIQUE INDEX `idx_patient_uuid` (`uuid`),
-  INDEX `idx_master_users_clinic_patient_no` (`clinic_patient_no`),
   INDEX `idx_master_users_area_name` (`area_name`),
   INDEX `idx_master_users_pincode` (`pincode`),
   INDEX `idx_master_users_city` (`city`),

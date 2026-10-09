@@ -40,8 +40,16 @@ test('cross-branch booking requires authenticated reception access without restr
 });
 
 test('operational lists and appointment mutations retain branch restrictions', () => {
-    for (const [method, route] of [['get', '/appointments'], ['get', '/patients'], ['get', '/form-data'], ['post', '/appointments/:appointment_id/approve']]) {
+    for (const [method, route] of [['get', '/appointments'], ['get', '/form-data'], ['post', '/appointments/:appointment_id/approve']]) {
         assert.ok(routeGuards(method, route).includes('selected-branch'));
     }
     assert.ok(routeGuards('post', '/appointments/:appointment_id/approve').includes('appointment-branch'));
+});
+
+test('shared patient registry and corrections retain reception access without a visit in the working branch', () => {
+    for (const [method, route] of [['get', '/patients'], ['patch', '/patients/:patient_id'], ['get', '/patients/:patient_id/update-history']]) {
+        const guards = routeGuards(method, route);
+        assert.deepEqual(guards.slice(0, 2), ['authentication', 'reception-access']);
+        assert.ok(!guards.includes('selected-branch'));
+    }
 });

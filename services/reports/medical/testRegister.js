@@ -1,3 +1,4 @@
+const { getRepeatBillTestRows } = require('./repeatBillTests');
 const { buildMedicalReportScope, query } = require('./shared');
 const { decorateTokenFields } = require('../../../utils/tokenDisplay');
 
@@ -70,7 +71,12 @@ const getTestRegisterReport = async (filters) => {
         params
     );
 
-    return rows.map((row) => decorateTokenFields(row));
+    const billTests = await getRepeatBillTestRows(filters);
+    return [...rows.map((row) => decorateTokenFields(row)), ...billTests].sort((a, b) =>
+        String(b.appointment_date).localeCompare(String(a.appointment_date))
+        || (Number(a.token_number) || Number.MAX_SAFE_INTEGER) - (Number(b.token_number) || Number.MAX_SAFE_INTEGER)
+        || (a.test_source === 'BILL' && b.test_source === 'BILL' ? String(b.recommended_at).localeCompare(String(a.recommended_at)) || Number(b.bill_id) - Number(a.bill_id) : 0)
+    );
 };
 
 module.exports = getTestRegisterReport;

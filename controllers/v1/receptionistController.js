@@ -1,3 +1,5 @@
+const { normalizeBookingPatientUpdates, saveBookingPatientUpdates } = require('../../utils/bookingPatientUpdates');
+const { normalizePatientRegistrationId, assertRegistrationIdAvailable } = require('../../utils/patientRegistrationId');
 const bcrypt = require('bcryptjs');
 const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
@@ -687,11 +689,11 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
 
     if (search) {
         if (searchById) {
-            conditions.push('(u.uuid LIKE ? OR u.clinic_patient_no LIKE ?)');
-            params.push(`%${search}%`, `%${search}%`);
+            conditions.push('(u.uuid LIKE ?)');
+            params.push(`%${search}%`);
         } else {
-            conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.clinic_patient_no LIKE ? OR u.email LIKE ?)');
-            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+            conditions.push('(u.full_name LIKE ? OR u.mobile_no LIKE ? OR u.uuid LIKE ? OR u.email LIKE ?)');
+            params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
         }
     }
 
@@ -736,12 +738,12 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             `SELECT
             u.id AS patient_id,
             u.uuid AS patient_uuid,
-            u.clinic_patient_no,
             u.full_name,
             u.age,
             u.gender,
             u.email,
             u.mobile_no,
+            u.address,
             u.area_name,
             u.pincode,
             u.city,
@@ -753,9 +755,9 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             (SELECT MAX(a.appointment_date) FROM tbl_appointments a WHERE a.fk_patient_id = u.id ${branchId ? `AND a.fk_branch_id = ${branchId}` : ''} AND a.is_active = 1) AS last_appointment_date
          FROM master_users u
          ${whereClause}
-         ORDER BY ${searchById && search ? 'CASE WHEN u.uuid = ? OR u.clinic_patient_no = ? THEN 0 ELSE 1 END,' : ''} u.full_name ASC, u.id ASC
+         ORDER BY ${searchById && search ? 'CASE WHEN u.uuid = ? THEN 0 ELSE 1 END,' : ''} u.full_name ASC, u.id ASC
          LIMIT ${pageSize} OFFSET ${offset}`,
-            searchById && search ? [...params, search, search] : params
+            searchById && search ? [...params, search] : params
         ),
     ]);
 
@@ -833,13 +835,9 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const city = req.body?.city !== undefined ? String(req.body.city).trim() : undefined;
     const relationship =
         req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
-    // Empty string clears the value; whitespace is stripped and upper-cased so "dth 1210" is stored as "DTH1210".
-    const clinicPatientNo =
-        req.body?.clinic_patient_no !== undefined
-            ? (req.body.clinic_patient_no === null
-                ? null
-                : String(req.body.clinic_patient_no).replace(/\s+/g, '').toUpperCase() || null)
-            : undefined;
+    const registrationId = req.body?.patient_uuid !== undefined
+        ? normalizePatientRegistrationId(req.body.patient_uuid)
+        : undefined;
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
@@ -849,19 +847,14 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         if (fullName === undefined && gender === undefined && age === undefined && relationship === undefined) {
             throw new AppError('At least one of full_name, gender, age or relationship is required', 400);
         }
-    } else if (fullName === undefined && mobileNo === undefined && gender === undefined && clinicPatientNo === undefined
-        && areaName === undefined && pincode === undefined && city === undefined) {
+    } else if (fullName === undefined && mobileNo === undefined && gender === undefined && registrationId === undefined
+        && age === undefined && areaName === undefined && pincode === undefined && city === undefined) {
         throw new AppError('At least one patient detail is required', 400);
     }
 
     if (fullName !== undefined && (!fullName || fullName.length > 100)) {
         throw new AppError('full_name must be between 1 and 100 characters', 400);
     }
-
-    if (clinicPatientNo !== undefined && clinicPatientNo !== null && clinicPatientNo.length > 50) {
-        throw new AppError('clinic_patient_no must be at most 50 characters', 400);
-    }
-
     if (!familyMemberId && mobileNo !== undefined && !validateMobile(mobileNo)) {
         throw new AppError('mobile_no must be 10 to 15 digits', 400);
     }
@@ -896,7 +889,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, clinic_patient_no, full_name, mobile_no, gender, age, address, area_name,
+            `SELECT id, uuid, full_name, mobile_no, gender, age, address, area_name,
                     ward_no, vidhan_sabha, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
@@ -1043,19 +1036,8 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             }
         }
 
-        if (clinicPatientNo && clinicPatientNo !== patient.clinic_patient_no) {
-            const [duplicateClinicRows] = await connection.execute(
-                `SELECT id
-                 FROM master_users
-                 WHERE clinic_patient_no = ?
-                   AND id <> ?
-                 LIMIT 1`,
-                [clinicPatientNo, patientId]
-            );
-
-            if (duplicateClinicRows.length > 0) {
-                throw new AppError('Patient ID already belongs to another patient', 409);
-            }
+        if (registrationId !== undefined && registrationId !== patient.uuid) {
+            await assertRegistrationIdAvailable(connection, registrationId, patientId);
         }
 
         const oldValues = {};
@@ -1065,7 +1047,8 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             full_name: fullName,
             mobile_no: mobileNo,
             gender,
-            clinic_patient_no: clinicPatientNo,
+            age,
+            uuid: registrationId,
             area_name: areaName,
             pincode,
             city,
@@ -1124,7 +1107,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         );
 
         const [updatedRows] = await connection.execute(
-            `SELECT id AS patient_id, uuid AS patient_uuid, clinic_patient_no, full_name, age, gender, email, mobile_no,
+            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, gender, email, mobile_no,
                     address, area_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
@@ -1460,6 +1443,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const {
         fk_patient_id,
         patient,
+        patient_updates,
         fk_branch_id,
         fk_treatment_id,
         fk_slot_id,
@@ -1473,6 +1457,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     } = req.body || {};
 
     const patientId = toPositiveInt(fk_patient_id);
+    const patientUpdates = normalizeBookingPatientUpdates(patient_updates, patientId);
     const branchId = toPositiveInt(fk_branch_id);
     const treatmentId = toPositiveInt(fk_treatment_id);
     const slotId = toPositiveInt(fk_slot_id);
@@ -1553,10 +1538,10 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
 
         if (resolvedPatientId) {
             const [existingPatientRows] = await connection.execute(
-                `SELECT id, role, is_active
+                `SELECT id, uuid, full_name, mobile_no, age, gender, role, is_active
                  FROM master_users
                  WHERE id = ?
-                 LIMIT 1`,
+                 LIMIT 1 FOR UPDATE`,
                 [resolvedPatientId]
             );
             patientRows = existingPatientRows;
@@ -1646,6 +1631,15 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
 
         if (Number(patientRows[0].is_active) !== 1) {
             throw new AppError('Selected patient is inactive', 409);
+        }
+
+        if (patientId) {
+            await saveBookingPatientUpdates(connection, patientRows[0], patientUpdates, {
+                id: req.user.id,
+                role: req.user.role_code || req.user.role || null,
+                ip: createdIp,
+                userAgent: req.headers['user-agent'] || null,
+            });
         }
 
         if (branchRows.length === 0) {

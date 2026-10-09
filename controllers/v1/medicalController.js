@@ -1,3 +1,5 @@
+const { resolveRepeatBillTests } = require('../../services/repeatBillTests');
+const { partitionMedicinePurchaseItems } = require('../../utils/medicinePurchaseItems');
 const { saveAdditionalMedications } = require('../../services/additionalMedicationSaveService');
 const { query, withTransaction } = require('../../config/db');
 const { randomUUID } = require('crypto');
@@ -44,6 +46,7 @@ const {
 } = require('../../services/dispensaryPricingService');
 const { normalizeDiscounts, replaceBillDiscounts } = require('../../services/billingDiscountService');
 const { getLastCourierDelivery } = require('../../services/courierDeliveryService');
+const { resolveRepeatMedicineAmount } = require('../../utils/repeatMedicinePricing');
 
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 
@@ -725,6 +728,7 @@ const listRepeatMedicinePatients = asyncHandler(async (req, res) => {
 const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
     const patientId = toPositiveInt(req.params.patient_id);
     const branchId = req.selectedBranchId || toPositiveInt(req.query.branch_id);
+    const includePrevious = req.query.include_previous === '1';
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
@@ -778,7 +782,7 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
                   AND COALESCE(cm.added_by_role, 'DOCTOR') = 'DOCTOR'
            )
          ORDER BY COALESCE(c.doctor_finalized_at, c.created_at) DESC, c.id DESC
-         LIMIT 1`,
+         LIMIT ${includePrevious ? 2 : 1}`,
         [patientId, branchId]
     );
 
@@ -786,9 +790,9 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
         throw new AppError('No previous doctor prescription found for this patient in selected branch', 404);
     }
 
-    const consultation = consultationRows[0];
     const medicationRows = await query(
         `SELECT
+            cm.consultation_id,
             cm.id AS consultation_medication_id,
             cm.medicine_type,
             cm.medicine_value,
@@ -801,16 +805,34 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
            ON mppi.pricing_id = mpp.id
           AND mppi.consultation_medication_id = cm.id
           AND mppi.dispense_status = 'ACTIVE'
-         WHERE cm.consultation_id = ?
+         WHERE cm.consultation_id IN (${consultationRows.map(() => '?').join(',')})
            AND COALESCE(cm.added_by_role, 'DOCTOR') = 'DOCTOR'
          ORDER BY cm.id ASC`,
-        [consultation.consultation_id]
+        consultationRows.map((consultation) => consultation.consultation_id)
     );
+
+    const currentProducts = medicationRows.some((row) => row.medicine_type === 'TEXT')
+        ? await query(
+            `SELECT product_name, packing, size_or_weight, category, mrp_rate, price_min, price_max, is_active
+             FROM master_medical_products WHERE is_active = 1`
+        )
+        : [];
 
     const accountDues = await getPatientMedicationOutstanding({
         patientId,
         branchId,
     });
+
+    const prescriptions = consultationRows.map((consultation) => decorateTokenFields({
+        ...consultation,
+        medications: medicationRows
+            .filter((row) => Number(row.consultation_id) === Number(consultation.consultation_id))
+            .map((row) => ({
+                ...row,
+                last_amount: row.last_amount || 0,
+                repeat_amount: resolveRepeatMedicineAmount(row, currentProducts),
+            })),
+    }));
 
     return res.status(200).json({
         success: true,
@@ -818,21 +840,23 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
         data: {
             patient: patientRows[0],
             account_dues: accountDues,
-            prescription: decorateTokenFields({
-                ...consultation,
-                medications: medicationRows.map((row) => ({
-                    ...row,
-                    last_amount: row.last_amount || 0,
-                })),
-            }),
+            prescription: prescriptions[0],
+            ...(includePrevious ? { prescriptions } : {}),
         },
     });
+});
+
+const listRepeatMedicineTests = asyncHandler(async (_req, res) => {
+    const rows = await query('SELECT id, test_name, amount, test_type FROM master_lab_test_prices WHERE is_active = 1 ORDER BY test_name, id');
+    return res.json({ success: true, data: rows });
 });
 
 const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     const patientId = toPositiveInt(req.body?.patient_id);
     const sourceConsultationId = toPositiveInt(req.body?.source_consultation_id);
     const branchId = req.selectedBranchId || toPositiveInt(req.body?.branch_id);
+    const submittedTests = req.body?.tests ?? [];
+    if (!Array.isArray(submittedTests)) throw new AppError('tests must be a list', 400);
     const submittedMedicines = Array.isArray(req.body?.medicines) ? req.body.medicines : [];
     const submittedAdditional = Array.isArray(req.body?.additional_medications) ? req.body.additional_medications : [];
     const remark = req.body?.remark ? String(req.body.remark).trim() : null;
@@ -864,8 +888,8 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
         throw new AppError('Branch is required for repeat medicine', 400);
     }
 
-    if (submittedMedicines.length === 0 && submittedAdditional.length === 0) {
-        throw new AppError('Select at least one prescribed medicine or add a medical medicine', 400);
+    if (submittedMedicines.length === 0 && submittedAdditional.length === 0 && submittedTests.length === 0) {
+        throw new AppError('Select at least one medicine or test', 400);
     }
 
     if (courierCharge === null) {
@@ -961,6 +985,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
             }
         }
 
+        const tests = await resolveRepeatBillTests(connection, submittedTests);
         const billResult = await createRepeatMedicineBill({
             connection,
             patientId,
@@ -968,6 +993,7 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
             sourceConsultationId,
             prescribedItems,
             additionalItems: normalizedAdditionalItems,
+            tests,
             courierCharge: deliveryMode === 'COURIER' ? courierCharge : 0,
             deliveryMode,
             deliveryDetails: {
@@ -1367,7 +1393,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
     ]);
     const repeatItemRows = repeatBillIds.length > 0
         ? await query(
-            `SELECT bill_id, consultation_medication_id, item_type, item_name, amount
+            `SELECT id AS bill_item_id, bill_id, consultation_medication_id, item_type, item_name, quantity, unit_price, amount
              FROM tbl_bill_items
              WHERE bill_id IN (${repeatBillIds.map(() => '?').join(',')})
              ORDER BY id ASC`,
@@ -1451,7 +1477,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
         const isDirectMedicine = !row.consultation_id || /Medical Only/i.test(row.remark || '');
         const billItems = repeatItemsByBillId.get(row.bill_id) || [];
         const billDetail = repeatBillDetailsById.get(Number(row.bill_id));
-        const medicineItems = billItems.filter((item) => String(item.item_name || '').toLowerCase() !== 'courier charge');
+        const { medications: medicineItems, tests: billTests } = partitionMedicinePurchaseItems(billItems);
         const courierItem = billItems.find((item) => String(item.item_name || '').toLowerCase() === 'courier charge');
         let deliveryDetails = null;
         try {
@@ -1493,7 +1519,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                     medicine_value: item.item_name,
                     added_by_role: item.item_type === 'ADDITIONAL_MEDICATION' ? 'MEDICAL' : 'DOCTOR',
                 })),
-                tests: [],
+                tests: billTests,
                 pricing: {
                     total_amount: row.total_amount,
                     remark: row.remark,
@@ -2239,6 +2265,7 @@ module.exports = {
     listRepeatMedicinePatients,
     getRepeatMedicineLastPrescription,
     createRepeatMedicineBillController,
+    listRepeatMedicineTests,
     listMedicalPrescriptions,
     listPricedMedicalPrescriptions,
     getMedicalPrescription,

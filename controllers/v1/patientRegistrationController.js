@@ -3,7 +3,7 @@ const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
-const { generatePatientUuid } = require('../../utils/patientUuid');
+const { normalizePatientRegistrationId, assertRegistrationIdAvailable, auditRegistrationIdChange } = require('../../utils/patientRegistrationId');
 
 const PATIENT_ROLE = 'PAT';
 
@@ -31,8 +31,8 @@ const normalizeCreatePayload = (body = {}) => {
     const fullName = String(body.full_name || '').trim();
     // Strip all whitespace and force upper-case so "dth 1210" is always stored as "DTH1210".
     const patientIdRaw =
-        body.patient_id !== undefined && body.patient_id !== null
-            ? String(body.patient_id).replace(/\s+/g, '').toUpperCase()
+        body.patient_uuid !== undefined && body.patient_uuid !== null
+            ? String(body.patient_uuid).replace(/\s+/g, '').toUpperCase()
             : '';
     const age = toPositiveInt(body.age);
     const gender = String(body.gender || '').trim().toLowerCase();
@@ -50,8 +50,8 @@ const normalizeCreatePayload = (body = {}) => {
         throw new AppError('full_name must be between 1 and 100 characters', 400);
     }
 
-    if (patientIdRaw && patientIdRaw.length > 50) {
-        throw new AppError('patient_id must be at most 50 characters', 400);
+    if (patientIdRaw && patientIdRaw.length > 36) {
+        throw new AppError('Registration number must be at most 36 characters', 400);
     }
 
     if (!age || age < 1 || age > 120) {
@@ -84,7 +84,7 @@ const normalizeCreatePayload = (body = {}) => {
 
     return {
         full_name: fullName,
-        patient_id: patientIdRaw || null,
+        patient_uuid: normalizePatientRegistrationId(patientIdRaw),
         age,
         gender,
         mobile_no: mobileNo,
@@ -99,7 +99,7 @@ const normalizeCreatePayload = (body = {}) => {
     };
 };
 
-const createPreviousManualPatient = asyncHandler(async (req, res) => {
+const createRegisteredPatient = asyncHandler(async (req, res) => {
     const payload = normalizeCreatePayload(req.body);
     const actorIp = getClientIp(req);
     const actorRole = req.user?.role_code || req.user?.role || null;
@@ -112,13 +112,13 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
         throw new AppError('Unable to determine actor role for audit log', 400);
     }
 
-    if (!payload.patient_id) {
-        throw new AppError('patient_id is required for previous patient registration', 400);
+    if (!payload.patient_uuid) {
+        throw new AppError('Registration number is required', 400);
     }
 
     const saved = await withTransaction(async (connection) => {
         const [matchedRows] = await connection.execute(
-            `SELECT id, role
+            `SELECT id, role, uuid, is_active
              FROM master_users
              WHERE mobile_no = ?
              LIMIT 1
@@ -126,6 +126,10 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
             [payload.mobile_no]
         );
 
+        await assertRegistrationIdAvailable(connection, payload.patient_uuid, matchedRows[0]?.id || null);
+        if (matchedRows[0] && !matchedRows[0].is_active) {
+            throw new AppError('This contact belongs to an inactive patient account', 409);
+        }
         let patientId;
         let action;
 
@@ -137,7 +141,7 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
 
             await connection.execute(
                 `UPDATE master_users
-                 SET clinic_patient_no = ?,
+                 SET uuid = ?,
                      area_name = ?,
                      ward_no = ?,
                      vidhan_sabha = ?,
@@ -148,7 +152,7 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
                      updated_ip = ?
                  WHERE id = ?`,
                 [
-                    payload.patient_id,
+                    payload.patient_uuid,
                     payload.area_name,
                     payload.ward_no,
                     payload.vidhan_sabha,
@@ -162,20 +166,21 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
             );
 
             patientId = matched.id;
+            await auditRegistrationIdChange(connection, {
+                patientId, oldUuid: matched.uuid, uuid: payload.patient_uuid, actor: req.user, ip: actorIp,
+            });
             action = 'LINK_EXISTING';
         } else {
-            const generatedPatientUuid = await generatePatientUuid(connection);
             const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
             const [insertResult] = await connection.execute(
                 `INSERT INTO master_users
-                 (uuid, clinic_patient_no, full_name, age, gender, email, address, area_name, ward_no,
+                 (uuid, full_name, age, gender, email, address, area_name, ward_no,
                   vidhan_sabha, pincode, city, description, mobile_no, password,
                   role, is_active, created_by, updated_by, created_ip, updated_ip)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
                 [
-                    generatedPatientUuid,
-                    payload.patient_id,
+                    payload.patient_uuid,
                     payload.full_name,
                     payload.age,
                     payload.gender,
@@ -203,10 +208,10 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
 
         const [rows] = await connection.execute(
             `SELECT
-                u.id AS previous_patient_id,
+                u.id AS patient_id,
                 u.id AS linked_patient_id,
                 u.full_name,
-                u.clinic_patient_no AS patient_id,
+                u.uuid AS patient_uuid,
                 u.age,
                 u.gender,
                 u.mobile_no,
@@ -239,54 +244,53 @@ const createPreviousManualPatient = asyncHandler(async (req, res) => {
     return res.status(201).json({
         success: true,
         message: saved.import_action === 'LINK_EXISTING'
-            ? 'Previous patient ID linked to existing patient successfully'
-            : 'Previous patient registered successfully',
+            ? 'Patient ID linked to existing patient successfully'
+            : 'Patient registered successfully',
         data: saved,
     });
 });
 
-const updatePreviousManualPatient = asyncHandler(async (req, res) => {
-    const previousPatientId = toPositiveInt(req.params.previous_patient_id);
+const updateRegisteredPatient = asyncHandler(async (req, res) => {
+    const patientAccountId = toPositiveInt(req.params.patient_id);
     const payload = normalizeCreatePayload(req.body);
     const actorIp = getClientIp(req);
 
-    if (!previousPatientId) {
-        throw new AppError('Valid previous_patient_id is required', 400);
+    if (!patientAccountId) {
+        throw new AppError('Valid patient_id is required', 400);
     }
 
     if (!req.user?.id) {
         throw new AppError('Authenticated user is required', 401);
     }
 
-    if (!payload.patient_id) {
-        throw new AppError('patient_id is required for previous patient registration', 400);
+    if (!payload.patient_uuid) {
+        throw new AppError('Registration number is required', 400);
     }
 
     const saved = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id
+            `SELECT id, uuid
              FROM master_users
              WHERE id = ?
                AND role = ?
                AND is_active = 1
-               AND clinic_patient_no IS NOT NULL
              LIMIT 1
              FOR UPDATE`,
-            [previousPatientId, PATIENT_ROLE]
+            [patientAccountId, PATIENT_ROLE]
         );
 
         if (patientRows.length === 0) {
-            throw new AppError('Previous patient not found', 404);
+            throw new AppError('Patient not found', 404);
         }
 
         const [mobileRows] = await connection.execute(
-            `SELECT id, role
+            `SELECT id, role, uuid, is_active
              FROM master_users
              WHERE mobile_no = ?
                AND id <> ?
              LIMIT 1
              FOR UPDATE`,
-            [payload.mobile_no, previousPatientId]
+            [payload.mobile_no, patientAccountId]
         );
 
         if (mobileRows.length > 0) {
@@ -296,11 +300,11 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
         const [patientIdRows] = await connection.execute(
             `SELECT id
              FROM master_users
-             WHERE clinic_patient_no = ?
+             WHERE uuid = ?
                AND id <> ?
              LIMIT 1
              FOR UPDATE`,
-            [payload.patient_id, previousPatientId]
+            [payload.patient_uuid, patientAccountId]
         );
 
         if (patientIdRows.length > 0) {
@@ -309,7 +313,7 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
 
         await connection.execute(
             `UPDATE master_users
-             SET clinic_patient_no = ?,
+             SET uuid = ?,
                  full_name = ?,
                  age = ?,
                  gender = ?,
@@ -326,7 +330,7 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
                  updated_ip = ?
              WHERE id = ?`,
             [
-                payload.patient_id,
+                payload.patient_uuid,
                 payload.full_name,
                 payload.age,
                 payload.gender,
@@ -341,16 +345,21 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
                 payload.mobile_no,
                 req.user.id,
                 actorIp,
-                previousPatientId,
+                patientAccountId,
             ]
         );
 
+        await auditRegistrationIdChange(connection, {
+            patientId: patientAccountId, oldUuid: patientRows[0].uuid,
+            uuid: payload.patient_uuid, actor: req.user, ip: actorIp,
+        });
+
         const [rows] = await connection.execute(
             `SELECT
-                u.id AS previous_patient_id,
+                u.id AS patient_id,
                 u.id AS linked_patient_id,
                 u.full_name,
-                u.clinic_patient_no AS patient_id,
+                u.uuid AS patient_uuid,
                 u.age,
                 u.gender,
                 u.mobile_no,
@@ -373,7 +382,7 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
              LEFT JOIN master_users actor ON actor.id = COALESCE(u.updated_by, u.created_by)
              WHERE u.id = ?
              LIMIT 1`,
-            [previousPatientId]
+            [patientAccountId]
         );
 
         return rows[0];
@@ -381,26 +390,26 @@ const updatePreviousManualPatient = asyncHandler(async (req, res) => {
 
     return res.status(200).json({
         success: true,
-        message: 'Previous patient updated successfully',
+        message: 'Patient updated successfully',
         data: saved,
     });
 });
 
-const listPreviousManualPatients = asyncHandler(async (req, res) => {
+const listRegisteredPatients = asyncHandler(async (req, res) => {
     const search = req.query.search ? String(req.query.search).trim() : null;
     const page = toPositiveInt(req.query.page) || 1;
     const requestedPageSize = toPositiveInt(req.query.page_size) || 20;
     const pageSize = Math.min(requestedPageSize, 100);
     const offset = (page - 1) * pageSize;
 
-    const conditions = ["u.role = 'PAT'", 'u.is_active = 1', 'u.clinic_patient_no IS NOT NULL'];
+    const conditions = ["u.role = 'PAT'", 'u.is_active = 1'];
     const params = [];
 
     if (search) {
         conditions.push(
-            '(u.full_name LIKE ? OR u.clinic_patient_no LIKE ? OR u.mobile_no LIKE ? OR u.email LIKE ? OR u.uuid LIKE ?)'
+            '(u.full_name LIKE ? OR u.uuid LIKE ? OR u.mobile_no LIKE ? OR u.email LIKE ?)'
         );
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
@@ -414,10 +423,10 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
         ),
         query(
             `SELECT
-                u.id AS previous_patient_id,
+                u.id AS patient_id,
                 u.id AS linked_patient_id,
                 u.full_name,
-                u.clinic_patient_no AS patient_id,
+                u.uuid AS patient_uuid,
                 u.age,
                 u.gender,
                 u.mobile_no,
@@ -449,7 +458,7 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
 
     return res.status(200).json({
         success: true,
-        message: 'Previous patients fetched successfully',
+        message: 'Patients fetched successfully',
         data: rows,
         meta: {
             search,
@@ -461,10 +470,10 @@ const listPreviousManualPatients = asyncHandler(async (req, res) => {
     });
 });
 
-const getPreviousManualPatientEntryLogs = asyncHandler(async (req, res) => {
-    const previousPatientId = toPositiveInt(req.params.previous_patient_id);
-    if (!previousPatientId) {
-        throw new AppError('Valid previous_patient_id is required', 400);
+const getRegisteredPatientEntryLogs = asyncHandler(async (req, res) => {
+    const patientAccountId = toPositiveInt(req.params.patient_id);
+    if (!patientAccountId) {
+        throw new AppError('Valid patient_id is required', 400);
     }
 
     const patients = await query(
@@ -472,29 +481,28 @@ const getPreviousManualPatientEntryLogs = asyncHandler(async (req, res) => {
          FROM master_users
          WHERE id = ?
            AND role = 'PAT'
-           AND clinic_patient_no IS NOT NULL
          LIMIT 1`,
-        [previousPatientId]
+        [patientAccountId]
     );
 
     if (patients.length === 0) {
-        throw new AppError('Previous patient not found', 404);
+        throw new AppError('Patient not found', 404);
     }
 
     return res.status(200).json({
         success: true,
-        message: 'Previous patient entry logs are not enabled for this flow',
+        message: 'Patient entry logs are not enabled for this flow',
         data: [],
         meta: {
-            previous_patient_id: previousPatientId,
+            patient_id: patientAccountId,
             total: 0,
         },
     });
 });
 
 module.exports = {
-    createPreviousManualPatient,
-    updatePreviousManualPatient,
-    listPreviousManualPatients,
-    getPreviousManualPatientEntryLogs,
+    createRegisteredPatient,
+    updateRegisteredPatient,
+    listRegisteredPatients,
+    getRegisteredPatientEntryLogs,
 };
