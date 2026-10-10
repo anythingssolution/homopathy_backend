@@ -29,7 +29,7 @@ const getClientIp = (req) => {
 
 const normalizeCreatePayload = (body = {}) => {
     const fullName = String(body.full_name || '').trim();
-    // Strip all whitespace and force upper-case so "dth 1210" is always stored as "DTH1210".
+    // Normalize whitespace/case before the shared registration ID formatter adds DTH_.
     const patientIdRaw =
         body.patient_uuid !== undefined && body.patient_uuid !== null
             ? String(body.patient_uuid).replace(/\s+/g, '').toUpperCase()

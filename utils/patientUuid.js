@@ -1,8 +1,8 @@
 const AppError = require('./AppError');
 
-// Public patient ID format: DTH10000, DTH10001, DTH10002, ... (global, never resets).
-const PATIENT_UUID_PREFIX = 'DTH';
-const PATIENT_UUID_FIRST_SERIAL = 10000;
+// New patient IDs use DTH_9990, DTH_9991, ... alongside existing DTH IDs.
+const PATIENT_UUID_PREFIX = 'DTH_';
+const PATIENT_UUID_FIRST_SERIAL = 9990;
 const PATIENT_UUID_LOCK_NAME = 'patient_uuid_sequence';
 const PATIENT_UUID_LOCK_TIMEOUT_SEC = 10;
 
@@ -11,7 +11,7 @@ const buildPatientUuid = (serial) => `${PATIENT_UUID_PREFIX}${serial}`;
 /**
  * Generates the next patient uuid inside an open transaction.
  *
- * - The serial is compared numerically (not as a string), so DTH99999 -> DTH100000 is safe.
+ * - Both DTH9989 and DTH_9990 contribute to the same numeric sequence.
  * - The read uses FOR UPDATE so it sees the latest committed row instead of the
  *   transaction's snapshot, and waits for any in-flight insert to commit first.
  * - GET_LOCK serialises concurrent generators; the UNIQUE index on master_users.uuid
@@ -29,11 +29,11 @@ const generatePatientUuid = async (connection) => {
 
     try {
         const [rows] = await connection.execute(
-            `SELECT MAX(CAST(SUBSTRING(uuid, ?) AS UNSIGNED)) AS last_serial
+            `SELECT MAX(CAST(SUBSTRING(REPLACE(uuid, '_', ''), 4) AS UNSIGNED)) AS last_serial
              FROM master_users
-             WHERE uuid LIKE ?
+             WHERE uuid REGEXP ?
              FOR UPDATE`,
-            [PATIENT_UUID_PREFIX.length + 1, `${PATIENT_UUID_PREFIX}%`]
+            ['^DTH_?[0-9]+$']
         );
 
         const lastSerial = Number(rows[0]?.last_serial) || 0;

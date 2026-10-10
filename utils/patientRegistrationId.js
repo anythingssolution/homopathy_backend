@@ -3,9 +3,11 @@ const AppError = require('./AppError');
 const normalizePatientRegistrationId = (value) => {
     let uuid = String(value ?? '').replace(/\s+/g, '').toUpperCase();
     if (/^[1-9]\d*$/.test(uuid)) uuid = `DTH${uuid}`;
-    if (uuid.length > 36 || !/^DTH[1-9]\d*$/.test(uuid)) {
-        throw new AppError('Registration number must be DTH followed by a positive number', 400);
+    if (uuid.length > 36 || !/^DTH_?[1-9]\d*$/.test(uuid)) {
+        throw new AppError('Registration number must be DTH or DTH_ followed by a positive number', 400);
     }
+    uuid = uuid.replace(/^DTH_?/, 'DTH_');
+    if (uuid.length > 36) throw new AppError('Registration number is too long', 400);
     return uuid;
 };
 

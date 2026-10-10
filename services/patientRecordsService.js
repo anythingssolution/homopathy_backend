@@ -272,8 +272,8 @@ const buildRegistryOrder = ({ sortBy, sortOrder }) => {
     const direction = sortOrder.toUpperCase();
     if (sortBy === 'patient_id') {
         // Sort the displayed DTH number naturally (DTH2 before DTH10), not the database key.
-        return `CASE WHEN p.uuid REGEXP '^DTH[0-9]+$' THEN 'DTH' ELSE p.uuid END ${direction},
-            CASE WHEN p.uuid REGEXP '^DTH[0-9]+$' THEN CAST(SUBSTRING(p.uuid, 4) AS UNSIGNED) END ${direction},
+        return `CASE WHEN p.uuid REGEXP '^DTH_?[0-9]+$' THEN 'DTH' ELSE p.uuid END ${direction},
+            CASE WHEN p.uuid REGEXP '^DTH_?[0-9]+$' THEN CAST(SUBSTRING(REPLACE(p.uuid, '_', ''), 4) AS UNSIGNED) END ${direction},
             p.uuid ${direction}, p.id ASC`;
     }
 
