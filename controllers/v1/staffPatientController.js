@@ -6,6 +6,7 @@ const { env } = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { generatePatientUuid } = require('../../utils/patientUuid');
+const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 
 const PATIENT_ROLE = 'PAT';
 const CREATOR_ROLE_FILTERS = new Set(['SELF', 'DOC', 'REC', 'MED']);
@@ -62,6 +63,8 @@ const mapPatientRow = (row) => ({
     patient_uuid: row.patient_uuid,
     full_name: row.full_name,
     age: Number(row.age),
+    date_of_birth: row.date_of_birth || null,
+    age_display: row.age_display || null,
     gender: row.gender,
     mobile_no: row.mobile_no,
     created_at: row.created_at,
@@ -74,7 +77,7 @@ const createStaffPatient = asyncHandler(async (req, res) => {
     const fullName = String(req.body?.full_name || '').trim();
     const mobileNo = String(req.body?.mobile_no || '').trim();
     const gender = String(req.body?.gender || '').trim().toLowerCase();
-    const parsedAge = Number(req.body?.age);
+    const agePayload = normalizeAgePayload({ age: req.body?.age, dateOfBirth: req.body?.date_of_birth });
     const registrationToken = String(req.body?.registration_token || '').trim();
     const optionalText = (key, limit) => {
         const value = String(req.body?.[key] ?? '').trim();
@@ -91,8 +94,8 @@ const createStaffPatient = asyncHandler(async (req, res) => {
     if (pincode && !/^\d{6}$/.test(pincode)) throw new AppError('Pincode must contain 6 digits', 400);
     const address = [area, ward ? `Ward ${ward}` : null, constituency, pincode, city].filter(Boolean).join(', ') || null;
 
-    if (!fullName || !mobileNo || req.body?.age === undefined || !gender || !registrationToken) {
-        throw new AppError('full_name, mobile_no, age, gender and verified OTP token are required', 400);
+    if (!fullName || !mobileNo || (req.body?.age === undefined && !req.body?.date_of_birth) || !gender || !registrationToken) {
+        throw new AppError('full_name, mobile_no, age or date_of_birth, gender and verified OTP token are required', 400);
     }
 
     if (!validateMobile(mobileNo)) {
@@ -100,10 +103,6 @@ const createStaffPatient = asyncHandler(async (req, res) => {
     }
 
     verifyStaffRegistrationToken(registrationToken, mobileNo);
-
-    if (!Number.isInteger(parsedAge) || parsedAge < 1 || parsedAge > 120) {
-        throw new AppError('age must be a valid number between 1 and 120', 400);
-    }
 
     if (!validateGender(gender)) {
         throw new AppError("gender must be one of: 'male', 'female', 'other'", 400);
@@ -130,12 +129,13 @@ const createStaffPatient = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 generatedPatientUuid,
                 fullName,
-                parsedAge,
+                agePayload.age,
+                agePayload.date_of_birth,
                 gender,
                 email, address, area, ward, constituency, pincode, city,
                 mobileNo,
@@ -157,6 +157,8 @@ const createStaffPatient = asyncHandler(async (req, res) => {
             u.uuid AS patient_uuid,
             u.full_name,
             u.age,
+            u.date_of_birth,
+            ${buildAgeDisplaySql('u.date_of_birth', 'u.age')} AS age_display,
             u.gender,
             u.mobile_no,
             u.created_at,
@@ -249,6 +251,8 @@ const listStaffPatients = asyncHandler(async (req, res) => {
                 u.uuid AS patient_uuid,
                 u.full_name,
                 u.age,
+                u.date_of_birth,
+                ${buildAgeDisplaySql('u.date_of_birth', 'u.age')} AS age_display,
                 u.gender,
                 u.mobile_no,
                 u.created_at,

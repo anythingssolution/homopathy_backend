@@ -1,4 +1,5 @@
 const AppError = require('./AppError');
+const { normalizeAgePayload } = require('./age');
 
 const normalizeBookingPatientUpdates = (updates, patientId) => {
     if (updates === undefined) return {};
@@ -6,19 +7,36 @@ const normalizeBookingPatientUpdates = (updates, patientId) => {
         throw new AppError('patient_updates requires an existing patient account', 400);
     }
     const normalized = {};
-    for (const [field, value] of Object.entries(updates)) {
-        if (!['full_name', 'mobile_no', 'age', 'gender'].includes(field)) {
+    const allowedFields = ['full_name', 'mobile_no', 'age', 'date_of_birth', 'gender'];
+    for (const field of Object.keys(updates)) {
+        if (!allowedFields.includes(field)) {
             throw new AppError(`Unsupported patient correction: ${field}`, 400);
         }
-        normalized[field] = field === 'age' ? Number(value) : String(value ?? '').trim();
+    }
+
+    for (const field of allowedFields) {
+        if (!Object.prototype.hasOwnProperty.call(updates, field)) continue;
+        const value = updates[field];
+        if (field === 'age' || field === 'date_of_birth') {
+            if (field === 'age') {
+                const agePayload = normalizeAgePayload({
+                    age: updates.age,
+                    dateOfBirth: updates.date_of_birth,
+                    partial: true,
+                    ageFieldName: 'Patient age',
+                    dateFieldName: 'patient.date_of_birth',
+                });
+                if (agePayload.age !== undefined) normalized.age = agePayload.age;
+                if (agePayload.date_of_birth !== undefined) normalized.date_of_birth = agePayload.date_of_birth;
+            }
+            continue;
+        }
+        normalized[field] = String(value ?? '').trim();
         if (field === 'full_name' && (!normalized[field] || normalized[field].length > 100)) {
             throw new AppError('Patient name must contain 1 to 100 characters', 400);
         }
         if (field === 'mobile_no' && !/^\d{10,15}$/.test(normalized[field])) {
             throw new AppError('Patient mobile number must contain 10 to 15 digits', 400);
-        }
-        if (field === 'age' && (!Number.isInteger(normalized[field]) || normalized[field] < 1 || normalized[field] > 120)) {
-            throw new AppError('Patient age must be between 1 and 120', 400);
         }
         if (field === 'gender') {
             normalized[field] = normalized[field].toLowerCase();
@@ -26,6 +44,18 @@ const normalizeBookingPatientUpdates = (updates, patientId) => {
                 throw new AppError('Please select a valid patient gender', 400);
             }
         }
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(updates, 'age') && Object.prototype.hasOwnProperty.call(updates, 'date_of_birth')) {
+        const agePayload = normalizeAgePayload({
+            age: updates.age,
+            dateOfBirth: updates.date_of_birth,
+            partial: true,
+            ageFieldName: 'Patient age',
+            dateFieldName: 'patient.date_of_birth',
+        });
+        if (agePayload.age !== undefined) normalized.age = agePayload.age;
+        if (agePayload.date_of_birth !== undefined) normalized.date_of_birth = agePayload.date_of_birth;
     }
     return normalized;
 };

@@ -1,4 +1,5 @@
 const { buildTimestampDateRangeScope, query } = require('../shared');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getCourierRegisterReport = async (filters) => {
     const { whereClause, params } = buildTimestampDateRangeScope({
@@ -38,6 +39,8 @@ const getCourierRegisterReport = async (filters) => {
             p.mobile_no AS patient_mobile_no,
             p.uuid AS patient_uuid,
             COALESCE(fm.age, p.age) AS patient_age,
+            COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+            ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
             COALESCE(fm.gender, p.gender) AS patient_gender,
             a.auid,
             br.branch_name,

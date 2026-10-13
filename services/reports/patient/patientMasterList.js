@@ -1,4 +1,5 @@
 const { buildPatientCreatedScope, query } = require('./shared');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getPatientMasterListReport = async (filters) => {
     const { whereClause, params } = buildPatientCreatedScope(filters);
@@ -9,6 +10,8 @@ const getPatientMasterListReport = async (filters) => {
             p.uuid AS patient_uuid,
             p.full_name,
             p.age,
+            p.date_of_birth,
+            ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS age_display,
             p.gender,
             p.email,
             p.mobile_no,
@@ -21,7 +24,7 @@ const getPatientMasterListReport = async (filters) => {
           AND fm.is_active = 1
          ${whereClause}
            AND p.role = 'PAT'
-         GROUP BY p.id, p.uuid, p.full_name, p.age, p.gender, p.email, p.mobile_no, p.is_active, p.created_at
+         GROUP BY p.id, p.uuid, p.full_name, p.age, p.date_of_birth, p.gender, p.email, p.mobile_no, p.is_active, p.created_at
          ORDER BY p.created_at DESC, p.full_name ASC`,
         params
     );

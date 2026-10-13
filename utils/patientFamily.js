@@ -1,4 +1,5 @@
 const MAX_ACTIVE_FAMILY_MEMBERS = 5;
+const { buildAgeDisplaySql } = require('./age');
 let familyBookingSchemaCache = null;
 
 const BOOKED_FOR_TYPES = {
@@ -26,18 +27,24 @@ const getAppointmentPatientColumns = ({
     ${familyAlias}.relationship AS family_member_relationship,
     ${familyAlias}.full_name AS family_member_full_name,
     ${familyAlias}.age AS family_member_age,
+    ${familyAlias}.date_of_birth AS family_member_date_of_birth,
+    ${buildAgeDisplaySql(`${familyAlias}.date_of_birth`, `${familyAlias}.age`)} AS family_member_age_display,
     ${familyAlias}.gender AS family_member_gender,
     ${familyAlias}.description AS family_member_description,
     ${patientAlias}.id AS patient_id,
     ${patientAlias}.uuid AS patient_uuid,
     ${patientAlias}.full_name AS primary_patient_full_name,
     ${patientAlias}.age AS primary_patient_age,
+    ${patientAlias}.date_of_birth AS primary_patient_date_of_birth,
+    ${buildAgeDisplaySql(`${patientAlias}.date_of_birth`, `${patientAlias}.age`)} AS primary_patient_age_display,
     ${patientAlias}.gender AS primary_patient_gender,
     ${patientAlias}.email AS primary_patient_email,
     ${patientAlias}.mobile_no AS primary_patient_mobile_no,
     ${patientAlias}.description AS primary_patient_description,
     COALESCE(${familyAlias}.full_name, ${patientAlias}.full_name) AS patient_full_name,
     COALESCE(${familyAlias}.age, ${patientAlias}.age) AS patient_age,
+    COALESCE(${familyAlias}.date_of_birth, ${patientAlias}.date_of_birth) AS patient_date_of_birth,
+    ${buildAgeDisplaySql(`COALESCE(${familyAlias}.date_of_birth, ${patientAlias}.date_of_birth)`, `COALESCE(${familyAlias}.age, ${patientAlias}.age)`)} AS patient_age_display,
     COALESCE(${familyAlias}.gender, ${patientAlias}.gender) AS patient_gender,
     ${patientAlias}.email AS patient_email,
     ${patientAlias}.mobile_no AS patient_mobile_no,
@@ -47,6 +54,8 @@ const getAppointmentPatientColumns = ({
     COALESCE(${familyAlias}.description, ${patientAlias}.description) AS patient_description,
     COALESCE(${familyAlias}.full_name, ${patientAlias}.full_name) AS visiting_patient_full_name,
     COALESCE(${familyAlias}.age, ${patientAlias}.age) AS visiting_patient_age,
+    COALESCE(${familyAlias}.date_of_birth, ${patientAlias}.date_of_birth) AS visiting_patient_date_of_birth,
+    ${buildAgeDisplaySql(`COALESCE(${familyAlias}.date_of_birth, ${patientAlias}.date_of_birth)`, `COALESCE(${familyAlias}.age, ${patientAlias}.age)`)} AS visiting_patient_age_display,
     COALESCE(${familyAlias}.gender, ${patientAlias}.gender) AS visiting_patient_gender,
     ${patientAlias}.mobile_no AS visiting_patient_mobile_no,
     COALESCE(${familyAlias}.description, ${patientAlias}.description) AS visiting_patient_description

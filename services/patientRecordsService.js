@@ -8,6 +8,7 @@ const { query, withTransaction } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { buildSafeFilename } = require('../utils/fileNaming');
 const { validateClinicalDocumentUpload } = require('../utils/uploadValidation');
+const { buildAgeDisplaySql } = require('../utils/age');
 
 const DOCUMENT_TYPES = new Set([
     'CASE_PAPER',
@@ -350,6 +351,8 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             p.uuid AS patient_uuid,
             p.full_name,
             p.age,
+            p.date_of_birth,
+            ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS age_display,
             p.gender,
             p.mobile_no,
             p.email,
@@ -553,6 +556,8 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
                 uuid AS patient_uuid,
                 full_name,
                 age,
+                date_of_birth,
+                ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
                 gender,
                 mobile_no,
                 email,
@@ -577,6 +582,8 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
                     full_name,
                     relationship,
                     age,
+                    date_of_birth,
+                    ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
                     gender,
                     description,
                     is_active
@@ -630,15 +637,21 @@ const PATIENT_SELECT = `
     fm.relationship AS family_member_relationship,
     fm.full_name AS family_member_full_name,
     fm.age AS family_member_age,
+    fm.date_of_birth AS family_member_date_of_birth,
+    ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS family_member_age_display,
     fm.gender AS family_member_gender,
     p.id AS patient_id,
     p.uuid AS patient_uuid,
     p.full_name AS primary_patient_full_name,
     p.mobile_no AS primary_patient_mobile_no,
+    p.date_of_birth AS primary_patient_date_of_birth,
+    ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS primary_patient_age_display,
     p.ward_no AS primary_patient_ward_no,
     p.vidhan_sabha AS primary_patient_vidhan_sabha,
     COALESCE(fm.full_name, p.full_name) AS patient_full_name,
     COALESCE(fm.age, p.age) AS patient_age,
+    COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+    ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
     COALESCE(fm.gender, p.gender) AS patient_gender
 `;
 
@@ -867,6 +880,8 @@ const fetchStandaloneMedicinePurchaseRows = async (filters) => {
                 fm.relationship AS family_member_relationship,
                 fm.full_name AS family_member_full_name,
                 fm.age AS family_member_age,
+                fm.date_of_birth AS family_member_date_of_birth,
+                ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS family_member_age_display,
                 fm.gender AS family_member_gender,
                 p.id AS patient_id,
                 p.uuid AS patient_uuid,
@@ -874,6 +889,8 @@ const fetchStandaloneMedicinePurchaseRows = async (filters) => {
                 p.mobile_no AS primary_patient_mobile_no,
                 COALESCE(fm.full_name, p.full_name) AS patient_full_name,
                 COALESCE(fm.age, p.age) AS patient_age,
+                COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+                ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
                 COALESCE(fm.gender, p.gender) AS patient_gender,
                 COUNT(DISTINCT CASE WHEN bi.item_type <> 'TEST' THEN bi.id END) AS medicine_count,
                 COUNT(DISTINCT CASE WHEN bi.item_type = 'TEST' THEN bi.id END) AS test_count,
@@ -1601,9 +1618,13 @@ const fetchDocumentTimeline = async (filters) => {
             fm.relationship AS family_member_relationship,
             fm.full_name AS family_member_full_name,
             fm.age AS family_member_age,
+            fm.date_of_birth AS family_member_date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS family_member_age_display,
             fm.gender AS family_member_gender,
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             COALESCE(fm.age, p.age) AS patient_age,
+            COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+            ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
             COALESCE(fm.gender, p.gender) AS patient_gender
          FROM tbl_patient_clinical_documents doc
          JOIN master_users p ON p.id = doc.patient_id

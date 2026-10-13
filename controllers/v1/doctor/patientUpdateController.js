@@ -5,6 +5,7 @@ const {
     asyncHandler,
     toPositiveInt,
 } = require('./shared');
+const { buildAgeDisplaySql, normalizeAgePayload } = require('../../../utils/age');
 
 const PATIENT_ROLE = 'PAT';
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
@@ -26,7 +27,13 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
     const fullName = req.body?.full_name !== undefined ? String(req.body.full_name).trim() : undefined;
     const mobileNo = req.body?.mobile_no !== undefined ? String(req.body.mobile_no).trim() : undefined;
     const gender = req.body?.gender !== undefined ? String(req.body.gender).trim().toLowerCase() : undefined;
-    const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    const agePayload = normalizeAgePayload({
+        age: req.body?.age,
+        dateOfBirth: req.body?.date_of_birth,
+        partial: true,
+    });
+    const age = agePayload.age;
+    const dateOfBirth = agePayload.date_of_birth;
     const areaName = req.body?.area_name !== undefined
         ? (String(req.body.area_name ?? '').trim() || null)
         : undefined;
@@ -39,7 +46,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
         throw new AppError('Valid patient_id is required', 400);
     }
 
-    if (fullName === undefined && mobileNo === undefined && gender === undefined && age === undefined
+    if (fullName === undefined && mobileNo === undefined && gender === undefined && age === undefined && dateOfBirth === undefined
         && areaName === undefined && pincode === undefined && city === undefined) {
         throw new AppError('At least one patient detail is required', 400);
     }
@@ -54,10 +61,6 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
     if (gender !== undefined && !validateGender(gender)) {
         throw new AppError("gender must be one of 'male', 'female' or 'other'", 400);
-    }
-
-    if (age !== undefined && (age === null || age < 1 || age > 120)) {
-        throw new AppError('age must be between 1 and 120', 400);
     }
 
     if (areaName !== undefined && areaName !== null && areaName.length > 150) {
@@ -78,7 +81,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, mobile_no, gender, age, address, area_name, ward_no,
+            `SELECT id, uuid, full_name, mobile_no, gender, age, date_of_birth, address, area_name, ward_no,
                     vidhan_sabha, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
@@ -118,7 +121,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
         if (familyMemberId) {
             const [fmRows] = await connection.execute(
-                `SELECT id, full_name, age, gender, description, is_active
+                `SELECT id, full_name, age, date_of_birth, gender, description, is_active
                  FROM tbl_patient_family_members
                  WHERE id = ?
                    AND patient_id = ?
@@ -135,7 +138,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             const fmChangedFields = [];
             const fmOldValues = {};
             const fmNewValues = {};
-            const fmRequestedValues = { full_name: fullName, gender, age };
+            const fmRequestedValues = { full_name: fullName, gender, age, date_of_birth: dateOfBirth };
 
             for (const [field, value] of Object.entries(fmRequestedValues)) {
                 if (value !== undefined && String(value) !== String(fm[field] ?? '')) {
@@ -204,7 +207,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
             const fmUpdateParts = [];
             const fmUpdateValues = [];
-            for (const field of ['full_name', 'gender', 'age']) {
+            for (const field of ['full_name', 'gender', 'age', 'date_of_birth']) {
                 if (fmNewValues[field] !== undefined) {
                     fmUpdateParts.push(`${field} = ?`);
                     fmUpdateValues.push(fmNewValues[field]);
@@ -230,7 +233,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     actorIp,
                     actorUserAgent,
                     JSON.stringify(fmChangedFields.map((field) =>
-                        ['full_name', 'gender', 'age'].includes(field)
+                        ['full_name', 'gender', 'age', 'date_of_birth'].includes(field)
                             ? `family_member.${field}`
                             : field
                     )),
@@ -245,6 +248,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     patient_uuid: patient.uuid,
                     full_name: fmNewValues.full_name ?? fm.full_name,
                     age: fmNewValues.age ?? fm.age,
+                    date_of_birth: fmNewValues.date_of_birth ?? fm.date_of_birth,
                     gender: fmNewValues.gender ?? fm.gender,
                     mobile_no: mobileNo ?? patient.mobile_no,
                     area_name: areaName ?? patient.area_name,
@@ -279,6 +283,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             mobile_no: mobileNo,
             gender,
             age,
+            date_of_birth: dateOfBirth,
             area_name: areaName,
             pincode,
             city,
@@ -337,7 +342,9 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
         );
 
         const [updatedRows] = await connection.execute(
-            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, gender, email, mobile_no,
+            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
+                    ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
+                    gender, email, mobile_no,
                     address, area_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?

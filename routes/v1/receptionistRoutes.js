@@ -8,6 +8,7 @@ const {
     listReceptionistPatients,
     getReceptionistPatientDetail,
     updateReceptionistPatient,
+    resetReceptionistPatientPassword,
     listReceptionistPatientUpdateHistory,
     createReceptionistPatientFamilyMember,
     saveReceptionistAppointmentVitals,
@@ -56,6 +57,7 @@ router.get('/token-plate', getBookingTokenPlate);
 // Patient accounts are shared across clinics, including patients without a visit.
 router.get('/patients', listReceptionistPatients);
 router.patch('/patients/:patient_id', updateReceptionistPatient);
+router.post('/patients/:patient_id/reset-password', resetReceptionistPatientPassword);
 router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdateHistory);
 router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
 

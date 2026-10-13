@@ -1,4 +1,5 @@
 const { buildTimestampDateRangeScope, query } = require('../shared');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getRepeatBillTestRows = async (filters) => {
     const { whereClause, params } = buildTimestampDateRangeScope({
@@ -6,14 +7,21 @@ const getRepeatBillTestRows = async (filters) => {
     });
     return query(`SELECT
         CONCAT('bill-test-', bi.id) AS consultation_test_id,
-        'BILL' AS test_source, b.id AS bill_id, b.bill_number,
+        'BILL' AS test_source, 'BILL' AS report_source_type, bi.id AS report_source_id,
+        bi.id AS bill_item_id, b.id AS bill_id, b.bill_number,
         NULL AS consultation_id, NULL AS appointment_id,
         DATE(b.created_at) AS appointment_date, b.created_at AS recommended_at,
         bi.item_name AS test_name, bi.amount, 'ACTIVE' AS dispense_status,
         NULL AS finding_text, NULL AS interpreted_at,
+        trs.status AS report_send_status,
+        trs.not_sent_reason AS report_not_sent_reason,
+        trs.marked_at AS report_status_marked_at,
+        marker.full_name AS report_status_marked_by_name,
         b.patient_id AS fk_patient_id, b.fk_branch_id,
         COALESCE(fm.full_name, p.full_name) AS patient_full_name,
         COALESCE(fm.age, p.age) AS patient_age,
+        COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+        ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
         COALESCE(fm.gender, p.gender) AS patient_gender,
         p.mobile_no AS patient_mobile_no, p.uuid AS patient_uuid,
         c.doctor_id, d.full_name AS doctor_name,
@@ -27,6 +35,10 @@ const getRepeatBillTestRows = async (filters) => {
      LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = c.appointment_id
      LEFT JOIN tbl_patient_family_members fm ON fm.id = source_a.fk_patient_family_member_id
      LEFT JOIN master_users d ON d.id = c.doctor_id
+     LEFT JOIN tbl_test_report_send_status trs
+       ON trs.source_type = 'BILL'
+      AND trs.source_id = bi.id
+     LEFT JOIN master_users marker ON marker.id = trs.marked_by
      ${whereClause}
        AND b.status = 'ACTIVE' AND b.bill_type = 'MEDICATION' AND b.appointment_id IS NULL
        AND bi.item_type = 'TEST' AND bi.consultation_test_id IS NULL

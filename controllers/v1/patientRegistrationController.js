@@ -4,6 +4,7 @@ const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { normalizePatientRegistrationId, assertRegistrationIdAvailable, auditRegistrationIdChange } = require('../../utils/patientRegistrationId');
+const { normalizeAgePayload } = require('../../utils/age');
 
 const PATIENT_ROLE = 'PAT';
 
@@ -34,7 +35,7 @@ const normalizeCreatePayload = (body = {}) => {
         body.patient_uuid !== undefined && body.patient_uuid !== null
             ? String(body.patient_uuid).replace(/\s+/g, '').toUpperCase()
             : '';
-    const age = toPositiveInt(body.age);
+    const agePayload = normalizeAgePayload({ age: body.age, dateOfBirth: body.date_of_birth });
     const gender = String(body.gender || '').trim().toLowerCase();
     const mobileNo = String(body.mobile_no || '').trim();
     const emailRaw = body.email !== undefined && body.email !== null ? String(body.email).trim() : '';
@@ -52,10 +53,6 @@ const normalizeCreatePayload = (body = {}) => {
 
     if (patientIdRaw && patientIdRaw.length > 36) {
         throw new AppError('Registration number must be at most 36 characters', 400);
-    }
-
-    if (!age || age < 1 || age > 120) {
-        throw new AppError('age must be between 1 and 120', 400);
     }
 
     if (!validateGender(gender)) {
@@ -85,7 +82,8 @@ const normalizeCreatePayload = (body = {}) => {
     return {
         full_name: fullName,
         patient_uuid: normalizePatientRegistrationId(patientIdRaw),
-        age,
+        age: agePayload.age,
+        date_of_birth: agePayload.date_of_birth,
         gender,
         mobile_no: mobileNo,
         email: emailRaw || null,
@@ -175,14 +173,15 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
 
             const [insertResult] = await connection.execute(
                 `INSERT INTO master_users
-                 (uuid, full_name, age, gender, email, address, area_name, ward_no,
+                 (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no,
                   vidhan_sabha, pincode, city, description, mobile_no, password,
                   role, is_active, created_by, updated_by, created_ip, updated_ip)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
                 [
                     payload.patient_uuid,
                     payload.full_name,
                     payload.age,
+                    payload.date_of_birth,
                     payload.gender,
                     payload.email,
                     payload.address,
@@ -213,6 +212,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
                 u.full_name,
                 u.uuid AS patient_uuid,
                 u.age,
+                u.date_of_birth,
                 u.gender,
                 u.mobile_no,
                 u.email,
@@ -316,6 +316,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
              SET uuid = ?,
                  full_name = ?,
                  age = ?,
+                 date_of_birth = ?,
                  gender = ?,
                  email = ?,
                  address = ?,
@@ -333,6 +334,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
                 payload.patient_uuid,
                 payload.full_name,
                 payload.age,
+                payload.date_of_birth,
                 payload.gender,
                 payload.email,
                 payload.address,
@@ -361,6 +363,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
                 u.full_name,
                 u.uuid AS patient_uuid,
                 u.age,
+                u.date_of_birth,
                 u.gender,
                 u.mobile_no,
                 u.email,
@@ -428,6 +431,7 @@ const listRegisteredPatients = asyncHandler(async (req, res) => {
                 u.full_name,
                 u.uuid AS patient_uuid,
                 u.age,
+                u.date_of_birth,
                 u.gender,
                 u.mobile_no,
                 u.email,

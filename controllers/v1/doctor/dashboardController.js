@@ -14,6 +14,7 @@ const {
     UNIVERSAL_REMARK_SELECTION_VALUE,
 } = require('./shared');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../../utils/pagination');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getDoctorDashboard = asyncHandler(async (req, res) => {
     const today = req.query.date ? String(req.query.date).trim() : new Date().toISOString().slice(0, 10);
@@ -256,6 +257,8 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
             p.uuid AS patient_uuid,
             p.full_name,
             p.age,
+            p.date_of_birth,
+            ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS age_display,
             p.gender,
             p.email,
             p.mobile_no,
@@ -268,7 +271,7 @@ const listPatientsForDoctor = asyncHandler(async (req, res) => {
          FROM master_users p
          JOIN tbl_appointments a ON a.fk_patient_id = p.id
          ${whereClause}
-         GROUP BY p.id, p.uuid, p.full_name, p.age, p.gender, p.email, p.mobile_no, p.description
+         GROUP BY p.id, p.uuid, p.full_name, p.age, p.date_of_birth, p.gender, p.email, p.mobile_no, p.description
          ${havingClause}`;
 
     const countRows = await query(

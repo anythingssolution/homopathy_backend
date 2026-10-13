@@ -14,11 +14,14 @@ const {
     verifyForgotPasswordOtp,
     resetForgotPassword,
     changePassword,
+    updateCurrentUserProfileImage,
+    removeCurrentUserProfileImage,
     refreshToken,
     logout,
 } = require('../../controllers/v1/authController');
 const { authenticate } = require('../../middleware/authMiddleware');
 const { authRateLimiter, otpRateLimiter } = require('../../middleware/rateLimitMiddleware');
+const { uploadCmsImageFile } = require('../../middleware/cmsUploadMiddleware');
 
 const router = express.Router();
 
@@ -50,6 +53,8 @@ router.put('/selected-branch', authenticate, selectCurrentBranch);
 router.patch('/selected-branch', authenticate, selectCurrentBranch);
 router.put('/me', authenticate, updateCurrentPatientProfile);
 router.patch('/me', authenticate, updateCurrentPatientProfile);
+router.post('/me/profile-image', authenticate, uploadCmsImageFile, updateCurrentUserProfileImage);
+router.delete('/me/profile-image', authenticate, removeCurrentUserProfileImage);
 router.post('/logout', authenticate, logout);
 
 module.exports = router;

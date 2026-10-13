@@ -4,6 +4,7 @@ const cors = require('cors');
 const express = require('express');
 const http = require('http');
 const jwt = require('jsonwebtoken');
+const path = require('path');
 const sqlPanelRoutes = require('./routes/sqlPanelRoutes');
 const { env } = require('./config/env');
 const v1Routes = require('./routes/v1');
@@ -299,6 +300,10 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+    fallthrough: true,
+    maxAge: env.nodeEnv === 'production' ? '7d' : 0,
+}));
 
 app.get('/', (_req, res) => {
     res.status(200).json({

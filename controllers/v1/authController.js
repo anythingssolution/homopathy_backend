@@ -12,6 +12,8 @@ const { sendRegistrationWelcomeWhatsApp } = require('../../utils/whatsappService
 const { generateOtp } = require('../../utils/otp');
 const { createOtpSmsSender } = require('../../services/otpSmsService');
 const { generatePatientUuid } = require('../../utils/patientUuid');
+const { uploadProfileImage, removeProfileImage } = require('../../services/profileImageStorageService');
+const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 
 const getClientIp = (req) => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -32,7 +34,7 @@ const getDefaultLanguage = async () => {
 
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
 const validateMobile = (mobileNo) => /^[0-9]{10,15}$/.test(String(mobileNo || '').trim());
-const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'gender', 'email', 'address', 'description', 'mobile_no'];
+const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'description', 'mobile_no'];
 
 const validateEmail = (email) => {
     if (!email) {
@@ -326,12 +328,21 @@ const normalizeOptionalText = (value) => {
 const buildProfileAuditSnapshot = (userRow) => ({
     full_name: userRow?.full_name ?? null,
     age: userRow?.age === undefined || userRow?.age === null ? null : Number(userRow.age),
+    date_of_birth: userRow?.date_of_birth ?? null,
     gender: userRow?.gender ?? null,
     email: userRow?.email ?? null,
     address: userRow?.address ?? null,
     description: userRow?.description ?? null,
     mobile_no: userRow?.mobile_no ?? null,
 });
+
+const getUserProfileSelectColumns = () => `
+    id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
+    gender, email, address, description, mobile_no, role,
+    profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
+    COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
+    is_active, created_at, updated_at
+`;
 
 const buildProfileAuditChangeSet = (previousSnapshot, nextSnapshot) => {
     const changedFields = [];
@@ -478,7 +489,9 @@ const verifyOtpFromSessionToken = async ({ purpose, mobileNo, otp, otpSessionTok
 
 const findActivePatientByMobile = async (mobileNo) => {
     const patients = await query(
-        `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, password, role,
+        `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
+                gender, email, address, description, mobile_no, password, role,
+                profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
          FROM master_users
@@ -589,6 +602,7 @@ const registerUser = asyncHandler(async (req, res) => {
     const {
         full_name,
         age,
+        date_of_birth,
         gender,
         email = null,
         address,
@@ -601,19 +615,15 @@ const registerUser = asyncHandler(async (req, res) => {
         registration_token,
     } = req.body;
 
-    if (!full_name || age === undefined || !gender || !mobile_no || !password || !registration_token) {
-        throw new AppError('full_name, age, gender, mobile_no, password and registration_token are required', 400);
+    if (!full_name || (age === undefined && !date_of_birth) || !gender || !mobile_no || !password || !registration_token) {
+        throw new AppError('full_name, age or date_of_birth, gender, mobile_no, password and registration_token are required', 400);
     }
 
     if (email !== null && !validateEmail(email)) {
         throw new AppError('email must be a valid email address', 400);
     }
 
-    const parsedAge = Number(age);
-
-    if (!Number.isInteger(parsedAge) || parsedAge < 1 || parsedAge > 120) {
-        throw new AppError('age must be a valid number between 1 and 120', 400);
-    }
+    const agePayload = normalizeAgePayload({ age, dateOfBirth: date_of_birth });
 
     if (!validateGender(gender)) {
         throw new AppError("gender must be one of: 'male', 'female', 'other'", 400);
@@ -697,12 +707,13 @@ const registerUser = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
+             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
             [
                 patientUuid,
                 String(full_name).trim(),
-                parsedAge,
+                agePayload.age,
+                agePayload.date_of_birth,
                 String(gender).toLowerCase(),
                 normalizedEmail,
                 normalizedAddress,
@@ -722,7 +733,9 @@ const registerUser = asyncHandler(async (req, res) => {
     });
 
     const patientRows = await query(
-        `SELECT id, uuid, full_name, age, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
+        `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
+                gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
+                profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
          FROM master_users
@@ -792,6 +805,8 @@ const login = asyncHandler(async (req, res) => {
                 uuid: patient.uuid,
                 full_name: patient.full_name,
                 age: patient.age,
+                date_of_birth: patient.date_of_birth,
+                age_display: patient.age_display,
                 gender: patient.gender,
                 email: patient.email,
                 address: patient.address,
@@ -799,6 +814,10 @@ const login = asyncHandler(async (req, res) => {
                 mobile_no: patient.mobile_no,
                 role: patient.role,
                 has_cross_module_access: patient.has_cross_module_access,
+                profile_image_url: patient.profile_image_url,
+                profile_image_key: patient.profile_image_key,
+                profile_image_mime_type: patient.profile_image_mime_type,
+                profile_image_size: patient.profile_image_size,
                 is_active: patient.is_active,
                 created_at: patient.created_at,
                 updated_at: patient.updated_at,
@@ -946,6 +965,8 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
                 uuid: patient.uuid,
                 full_name: patient.full_name,
                 age: patient.age,
+                date_of_birth: patient.date_of_birth,
+                age_display: patient.age_display,
                 gender: patient.gender,
                 email: patient.email,
                 address: patient.address,
@@ -953,6 +974,10 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
                 mobile_no: patient.mobile_no,
                 role: patient.role,
                 has_cross_module_access: patient.has_cross_module_access,
+                profile_image_url: patient.profile_image_url,
+                profile_image_key: patient.profile_image_key,
+                profile_image_mime_type: patient.profile_image_mime_type,
+                profile_image_size: patient.profile_image_size,
                 is_active: patient.is_active,
                 created_at: patient.created_at,
                 updated_at: patient.updated_at,
@@ -966,7 +991,9 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
 
 const getCurrentPatient = asyncHandler(async (req, res) => {
     const users = await query(
-        `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, role,
+        `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
+                gender, email, address, description, mobile_no, role,
+                profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
          FROM master_users
@@ -1078,6 +1105,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         email,
         address,
         age,
+        date_of_birth,
         gender,
         description,
         mobile_no: mobileNoSnake,
@@ -1092,6 +1120,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         && email === undefined
         && address === undefined
         && age === undefined
+        && date_of_birth === undefined
         && gender === undefined
         && description === undefined
         && mobile_no === undefined
@@ -1113,18 +1142,29 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         values.push(String(full_name).trim());
     }
 
-    if (age !== undefined) {
-        const parsedAge = Number(age);
-        if (!Number.isInteger(parsedAge) || parsedAge < 1 || parsedAge > 120) {
-            throw new AppError('age must be a valid number between 1 and 120', 400);
+    if (age !== undefined || date_of_birth !== undefined) {
+        const agePayload = normalizeAgePayload({
+            age,
+            dateOfBirth: date_of_birth,
+            partial: true,
+        });
+        if (agePayload.age !== undefined) {
+            updateParts.push('age = ?');
+            values.push(agePayload.age);
         }
-        updateParts.push('age = ?');
-        values.push(parsedAge);
+        if (agePayload.date_of_birth !== undefined) {
+            updateParts.push('date_of_birth = ?');
+            values.push(agePayload.date_of_birth);
+        }
+    }
+
+    if (updateParts.length === 0 && email === undefined && address === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
+        throw new AppError('At least one field is required to update profile', 400);
     }
 
     const updatedPatient = await withTransaction(async (connection) => {
         const [existingUserRows] = await connection.execute(
-            `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, role, is_active, created_at, updated_at
+            `SELECT ${getUserProfileSelectColumns()}
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -1210,7 +1250,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         );
 
         const [updatedPatientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, role, is_active, created_at, updated_at
+            `SELECT ${getUserProfileSelectColumns()}
              FROM master_users
              WHERE id = ?
              LIMIT 1`,
@@ -1245,6 +1285,136 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         success: true,
         message: 'User profile updated successfully',
         data: updatedPatient,
+    });
+});
+
+const updateCurrentUserProfileImage = asyncHandler(async (req, res) => {
+    if (!req.file) {
+        throw new AppError('Profile image file is required', 400);
+    }
+
+    const existingRows = await query(
+        `SELECT id, uuid, role, is_active
+         FROM master_users
+         WHERE id = ?
+         LIMIT 1`,
+        [req.user.id]
+    );
+
+    if (existingRows.length === 0) {
+        throw new AppError('User not found', 404);
+    }
+
+    const existingUser = existingRows[0];
+    if (!existingUser.is_active) {
+        throw new AppError('User account is inactive', 403);
+    }
+
+    const upload = await uploadProfileImage({
+        file: req.file,
+        userId: existingUser.id,
+        roleCode: existingUser.role,
+    });
+
+    await query(
+        `UPDATE master_users
+         SET profile_image_url = ?,
+             profile_image_key = ?,
+             profile_image_mime_type = ?,
+             profile_image_size = ?,
+             updated_by = ?,
+             updated_ip = ?
+         WHERE id = ?`,
+        [
+            upload.profile_image_url,
+            upload.profile_image_key,
+            upload.profile_image_mime_type,
+            upload.profile_image_size,
+            req.user.id,
+            getClientIp(req),
+            req.user.id,
+        ]
+    );
+
+    const updatedRows = await query(
+        `SELECT ${getUserProfileSelectColumns()}
+         FROM master_users
+         WHERE id = ?
+         LIMIT 1`,
+        [req.user.id]
+    );
+
+    const updatedUser = {
+        ...updatedRows[0],
+        role: normalizeRole(updatedRows[0].role) || null,
+        role_code: normalizeRoleCode(updatedRows[0].role) || null,
+        ...getModuleAccessFromUser(updatedRows[0]),
+    };
+
+    return res.status(200).json({
+        success: true,
+        message: 'Profile image updated successfully',
+        data: updatedUser,
+    });
+});
+
+const removeCurrentUserProfileImage = asyncHandler(async (req, res) => {
+    const existingRows = await query(
+        `SELECT ${getUserProfileSelectColumns()}
+         FROM master_users
+         WHERE id = ?
+         LIMIT 1`,
+        [req.user.id]
+    );
+
+    if (existingRows.length === 0) {
+        throw new AppError('User not found', 404);
+    }
+
+    const existingUser = existingRows[0];
+    if (!existingUser.is_active) {
+        throw new AppError('User account is inactive', 403);
+    }
+
+    if (existingUser.profile_image_key) {
+        try {
+            await removeProfileImage(existingUser.profile_image_key);
+        } catch (error) {
+            console.error(`[Profile Image] Failed to remove ${existingUser.profile_image_key}: ${error.message}`);
+        }
+    }
+
+    await query(
+        `UPDATE master_users
+         SET profile_image_url = NULL,
+             profile_image_key = NULL,
+             profile_image_mime_type = NULL,
+             profile_image_size = NULL,
+             updated_by = ?,
+             updated_ip = ?
+         WHERE id = ?`,
+        [req.user.id, getClientIp(req), req.user.id]
+    );
+
+    const updatedRows = await query(
+        `SELECT ${getUserProfileSelectColumns()}
+         FROM master_users
+         WHERE id = ?
+         LIMIT 1`,
+        [req.user.id]
+    );
+
+    const updatedUser = {
+        ...updatedRows[0],
+        role: normalizeRole(updatedRows[0].role) || null,
+        role_code: normalizeRoleCode(updatedRows[0].role) || null,
+        ...getModuleAccessFromUser(updatedRows[0]),
+    };
+
+    return res.status(200).json({
+        success: true,
+        message: 'Profile image removed successfully',
+        data: updatedUser,
     });
 });
 
@@ -1439,7 +1609,7 @@ const refreshToken = asyncHandler(async (req, res) => {
     }
 
     const patients = await query(
-        `SELECT id, uuid, full_name, age, gender, email, address, description, mobile_no, role, is_active, created_at, updated_at
+        `SELECT ${getUserProfileSelectColumns()}
          FROM master_users
          WHERE id = ?
          LIMIT 1`,
@@ -1582,6 +1752,8 @@ module.exports = {
     listSelectableBranches,
     selectCurrentBranch,
     updateCurrentPatientProfile,
+    updateCurrentUserProfileImage,
+    removeCurrentUserProfileImage,
     requestForgotPasswordOtp,
     verifyForgotPasswordOtp,
     resetForgotPassword,

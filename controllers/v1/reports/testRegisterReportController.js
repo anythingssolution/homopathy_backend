@@ -1,5 +1,6 @@
 const asyncHandler = require('../../../utils/asyncHandler');
 const getTestRegisterReport = require('../../../services/reports/medical/testRegister');
+const { saveTestReportSendStatus } = require('../../../services/reports/medical/testReportSendStatus');
 const { buildReportResponseMeta, parseReportFilters } = require('./shared');
 
 const getTestRegisterReportController = asyncHandler(async (req, res) => {
@@ -14,6 +15,24 @@ const getTestRegisterReportController = asyncHandler(async (req, res) => {
     });
 });
 
+const updateTestReportSendStatusController = asyncHandler(async (req, res) => {
+    const row = await saveTestReportSendStatus({
+        sourceType: req.body?.source_type,
+        sourceId: req.body?.source_id,
+        status: req.body?.status,
+        reason: req.body?.reason,
+        actorUserId: req.user?.id || null,
+        selectedBranchId: req.selectedBranchId || req.body?.branch_id || null,
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Test report send status saved successfully',
+        data: { row },
+    });
+});
+
 module.exports = {
     getTestRegisterReportController,
+    updateTestReportSendStatusController,
 };

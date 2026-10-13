@@ -47,7 +47,7 @@ test('operational lists and appointment mutations retain branch restrictions', (
 });
 
 test('shared patient registry and corrections retain reception access without a visit in the working branch', () => {
-    for (const [method, route] of [['get', '/patients'], ['patch', '/patients/:patient_id'], ['get', '/patients/:patient_id/update-history']]) {
+    for (const [method, route] of [['get', '/patients'], ['patch', '/patients/:patient_id'], ['post', '/patients/:patient_id/reset-password'], ['get', '/patients/:patient_id/update-history']]) {
         const guards = routeGuards(method, route);
         assert.deepEqual(guards.slice(0, 2), ['authentication', 'reception-access']);
         assert.ok(!guards.includes('selected-branch'));

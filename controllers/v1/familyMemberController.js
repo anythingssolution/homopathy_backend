@@ -2,6 +2,7 @@ const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { MAX_ACTIVE_FAMILY_MEMBERS } = require('../../utils/patientFamily');
+const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -18,7 +19,11 @@ const normalizeFamilyMemberPayload = (body = {}, { partial = false } = {}) => {
     const fullName = body.full_name !== undefined ? String(body.full_name || '').trim() : undefined;
     const relationship = body.relationship !== undefined ? String(body.relationship || '').trim() : undefined;
     const description = body.description !== undefined ? String(body.description || '').trim() : undefined;
-    const age = body.age !== undefined && body.age !== null && body.age !== '' ? toPositiveInt(body.age) : undefined;
+    const agePayload = normalizeAgePayload({
+        age: body.age,
+        dateOfBirth: body.date_of_birth,
+        partial,
+    });
     const gender = body.gender !== undefined ? String(body.gender || '').trim().toLowerCase() : undefined;
 
     if (!partial || body.full_name !== undefined) {
@@ -33,12 +38,6 @@ const normalizeFamilyMemberPayload = (body = {}, { partial = false } = {}) => {
         }
     }
 
-    if (!partial || body.age !== undefined) {
-        if (!age) {
-            throw new AppError('age must be a positive integer', 400);
-        }
-    }
-
     if (!partial || body.gender !== undefined) {
         if (!validateGender(gender)) {
             throw new AppError("gender must be one of 'male', 'female' or 'other'", 400);
@@ -48,7 +47,8 @@ const normalizeFamilyMemberPayload = (body = {}, { partial = false } = {}) => {
     return {
         full_name: fullName,
         relationship,
-        age,
+        age: agePayload.age,
+        date_of_birth: agePayload.date_of_birth,
         gender,
         description: description || null,
     };
@@ -69,6 +69,8 @@ const listFamilyMembers = asyncHandler(async (req, res) => {
             fm.fk_primary_patient_id,
             fm.full_name,
             fm.age,
+            fm.date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
             fm.gender,
             fm.relationship,
             fm.description,
@@ -114,12 +116,13 @@ const createFamilyMember = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO tbl_patient_family_members
-             (fk_primary_patient_id, full_name, age, gender, relationship, description, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (fk_primary_patient_id, full_name, age, date_of_birth, gender, relationship, description, is_active, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 req.user.id,
                 payload.full_name,
                 payload.age,
+                payload.date_of_birth,
                 payload.gender,
                 payload.relationship,
                 payload.description,
@@ -139,6 +142,8 @@ const createFamilyMember = asyncHandler(async (req, res) => {
             fm.fk_primary_patient_id,
             fm.full_name,
             fm.age,
+            fm.date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
             fm.gender,
             fm.relationship,
             fm.description,
@@ -238,6 +243,8 @@ const updateFamilyMember = asyncHandler(async (req, res) => {
             fm.fk_primary_patient_id,
             fm.full_name,
             fm.age,
+            fm.date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
             fm.gender,
             fm.relationship,
             fm.description,

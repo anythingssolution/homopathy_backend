@@ -16,7 +16,10 @@ const getPatientSummaryReport = async (filters) => {
          FROM (
             SELECT
                 p.id,
-                p.age,
+                CASE
+                    WHEN p.date_of_birth IS NOT NULL THEN TIMESTAMPDIFF(YEAR, p.date_of_birth, CURDATE())
+                    ELSE p.age
+                END AS age,
                 p.is_active,
                 COUNT(fm.id) AS active_family_members
             FROM master_users p

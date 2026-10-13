@@ -739,7 +739,7 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
     }
 
     const patientRows = await query(
-        `SELECT id AS patient_id, uuid, full_name, mobile_no, age, gender
+        `SELECT id AS patient_id, uuid, full_name, mobile_no, age, date_of_birth, gender
          FROM master_users
          WHERE id = ?
            AND is_active = 1
@@ -1381,6 +1381,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 p.mobile_no AS patient_mobile_no,
                 p.uuid AS patient_uuid,
                 p.age AS patient_age,
+                p.date_of_birth AS patient_date_of_birth,
                 p.gender AS patient_gender,
                 br.branch_name,
                 c.doctor_id,

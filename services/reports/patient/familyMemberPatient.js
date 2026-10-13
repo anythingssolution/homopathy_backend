@@ -1,4 +1,5 @@
 const { buildPatientAppointmentScope, query } = require('./shared');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getFamilyMemberPatientReport = async (filters) => {
     const { whereClause, params } = buildPatientAppointmentScope(filters);
@@ -9,6 +10,8 @@ const getFamilyMemberPatientReport = async (filters) => {
             fm.full_name AS family_member_full_name,
             fm.relationship,
             fm.age,
+            fm.date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
             fm.gender,
             p.id AS primary_patient_id,
             p.full_name AS primary_patient_full_name,
@@ -20,7 +23,7 @@ const getFamilyMemberPatientReport = async (filters) => {
          JOIN master_users p ON p.id = a.fk_patient_id
          ${whereClause}
            AND a.booked_for_type = 'FAMILY_MEMBER'
-         GROUP BY fm.id, fm.full_name, fm.relationship, fm.age, fm.gender, p.id, p.full_name, p.mobile_no
+         GROUP BY fm.id, fm.full_name, fm.relationship, fm.age, fm.date_of_birth, fm.gender, p.id, p.full_name, p.mobile_no
          ORDER BY total_appointments DESC, family_member_full_name ASC`,
         params
     );

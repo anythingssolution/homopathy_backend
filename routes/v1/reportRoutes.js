@@ -8,6 +8,7 @@ const {
     getClinicalReportsController,
     getMedicalReportsController,
     getTestRegisterReportController,
+    updateTestReportSendStatusController,
     getCourierRegisterReportController,
     getPatientReportsController,
 } = require('../../controllers/v1/reports');
@@ -30,6 +31,7 @@ router.get('/billing/revenue-by-consultant', getRevenueByConsultantController);
 router.get('/billing/revenue-by-medicine', getRevenueByMedicineController);
 router.get('/medical', getMedicalReportsController);
 router.get('/test-register', getTestRegisterReportController);
+router.put('/test-register/report-status', updateTestReportSendStatusController);
 router.get('/courier-register', getCourierRegisterReportController);
 
 module.exports = router;

@@ -3,6 +3,7 @@ CREATE TABLE `tbl_patient_family_members` (
   `fk_primary_patient_id` BIGINT UNSIGNED NOT NULL,
   `full_name` VARCHAR(100) NOT NULL,
   `age` TINYINT UNSIGNED NOT NULL,
+  `date_of_birth` DATE NULL,
   `gender` ENUM('male','female','other') NOT NULL DEFAULT 'other',
   `relationship` VARCHAR(50) NOT NULL,
   `description` TEXT DEFAULT NULL,

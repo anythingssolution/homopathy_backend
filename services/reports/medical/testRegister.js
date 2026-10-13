@@ -1,6 +1,7 @@
 const { getRepeatBillTestRows } = require('./repeatBillTests');
 const { buildMedicalReportScope, query } = require('./shared');
 const { decorateTokenFields } = require('../../../utils/tokenDisplay');
+const { buildAgeDisplaySql } = require('../../../utils/age');
 
 const getTestRegisterReport = async (filters) => {
     const { whereClause, params } = buildMedicalReportScope(filters);
@@ -8,6 +9,8 @@ const getTestRegisterReport = async (filters) => {
     const rows = await query(
         `SELECT
             ct.id AS consultation_test_id,
+            'CONSULTATION' AS report_source_type,
+            ct.id AS report_source_id,
             ct.consultation_id,
             ct.test_name,
             ct.amount,
@@ -18,6 +21,10 @@ const getTestRegisterReport = async (filters) => {
             f.finding_text,
             f.notes AS finding_notes,
             f.interpreted_at,
+            trs.status AS report_send_status,
+            trs.not_sent_reason AS report_not_sent_reason,
+            trs.marked_at AS report_status_marked_at,
+            marker.full_name AS report_status_marked_by_name,
             c.doctor_id,
             c.doctor_finalized_at,
             a.appointment_id,
@@ -36,6 +43,8 @@ const getTestRegisterReport = async (filters) => {
             a.checked_in_at,
             COALESCE(fm.full_name, p.full_name) AS patient_full_name,
             COALESCE(fm.age, p.age) AS patient_age,
+            COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
+            ${buildAgeDisplaySql('COALESCE(fm.date_of_birth, p.date_of_birth)', 'COALESCE(fm.age, p.age)')} AS patient_age_display,
             COALESCE(fm.gender, p.gender) AS patient_gender,
             p.mobile_no AS patient_mobile_no,
             p.uuid AS patient_uuid,
@@ -62,6 +71,10 @@ const getTestRegisterReport = async (filters) => {
           AND sto.appointment_date = a.appointment_date
           AND sto.status = 'ACTIVE'
          LEFT JOIN tbl_consultation_test_findings f ON f.consultation_test_id = ct.id
+         LEFT JOIN tbl_test_report_send_status trs
+           ON trs.source_type = 'CONSULTATION'
+          AND trs.source_id = ct.id
+         LEFT JOIN master_users marker ON marker.id = trs.marked_by
          ${whereClause}
          ORDER BY
             a.appointment_date DESC,

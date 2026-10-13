@@ -3,6 +3,7 @@ const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { normalizeRole, normalizeRoleCode } = require('../../utils/roles');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
+const { buildAgeDisplaySql } = require('../../utils/age');
 const { parsePagination, resolvePagination, buildPaginationMeta } = require('../../utils/pagination');
 const {
     createConsultationBillForAppointment,
@@ -420,6 +421,8 @@ const getAppointmentFormData = asyncHandler(async (req, res) => {
                 id AS family_member_id,
                 full_name,
                 age,
+                date_of_birth,
+                ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
                 gender,
                 relationship,
                 description,

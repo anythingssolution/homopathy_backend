@@ -60,8 +60,10 @@ const {
 const { buildEffectiveSlotTokenPlate } = require('../../services/slotTokenExtensionService');
 const { resolveEffectiveSlotTiming } = require('../../services/slotTimeOverrideService');
 const { scheduleAppointmentReminders } = require('../../services/whatsappAutomationService');
+const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 const APPOINTMENT_AUID_PREFIX = 'AUID';
 const PATIENT_ROLE = 'PAT';
+const DEFAULT_PATIENT_PASSWORD = 'DTH@2510';
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -211,7 +213,7 @@ const ensureVitalsColumnsExist = async () => {
 const normalizeFamilyMemberPayload = (body = {}) => {
     const fullName = String(body.full_name || '').trim();
     const relationship = String(body.relationship || '').trim();
-    const age = toPositiveInt(body.age);
+    const agePayload = normalizeAgePayload({ age: body.age, dateOfBirth: body.date_of_birth });
     const gender = String(body.gender || '').trim().toLowerCase();
     const description = body.description ? String(body.description).trim() : null;
 
@@ -223,10 +225,6 @@ const normalizeFamilyMemberPayload = (body = {}) => {
         throw new AppError('relationship is required', 400);
     }
 
-    if (!age) {
-        throw new AppError('age must be a positive integer', 400);
-    }
-
     if (!validateGender(gender)) {
         throw new AppError("gender must be one of 'male', 'female' or 'other'", 400);
     }
@@ -234,7 +232,8 @@ const normalizeFamilyMemberPayload = (body = {}) => {
     return {
         full_name: fullName,
         relationship,
-        age,
+        age: agePayload.age,
+        date_of_birth: agePayload.date_of_birth,
         gender,
         description,
     };
@@ -740,6 +739,8 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             u.uuid AS patient_uuid,
             u.full_name,
             u.age,
+            u.date_of_birth,
+            ${buildAgeDisplaySql('u.date_of_birth', 'u.age')} AS age_display,
             u.gender,
             u.email,
             u.mobile_no,
@@ -775,6 +776,8 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
                 fm.fk_primary_patient_id,
                 fm.full_name,
                 fm.age,
+                fm.date_of_birth,
+                ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
                 fm.gender,
                 fm.relationship,
                 fm.description,
@@ -825,7 +828,22 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const fullName = req.body?.full_name !== undefined ? String(req.body.full_name).trim() : undefined;
     const mobileNo = req.body?.mobile_no !== undefined ? String(req.body.mobile_no).trim() : undefined;
     const gender = req.body?.gender !== undefined ? String(req.body.gender).trim().toLowerCase() : undefined;
-    const age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    const rawDateOfBirth = req.body?.date_of_birth;
+    const dateOfBirth = rawDateOfBirth === undefined
+        ? undefined
+        : (rawDateOfBirth === null || rawDateOfBirth === '' ? null : String(rawDateOfBirth).slice(0, 10));
+    if (dateOfBirth && !isValidDateString(dateOfBirth)) {
+        throw new AppError('date_of_birth must be in YYYY-MM-DD format', 400);
+    }
+    let age = req.body?.age !== undefined ? toPositiveInt(req.body.age) : undefined;
+    if (dateOfBirth) {
+        const birth = new Date(`${dateOfBirth}T00:00:00Z`);
+        const today = new Date();
+        age = today.getUTCFullYear() - birth.getUTCFullYear();
+        const monthDiff = today.getUTCMonth() - birth.getUTCMonth();
+        if (monthDiff < 0 || (monthDiff === 0 && today.getUTCDate() < birth.getUTCDate())) age -= 1;
+        age = Math.max(0, age);
+    }
     const areaName = req.body?.area_name !== undefined
         ? (String(req.body.area_name ?? '').trim() || null)
         : undefined;
@@ -844,11 +862,11 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     }
 
     if (familyMemberId) {
-        if (fullName === undefined && gender === undefined && age === undefined && relationship === undefined) {
-            throw new AppError('At least one of full_name, gender, age or relationship is required', 400);
+        if (fullName === undefined && gender === undefined && age === undefined && dateOfBirth === undefined && relationship === undefined) {
+            throw new AppError('At least one of full_name, gender, age, date_of_birth or relationship is required', 400);
         }
     } else if (fullName === undefined && mobileNo === undefined && gender === undefined && registrationId === undefined
-        && age === undefined && areaName === undefined && pincode === undefined && city === undefined) {
+        && age === undefined && dateOfBirth === undefined && areaName === undefined && pincode === undefined && city === undefined) {
         throw new AppError('At least one patient detail is required', 400);
     }
 
@@ -863,7 +881,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         throw new AppError("gender must be one of 'male', 'female' or 'other'", 400);
     }
 
-    if (age !== undefined && (age === null || age < 1 || age > 120)) {
+    if (req.body?.age !== undefined && !dateOfBirth && (age === null || age < 1 || age > 120)) {
         throw new AppError('age must be between 1 and 120', 400);
     }
 
@@ -889,7 +907,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid, full_name, mobile_no, gender, age, address, area_name,
+            `SELECT id, uuid, full_name, mobile_no, gender, age, date_of_birth, address, area_name,
                     ward_no, vidhan_sabha, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
@@ -929,7 +947,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
         if (familyMemberId) {
             const [fmRows] = await connection.execute(
-                `SELECT id, full_name, age, gender, relationship, description, is_active
+                `SELECT id, full_name, age, date_of_birth, gender, relationship, description, is_active
                  FROM tbl_patient_family_members
                  WHERE id = ?
                    AND fk_primary_patient_id = ?
@@ -954,6 +972,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
                 full_name: fullName,
                 gender,
                 age,
+                date_of_birth: dateOfBirth,
                 relationship,
             };
 
@@ -971,7 +990,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
             const fmUpdateParts = [];
             const fmUpdateValues = [];
-            for (const field of ['full_name', 'gender', 'age', 'relationship']) {
+            for (const field of ['full_name', 'gender', 'age', 'date_of_birth', 'relationship']) {
                 if (fmNewValues[field] !== undefined) {
                     fmUpdateParts.push(`${field} = ?`);
                     fmUpdateValues.push(fmNewValues[field]);
@@ -1012,6 +1031,8 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
                     family_member_id: familyMemberId,
                     full_name: fmNewValues.full_name ?? fm.full_name,
                     age: fmNewValues.age ?? fm.age,
+                    date_of_birth: fmNewValues.date_of_birth ?? fm.date_of_birth,
+                    age_display: null,
                     gender: fmNewValues.gender ?? fm.gender,
                     relationship: fmNewValues.relationship ?? fm.relationship,
                     mobile_no: patient.mobile_no,
@@ -1048,6 +1069,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             mobile_no: mobileNo,
             gender,
             age,
+            date_of_birth: dateOfBirth,
             uuid: registrationId,
             area_name: areaName,
             pincode,
@@ -1107,7 +1129,8 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         );
 
         const [updatedRows] = await connection.execute(
-            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, gender, email, mobile_no,
+            `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
+                    gender, email, mobile_no,
                     address, area_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
@@ -1128,6 +1151,98 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             ? 'Family member details updated successfully'
             : 'Patient details updated successfully',
         data: result,
+    });
+});
+
+const resetReceptionistPatientPassword = asyncHandler(async (req, res) => {
+    const patientId = toPositiveInt(req.params.patient_id);
+    const branchId = req.selectedBranchId || null;
+
+    if (!patientId) {
+        throw new AppError('Valid patient_id is required', 400);
+    }
+
+    const actorIp = getClientIp(req);
+    const actorRole = req.user?.role_code || req.user?.role || null;
+    const actorUserAgent = req.headers['user-agent'] || null;
+    const passwordHash = await bcrypt.hash(DEFAULT_PATIENT_PASSWORD, 10);
+
+    const patient = await withTransaction(async (connection) => {
+        const [patientRows] = await connection.execute(
+            `SELECT id, uuid, full_name, mobile_no, role, is_active
+             FROM master_users
+             WHERE id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [patientId]
+        );
+
+        if (patientRows.length === 0) {
+            throw new AppError('Patient not found', 404);
+        }
+
+        const row = patientRows[0];
+        if (String(row.role || '').toUpperCase() !== PATIENT_ROLE) {
+            throw new AppError('Selected record is not a patient account', 409);
+        }
+
+        if (Number(row.is_active) !== 1) {
+            throw new AppError('Selected patient is inactive', 409);
+        }
+
+        if (branchId) {
+            const [branchRows] = await connection.execute(
+                `SELECT appointment_id
+                 FROM tbl_appointments
+                 WHERE fk_patient_id = ?
+                   AND fk_branch_id = ?
+                 LIMIT 1`,
+                [patientId, branchId]
+            );
+
+            if (branchRows.length === 0) {
+                throw new AppError('Patient is not available in the selected branch', 403);
+            }
+        }
+
+        await connection.execute(
+            `UPDATE master_users
+             SET password = ?, updated_by = ?, updated_ip = ?
+             WHERE id = ?`,
+            [passwordHash, req.user.id, actorIp, patientId]
+        );
+
+        await connection.execute(
+            `INSERT INTO log_user_profile_updates
+             (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                patientId,
+                req.user.id,
+                actorRole,
+                actorIp,
+                actorUserAgent,
+                JSON.stringify(['password_reset']),
+                JSON.stringify({ password: '********' }),
+                JSON.stringify({ password: 'DEFAULT_PATIENT_PASSWORD' }),
+            ]
+        );
+
+        return {
+            patient_id: row.id,
+            patient_uuid: row.uuid,
+            full_name: row.full_name,
+            mobile_no: row.mobile_no,
+        };
+    });
+
+    return res.status(200).json({
+        success: true,
+        message: 'Patient password reset successfully',
+        data: {
+            patient,
+            default_password: DEFAULT_PATIENT_PASSWORD,
+        },
     });
 });
 
@@ -1214,6 +1329,8 @@ const getReceptionistPatientDetail = asyncHandler(async (req, res) => {
             p.uuid AS patient_uuid,
             p.full_name,
             p.age,
+            p.date_of_birth,
+            ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS age_display,
             p.gender,
             p.email,
             p.mobile_no,
@@ -1313,6 +1430,8 @@ const getReceptionistPatientDetail = asyncHandler(async (req, res) => {
                 fm.id AS family_member_id,
                 fm.full_name,
                 fm.age,
+                fm.date_of_birth,
+                ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
                 fm.gender,
                 fm.relationship,
                 fm.description,
@@ -1394,12 +1513,13 @@ const createReceptionistPatientFamilyMember = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO tbl_patient_family_members
-             (fk_primary_patient_id, full_name, age, gender, relationship, description, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (fk_primary_patient_id, full_name, age, date_of_birth, gender, relationship, description, is_active, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 patientId,
                 payload.full_name,
                 payload.age,
+                payload.date_of_birth,
                 payload.gender,
                 payload.relationship,
                 payload.description,
@@ -1419,6 +1539,8 @@ const createReceptionistPatientFamilyMember = asyncHandler(async (req, res) => {
             fm.fk_primary_patient_id,
             fm.full_name,
             fm.age,
+            fm.date_of_birth,
+            ${buildAgeDisplaySql('fm.date_of_birth', 'fm.age')} AS age_display,
             fm.gender,
             fm.relationship,
             fm.description,
@@ -1464,9 +1586,10 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const newPatientFullName = String(patient?.full_name || '').trim();
     const newPatientMobileNo = String(patient?.mobile_no || '').trim();
     const newPatientAge = patient?.age;
+    const newPatientDateOfBirth = patient?.date_of_birth;
     const newPatientGender = String(patient?.gender || '').trim().toLowerCase();
     const hasNewPatientPayload = Boolean(
-        newPatientFullName || newPatientMobileNo || newPatientAge !== undefined || newPatientGender
+        newPatientFullName || newPatientMobileNo || newPatientAge !== undefined || newPatientDateOfBirth || newPatientGender
     );
 
     if ((!patientId && !hasNewPatientPayload) || !branchId || !treatmentId || !slotId || !appointment_date) {
@@ -1478,19 +1601,21 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     }
 
     if (!patientId && hasNewPatientPayload) {
-        const parsedAge = Number(newPatientAge);
+        const newPatientAgePayload = normalizeAgePayload({
+            age: newPatientAge,
+            dateOfBirth: newPatientDateOfBirth,
+        });
 
-        if (!newPatientFullName || !newPatientMobileNo || newPatientAge === undefined || !newPatientGender) {
-            throw new AppError('patient.full_name, patient.mobile_no, patient.age and patient.gender are required for new patient booking', 400);
+        if (!newPatientFullName || !newPatientMobileNo || (newPatientAge === undefined && !newPatientDateOfBirth) || !newPatientGender) {
+            throw new AppError('patient.full_name, patient.mobile_no, patient.age or patient.date_of_birth and patient.gender are required for new patient booking', 400);
         }
 
         if (!validateMobile(newPatientMobileNo)) {
             throw new AppError('patient.mobile_no must be a valid mobile number', 400);
         }
 
-        if (!Number.isInteger(parsedAge) || parsedAge < 1 || parsedAge > 120) {
-            throw new AppError('patient.age must be a valid number between 1 and 120', 400);
-        }
+        patient.age = newPatientAgePayload.age;
+        patient.date_of_birth = newPatientAgePayload.date_of_birth;
 
         if (!validateGender(newPatientGender)) {
             throw new AppError("patient.gender must be one of: 'male', 'female', 'other'", 400);
@@ -1538,7 +1663,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
 
         if (resolvedPatientId) {
             const [existingPatientRows] = await connection.execute(
-                `SELECT id, uuid, full_name, mobile_no, age, gender, role, is_active
+                `SELECT id, uuid, full_name, mobile_no, age, date_of_birth, gender, role, is_active
                  FROM master_users
                  WHERE id = ?
                  LIMIT 1 FOR UPDATE`,
@@ -1563,12 +1688,13 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
 
                 const [insertPatientResult] = await connection.execute(
                     `INSERT INTO master_users
-                     (uuid, full_name, age, gender, email, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
-                     VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                     (uuid, full_name, age, date_of_birth, gender, email, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
+                     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
                     [
                         generatedPatientUuid,
                         newPatientFullName,
-                        Number(newPatientAge),
+                        patient.age,
+                        patient.date_of_birth,
                         newPatientGender,
                         newPatientMobileNo,
                         generatedPasswordHash,
@@ -3936,6 +4062,7 @@ module.exports = {
     listReceptionistPatients,
     getReceptionistPatientDetail,
     updateReceptionistPatient,
+    resetReceptionistPatientPassword,
     listReceptionistPatientUpdateHistory,
     createReceptionistPatientFamilyMember,
     saveReceptionistAppointmentVitals,
