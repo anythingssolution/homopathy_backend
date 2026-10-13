@@ -71,7 +71,33 @@ test('manual medicine without a visible variant can retain its default price', a
 
     await upsertDoctorManualVariant(connection, 934, '22M 2D', 'N/A', 85);
 
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].params[2], 'N/A');
+    assert.equal(calls[1].params[3], 85);
+});
+
+test('manual product master skips an existing product variant across sources', async () => {
+    const calls = [];
+    const connection = {
+        execute: async (sql, params) => {
+            calls.push({ sql, params });
+            if (String(sql).includes('FROM master_medical_products')) {
+                return [[{
+                    id: 209,
+                    source_type: 'MEDICAL_PRODUCT_PRICE',
+                    product_name: 'DT 111/25 TAB',
+                    normalized_product_name: 'dt 111/25 tab',
+                    packing: '30 TABS',
+                    size_or_weight: null,
+                    is_active: 1,
+                }]];
+            }
+            return [{ affectedRows: 1 }];
+        },
+    };
+
+    await upsertDoctorManualVariant(connection, 209, 'DT 111/25 TAB', '30 TAB', 250);
+
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].params[2], 'N/A');
-    assert.equal(calls[0].params[3], 85);
+    assert.match(calls[0].sql, /FROM master_medical_products/);
 });

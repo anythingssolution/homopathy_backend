@@ -262,6 +262,7 @@ const parseRegistryFilters = (rawFilters = {}, actor = {}) => {
     return {
         branchId,
         patientSearch: normalizeText(rawFilters.patient_search || rawFilters.search, 100),
+        registrationNo: normalizeText(rawFilters.registration_no || rawFilters.reg_no, 100),
         sortBy,
         sortOrder,
         page,
@@ -295,7 +296,6 @@ const buildRegistryWhere = (filters) => {
         conditions.push(`(
             p.full_name LIKE ?
             OR p.mobile_no LIKE ?
-            OR p.uuid LIKE ?
             OR fm.full_name LIKE ?
             OR fm.relationship LIKE ?
             OR a.auid LIKE ?
@@ -314,10 +314,13 @@ const buildRegistryWhere = (filters) => {
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
             `%${filters.patientSearch}%`,
-            `%${filters.patientSearch}%`,
             filters.branchId,
             `%${filters.patientSearch}%`
         );
+    }
+    if (filters.registrationNo) {
+        conditions.push('p.uuid LIKE ?');
+        params.push(`%${filters.registrationNo}%`);
     }
 
     return {

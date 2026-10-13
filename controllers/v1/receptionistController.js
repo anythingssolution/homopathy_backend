@@ -41,11 +41,13 @@ const {
 } = require('../../utils/patientFamily');
 const {
     buildFollowUpMeta,
+    buildFollowUpHistorySubjectScope,
     getTreatmentById,
     isFollowUpBookingVisitType,
     getVisitTypeCode,
     lockEligiblePendingFollowUp,
     markPendingFollowUpBooked,
+    resolveFollowUpFeeDecision,
 } = require('../../services/followupService');
 const {
     MAX_TOKEN_NUMBER,
@@ -61,6 +63,11 @@ const { buildEffectiveSlotTokenPlate } = require('../../services/slotTokenExtens
 const { resolveEffectiveSlotTiming } = require('../../services/slotTimeOverrideService');
 const { scheduleAppointmentReminders } = require('../../services/whatsappAutomationService');
 const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
+const {
+    listInvestigationsByAppointmentId,
+    listInvestigationsByAppointmentIds,
+    replaceAppointmentInvestigations,
+} = require('../../services/patientInvestigationService');
 const APPOINTMENT_AUID_PREFIX = 'AUID';
 const PATIENT_ROLE = 'PAT';
 const DEFAULT_PATIENT_PASSWORD = 'DTH@2510';
@@ -320,7 +327,8 @@ const generateTodayAppointmentAuid = async (connection, date = new Date()) => {
 const appointmentSelectColumns = `
     a.appointment_id, a.auid, a.fk_patient_id, a.parent_appointment_id, a.fk_branch_id, b.branch_name,
     (SELECT c.id FROM tbl_consultations c WHERE c.appointment_id = a.appointment_id ORDER BY c.id DESC LIMIT 1) AS consultation_id,
-    a.fk_treatment_id, t.treatment_name, t.consultation_fee, a.fk_slot_id, s.slot_name,
+    a.fk_treatment_id, t.treatment_code, t.treatment_name, t.consultation_fee, a.fk_slot_id, s.slot_name,
+    b.follow_up_free_days,
     COALESCE(sto.override_start_time, s.start_time) AS start_time, COALESCE(sto.override_end_time, s.end_time) AS end_time, s.default_consult_minutes, a.current_token_number AS token_number, a.original_token_number, a.current_token_number,
     a.is_shifted, a.shift_reason, a.not_available_at, a.booked_by_type, a.booked_by_user_id,
     a.rescheduled_from_appointment_id, a.reschedule_reason,
@@ -391,6 +399,133 @@ const attachAccountPendingDues = async (appointments = []) => {
     });
 };
 
+const attachAppointmentInvestigations = async (appointments = []) => {
+    if (!Array.isArray(appointments) || appointments.length === 0) {
+        return appointments;
+    }
+
+    const investigationsByAppointment = await listInvestigationsByAppointmentIds(
+        query,
+        appointments.map((appointment) => appointment.appointment_id)
+    );
+
+    return appointments.map((appointment) => ({
+        ...appointment,
+        investigations: investigationsByAppointment.get(Number(appointment.appointment_id)) || [],
+    }));
+};
+
+const buildFollowUpPaymentHint = async (appointment) => {
+    const visitTypeCode = getVisitTypeCode({
+        treatmentId: appointment?.fk_treatment_id,
+        treatmentName: appointment?.treatment_name,
+        treatmentCode: appointment?.treatment_code,
+    });
+
+    if (!isFollowUpBookingVisitType(visitTypeCode)) {
+        return {
+            is_follow_up: false,
+            should_charge_fee: false,
+        };
+    }
+
+    const branchFreeDays = appointment?.follow_up_free_days !== null && appointment?.follow_up_free_days !== undefined
+        ? Number(appointment.follow_up_free_days)
+        : null;
+    const [nowRows] = await query('SELECT NOW() AS checked_in_at');
+    const checkedInAt = nowRows[0]?.checked_in_at || new Date();
+    const historySubjectScope = buildFollowUpHistorySubjectScope(appointment.fk_patient_family_member_id);
+    const parentRows = appointment.parent_appointment_id
+        ? await query(
+            `SELECT appointment_id, appointment_date, actual_completed_at, created_at
+             FROM tbl_appointments
+             WHERE appointment_id = ?
+               AND fk_patient_id = ?
+               ${historySubjectScope.sql}
+               AND is_active = 1
+               AND COALESCE(status, '') <> 'Cancelled'
+             LIMIT 1`,
+            [
+                appointment.parent_appointment_id,
+                appointment.fk_patient_id,
+                ...historySubjectScope.params,
+            ]
+        )
+        : [];
+    const completedRows = await query(
+        `SELECT appointment_id, appointment_date, actual_completed_at, created_at, 'COMPLETED' AS history_source
+         FROM tbl_appointments
+         WHERE fk_patient_id = ?
+           AND appointment_id <> ?
+           ${historySubjectScope.sql}
+           AND is_active = 1
+           AND status = 'Completed'
+           AND COALESCE(actual_completed_at, appointment_date, created_at) <= ?
+         ORDER BY COALESCE(actual_completed_at, appointment_date, created_at) DESC,
+                  appointment_id DESC
+         LIMIT 1`,
+        [
+            appointment.fk_patient_id,
+            appointment.appointment_id,
+            ...historySubjectScope.params,
+            checkedInAt,
+        ]
+    );
+    const fallbackRows = completedRows.length > 0
+        ? []
+        : await query(
+            `SELECT appointment_id, appointment_date, actual_completed_at, created_at, 'PREVIOUS_VISIT' AS history_source
+             FROM tbl_appointments
+             WHERE fk_patient_id = ?
+               AND appointment_id <> ?
+               ${historySubjectScope.sql}
+               AND is_active = 1
+               AND COALESCE(status, '') <> 'Cancelled'
+               AND COALESCE(actual_completed_at, appointment_date, created_at) <= ?
+             ORDER BY COALESCE(actual_completed_at, appointment_date, created_at) DESC,
+                      appointment_id DESC
+             LIMIT 1`,
+            [
+                appointment.fk_patient_id,
+                appointment.appointment_id,
+                ...historySubjectScope.params,
+                checkedInAt,
+            ]
+        );
+    const previousAppointment = parentRows[0]
+        ? { ...parentRows[0], history_source: 'PARENT_VISIT' }
+        : completedRows[0] || fallbackRows[0] || null;
+    const lastCompletedAt = previousAppointment?.actual_completed_at
+        || previousAppointment?.appointment_date
+        || previousAppointment?.created_at
+        || null;
+    const decision = resolveFollowUpFeeDecision({
+        checkedInAt,
+        lastCompletedAt,
+        freeDays: branchFreeDays,
+    });
+
+    return {
+        is_follow_up: true,
+        branch_name: appointment.branch_name || null,
+        branch_free_days: branchFreeDays,
+        days_difference: decision.daysDifference,
+        free_days: decision.freeDays,
+        last_completed_at: lastCompletedAt,
+        previous_appointment_id: previousAppointment?.appointment_id || null,
+        history_source: previousAppointment?.history_source || null,
+        should_charge_fee: Boolean(decision.shouldChargeFee),
+        suggested_amount: decision.shouldChargeFee ? Number(appointment.consultation_fee || 0) : 0,
+    };
+};
+
+const attachFollowUpPaymentHints = async (appointments = []) => Promise.all(
+    appointments.map(async (appointment) => ({
+        ...appointment,
+        follow_up_payment_hint: await buildFollowUpPaymentHint(appointment),
+    }))
+);
+
 const getAppointmentDetailsById = async (appointmentId) => {
     const rows = await query(
         `SELECT ${appointmentSelectColumns}
@@ -410,7 +545,13 @@ const getAppointmentDetailsById = async (appointmentId) => {
         [appointmentId]
     );
 
-    return decorateTokenFields(rows[0] || null);
+    const appointment = decorateTokenFields(rows[0] || null);
+    if (!appointment) {
+        return null;
+    }
+
+    appointment.investigations = await listInvestigationsByAppointmentId(query, appointmentId);
+    return (await attachFollowUpPaymentHints([appointment]))[0];
 };
 
 const getPrescriptionDetailByConsultationId = async (consultationId) => {
@@ -2205,7 +2346,9 @@ const listReceptionistAppointments = asyncHandler(async (req, res) => {
         timelineRows: queueTimelineRows,
         protectedWindowAppointmentIdsByGroup,
     });
-    const rowsWithPendingDues = await attachAccountPendingDues(decoratedRows);
+    const rowsWithFollowUpHints = await attachFollowUpPaymentHints(decoratedRows);
+    const rowsWithInvestigations = await attachAppointmentInvestigations(rowsWithFollowUpHints);
+    const rowsWithPendingDues = await attachAccountPendingDues(rowsWithInvestigations);
 
     return res.status(200).json({
         success: true,
@@ -2258,31 +2401,6 @@ const saveReceptionistAppointmentVitals = asyncHandler(async (req, res) => {
 
         if (Number(appointment.is_active) !== 1 || appointment.status === 'Cancelled') {
             throw new AppError('Vitals cannot be updated for a cancelled or inactive appointment', 409);
-        }
-
-        let isVitalsColumnsEnsured = false;
-        if (!isVitalsColumnsEnsured) {
-            const extCols = [
-                'occupation TEXT NULL',
-                'history_present_illness TEXT NULL',
-                'history_past_illness TEXT NULL',
-                'family_history TEXT NULL',
-                'allergies_history TEXT NULL',
-                'gynecological_history TEXT NULL',
-                'personal_social_history TEXT NULL',
-                'general_examination TEXT NULL',
-                'systematic_examination TEXT NULL',
-                'differential_diagnosis TEXT NULL',
-                'follow_up TEXT NULL',
-                'disease VARCHAR(255) NULL',
-                'mental_mind_status TEXT NULL',
-            ];
-            for (const colDef of extCols) {
-                try {
-                    await connection.execute(`ALTER TABLE tbl_appointment_vitals ADD COLUMN ${colDef}`);
-                } catch (_err) {}
-            }
-            isVitalsColumnsEnsured = true;
         }
 
         if (vitals.has_any_value) {
@@ -2381,6 +2499,19 @@ const saveReceptionistAppointmentVitals = asyncHandler(async (req, res) => {
                 `DELETE FROM tbl_appointment_vitals
                  WHERE appointment_id = ?`,
                 [appointmentId]
+            );
+        }
+
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, 'investigations')) {
+            await replaceAppointmentInvestigations(
+                (sql, params) => connection.execute(sql, params),
+                {
+                    appointmentId,
+                    actorRole: req.user.role_code,
+                    actorUserId: req.user.id,
+                    investigations: req.body.investigations,
+                    appointmentScope: appointment,
+                }
             );
         }
 
@@ -3082,7 +3213,7 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             billId = billResult.billId;
         }
 
-        const hasReceptionistFee = !isFollowUpAutoPaid && req.body?.consultation_fee !== undefined;
+        const hasReceptionistFee = req.body?.consultation_fee !== undefined;
         if (hasReceptionistFee) {
             await setReceptionistConsultationFee({
                 connection,
@@ -3121,6 +3252,41 @@ const approveReceptionistAppointment = asyncHandler(async (req, res) => {
             if (Number(payment.amount.toFixed(2)) !== payableAmount) {
                 throw new AppError(`Full consultation payable amount of ₹${payableAmount.toFixed(2)} must be collected`, 400);
             }
+
+            await collectConsultationBillPayment({
+                connection,
+                billId,
+                appointmentId,
+                amount: payment.amount,
+                paymentMode: payment.paymentMode,
+                transactionReference: payment.transactionReference,
+                remark: payment.remark,
+                collectedByUserId: req.user.id,
+                collectedByRole: req.user.role_code,
+            });
+        }
+
+        if (isFollowUpAutoPaid && hasPayableAmount) {
+            const payment = parsePaymentCollectionPayload(req.body);
+            if (Number(payment.amount.toFixed(2)) !== payableAmount) {
+                throw new AppError(`Full consultation payable amount of ₹${payableAmount.toFixed(2)} must be collected`, 400);
+            }
+
+            await connection.execute(
+                `UPDATE tbl_bills
+                 SET payment_settlement_type = ?,
+                     updated_by = ?
+                 WHERE id = ?`,
+                [PAYMENT_SETTLEMENT_TYPES.COLLECTED, req.user.id, billId]
+            );
+            await connection.execute(
+                `UPDATE tbl_appointments
+                 SET consultation_payment_settlement_type = ?,
+                     consultation_payment_status = 'UNPAID',
+                     updated_by = ?
+                 WHERE appointment_id = ?`,
+                [PAYMENT_SETTLEMENT_TYPES.COLLECTED, req.user.id, appointmentId]
+            );
 
             await collectConsultationBillPayment({
                 connection,

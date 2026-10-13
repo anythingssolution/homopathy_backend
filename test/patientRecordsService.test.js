@@ -108,25 +108,40 @@ test('patient registry supports both directions for every sortable column', asyn
 test('patient registry sorting preserves global registrations and branch-scoped visit/search filters', async () => {
     registryQueries = [];
     await listPatientRegistry({
-        filters: { branch_id: 2, patient_search: 'DTH22', sort_by: 'full_name', sort_order: 'desc', page_size: 10 },
+        filters: { branch_id: 2, patient_search: 'Rahul', sort_by: 'full_name', sort_order: 'desc', page_size: 10 },
     });
     for (const { sql, params } of registryQueries) {
         assert.ok(sql.includes("a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?"));
         assert.ok(sql.includes("p.role = 'PAT' AND p.is_active = 1"));
-        assert.ok(sql.includes('p.uuid LIKE ?'));
+        assert.ok(!sql.includes('OR p.uuid LIKE ?'));
         assert.equal(params[0], 2);
         if (sql.includes('pickups.latest_medicine_pickup_date')) {
             assert.equal(params[1], 2);
-            assert.deepEqual(params.slice(2, 8), Array(6).fill('%DTH22%'));
-            assert.deepEqual(params.slice(8, 10), [2, '%DTH22%']);
+            assert.deepEqual(params.slice(2, 7), Array(5).fill('%Rahul%'));
+            assert.deepEqual(params.slice(7, 9), [2, '%Rahul%']);
         } else {
-            assert.deepEqual(params.slice(1, 7), Array(6).fill('%DTH22%'));
-            assert.deepEqual(params.slice(7, 9), [2, '%DTH22%']);
+            assert.deepEqual(params.slice(1, 6), Array(5).fill('%Rahul%'));
+            assert.deepEqual(params.slice(6, 8), [2, '%Rahul%']);
         }
         assert.ok(sql.includes('search_bill.bill_number LIKE ?'));
     }
     assert.ok(!registryQueries[1].sql.includes('p.fk_branch_id = ?'));
     assert.deepEqual(registryQueries[1].params.slice(-2), [10, 0]);
+});
+
+test('patient registry registration number filter searches displayed UUID separately', async () => {
+    registryQueries = [];
+    const result = await listPatientRegistry({
+        filters: { branch_id: 2, patient_search: 'Rahul', registration_no: 'DTH22', page_size: 10 },
+    });
+
+    assert.equal(result.filters.patientSearch, 'Rahul');
+    assert.equal(result.filters.registrationNo, 'DTH22');
+    for (const { sql, params } of registryQueries) {
+        assert.ok(sql.includes('AND p.uuid LIKE ?'));
+        assert.ok(!sql.includes('OR p.uuid LIKE ?'));
+        assert.ok(params.includes('%DTH22%'));
+    }
 });
 
 test('patient registry rejects unknown and unsafe sort parameters before database access', async () => {

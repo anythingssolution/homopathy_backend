@@ -1,5 +1,9 @@
 const { query, withTransaction } = require('../config/db');
 const AppError = require('../utils/AppError');
+const {
+    buildMedicalProductIdentityKey,
+    hasSameMedicalProductIdentity,
+} = require('../utils/medicalProductDedupe');
 
 const SOURCE_TYPES = new Set(['REGULAR_PRODUCT', 'RADIENT_PHARMA', 'MEDICAL_PRODUCT_PRICE', 'DOCTOR_MANUAL']);
 
@@ -45,35 +49,7 @@ const toBooleanInt = (value) => {
     return ['0', 'false', 'no', 'inactive'].includes(normalized) ? 0 : 1;
 };
 
-const buildDedupeKey = (product) => {
-    if (product.source_type === 'REGULAR_PRODUCT') {
-        return [
-            product.normalized_product_name,
-            normalizeValue(product.packing),
-            normalizeValue(product.product_type),
-        ].join('|');
-    }
-
-    if (product.source_type === 'RADIENT_PHARMA') {
-        return [
-            product.normalized_product_name,
-            normalizeValue(product.size_or_weight),
-            normalizeValue(product.category),
-        ].join('|');
-    }
-
-    if (product.source_type === 'DOCTOR_MANUAL') {
-        return [
-            product.normalized_product_name,
-            normalizeValue(product.packing),
-        ].join('|');
-    }
-
-    return [
-        normalizeValue(product.category),
-        product.normalized_product_name,
-    ].join('|');
-};
+const buildDedupeKey = (product) => buildMedicalProductIdentityKey(product);
 
 const normalizeProductPayload = (payload) => {
     const sourceType = String(payload?.source_type || '').trim().toUpperCase();
@@ -113,7 +89,7 @@ const normalizeProductPayload = (payload) => {
 };
 
 const assertUniqueProductVariant = async (product, excludeId = null) => {
-    const params = [product.source_type, product.dedupe_key];
+    const params = [product.normalized_product_name];
     let excludeCondition = '';
 
     if (excludeId) {
@@ -124,15 +100,14 @@ const assertUniqueProductVariant = async (product, excludeId = null) => {
     const rows = await query(
         `SELECT id, product_name, packing, size_or_weight, source_type
          FROM master_medical_products
-         WHERE source_type = ?
-           AND dedupe_key = ?${excludeCondition}
-         LIMIT 1`,
+         WHERE normalized_product_name = ?${excludeCondition}`,
         params
     );
 
-    if (rows.length > 0) {
-        const variant = rows[0].packing || rows[0].size_or_weight || rows[0].source_type;
-        throw new AppError(`Product variant already exists as "${rows[0].product_name}"${variant ? ` (${variant})` : ''}`, 409);
+    const duplicate = rows.find((row) => hasSameMedicalProductIdentity(row, product));
+    if (duplicate) {
+        const variant = duplicate.packing || duplicate.size_or_weight || duplicate.source_type;
+        throw new AppError(`Product variant already exists as "${duplicate.product_name}"${variant ? ` (${variant})` : ''}`, 409);
     }
 };
 

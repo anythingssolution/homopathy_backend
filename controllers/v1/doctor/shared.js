@@ -10,11 +10,18 @@ const { getCrossModuleAccessFlag } = require('../../../utils/moduleAccess');
 const { projectDispensingStatus } = require('../../../services/dispensaryPricingService');
 const { getMedicationPaymentSummaries } = require('../../../services/billingService');
 const {
+    buildMedicalProductIdentityKey,
+    hasSameMedicalProductIdentity,
+} = require('../../../utils/medicalProductDedupe');
+const {
     getAppointmentPatientColumns,
     getAppointmentPatientJoin,
     getBookingSubjectExpression,
 } = require('../../../utils/patientFamily');
 const { resolvePagination } = require('../../../utils/pagination');
+const {
+    listInvestigationsByAppointmentId,
+} = require('../../../services/patientInvestigationService');
 
 const NUMERIC_MEDICINE_MIN = 1;
 const NUMERIC_MEDICINE_MAX = 200;
@@ -426,11 +433,42 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
 
     const productName = String(medicineValue || packing).trim().toUpperCase();
     const normalizedProductName = normalizeMasterValue(productName);
-    const dedupeKey = [normalizedProductName, normalizeMasterValue(packing)].join('|');
+    const productIdentity = {
+        normalized_product_name: normalizedProductName,
+        product_name: productName,
+        packing,
+        size_or_weight: null,
+    };
+    const dedupeKey = buildMedicalProductIdentityKey(productIdentity);
     const parsedUnitPrice = Number(unitPrice);
     const mrpRate = Number.isFinite(parsedUnitPrice) && parsedUnitPrice > 0
         ? Number(parsedUnitPrice.toFixed(2))
         : null;
+
+    const existingResult = await connection.execute(
+        `SELECT id, source_type, product_name, normalized_product_name, packing, size_or_weight, is_active
+         FROM master_medical_products
+         WHERE normalized_product_name = ?`,
+        [normalizedProductName]
+    );
+    const existingRows = Array.isArray(existingResult?.[0]) ? existingResult[0] : existingResult;
+
+    const existingProduct = (Array.isArray(existingRows) ? existingRows : [])
+        .find((row) => hasSameMedicalProductIdentity(row, productIdentity));
+    if (existingProduct) {
+        if (existingProduct.source_type === 'DOCTOR_MANUAL' && Number(existingProduct.is_active) === 1) {
+            await connection.execute(
+                `UPDATE master_medical_products
+                 SET medicine_text_id = ?,
+                     product_name = ?,
+                     packing = ?,
+                     mrp_rate = COALESCE(?, mrp_rate)
+                 WHERE id = ?`,
+                [medicineTextId, productName, packing, mrpRate, existingProduct.id]
+            );
+        }
+        return;
+    }
 
     await connection.execute(
         `INSERT INTO master_medical_products
@@ -603,7 +641,13 @@ const getDoctorAppointmentById = async (appointmentId, branchId = null) => {
         params
     );
 
-    return decorateTokenFields(appointments[0] || null);
+    const appointment = decorateTokenFields(appointments[0] || null);
+    if (!appointment) {
+        return null;
+    }
+
+    appointment.investigations = await listInvestigationsByAppointmentId(query, appointmentId);
+    return appointment;
 };
 
 const STAFF_ACCESS_ROLE_MAP = {
@@ -869,6 +913,7 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
     );
 
     const response = mapConsultationResponse(consultationRows[0], medicationRows, testRows);
+    response.investigations = await listInvestigationsByAppointmentId(query, appointmentId);
     let deliveryDetails = null;
     try {
         deliveryDetails = consultationRows[0].delivery_details_json
@@ -1252,6 +1297,7 @@ const validateConsultationPayload = (body) => {
     const universalRemarkHi = toNullableVarchar(body?.universal_remark_hi ?? body?.universalRemarkHi, 255, 'Universal remark Hindi');
     const medicationsInput = Array.isArray(body?.medications) ? body.medications : null;
     const testsInput = Array.isArray(body?.tests) ? body.tests : [];
+    const investigationsInput = Array.isArray(body?.investigations) ? body.investigations : [];
 
     if (!appointmentId) {
         throw new AppError('Please select a valid appointment', 400);
@@ -1527,6 +1573,7 @@ const validateConsultationPayload = (body) => {
         universalRemarkHi,
         medications,
         tests,
+        investigations: investigationsInput,
         totalAmount: computedTotalAmount,
     };
 };

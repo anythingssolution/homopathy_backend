@@ -1,5 +1,9 @@
 const ExcelJS = require('exceljs');
 const { withTransaction, query } = require('../config/db');
+const {
+    buildMedicalProductIdentityKey,
+    hasSameMedicalProductIdentity,
+} = require('../utils/medicalProductDedupe');
 
 const SOURCE_TYPES = new Set(['REGULAR_PRODUCT', 'RADIENT_PHARMA', 'MEDICAL_PRODUCT_PRICE']);
 
@@ -173,12 +177,7 @@ const getRowValue = (row, headerMap, key) => {
 };
 
 const buildDedupeKey = (sourceType, row) => {
-    // Standard dedupe key combination: product_name + packing + size_or_weight
-    return [
-        row.normalized_product_name,
-        normalizeValue(row.packing),
-        normalizeValue(row.size_or_weight),
-    ].join('|');
+    return buildMedicalProductIdentityKey(row);
 };
 
 const parseImportRows = (sheet) => {
@@ -267,11 +266,7 @@ const parseImportRows = (sheet) => {
             return;
         }
 
-        const compositeKey = [
-            normalizedProductName,
-            normalizeValue(rowPayload.packing),
-            normalizeValue(rowPayload.size_or_weight),
-        ].join('|');
+        const compositeKey = buildMedicalProductIdentityKey(rowPayload);
 
         if (currentImportKeys.has(compositeKey)) {
             skippedRows.push({
@@ -340,23 +335,11 @@ const importMedicalProductsFromWorkbook = async (buffer) => {
         ...new Set(parsed.rows.map((row) => row.normalized_product_name)),
     ]);
 
-    const existingKeys = new Set(
-        existingProducts.map((p) =>
-            [p.normalized_product_name, normalizeValue(p.packing), normalizeValue(p.size_or_weight)].join('|')
-        )
-    );
-
     const insertableRows = [];
     const skippedRows = [...parsed.skippedRows];
 
     parsed.rows.forEach((row) => {
-        const rowKey = [
-            row.normalized_product_name,
-            normalizeValue(row.packing),
-            normalizeValue(row.size_or_weight),
-        ].join('|');
-
-        if (existingKeys.has(rowKey)) {
+        if (existingProducts.some((product) => hasSameMedicalProductIdentity(product, row))) {
             skippedRows.push({
                 row_number: row.row_number,
                 product_name: row.product_name,

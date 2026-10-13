@@ -40,6 +40,9 @@ const {
     normalizeTestFindingsPayload,
     upsertConsultationTestFindings,
 } = require('../../../services/consultationTestFindingsService');
+const {
+    replaceAppointmentInvestigations,
+} = require('../../../services/patientInvestigationService');
 
 const executeRows = async (executor, sql, params = []) => {
     const result = await executor(sql, params);
@@ -193,6 +196,7 @@ const createConsultation = asyncHandler(async (req, res) => {
         sameMonths,
         medications,
         tests,
+        investigations,
         totalAmount,
     } = validateConsultationPayload(req.body);
 
@@ -444,6 +448,21 @@ const createConsultation = asyncHandler(async (req, res) => {
                 ]
             );
             createdConsultationId = consultationResult.insertId;
+        }
+
+        if (Array.isArray(investigations)) {
+            await replaceAppointmentInvestigations(
+                (sql, params) => connection.execute(sql, params),
+                {
+                    appointmentId,
+                    consultationId: createdConsultationId,
+                    doctorId: req.user.id,
+                    actorRole: req.user.role_code,
+                    actorUserId: req.user.id,
+                    investigations,
+                    appointmentScope: appointment,
+                }
+            );
         }
 
         await saveUniversalRemarkSuggestion(connection, universalRemark);
