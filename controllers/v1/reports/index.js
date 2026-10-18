@@ -1,4 +1,7 @@
 module.exports = {
+    ...require('./dispensaryRegisterController'),
+    ...require('./notReturnedReportController'),
+    ...require('./locationPatientReportController'),
     ...require('./appointmentReportController'),
     ...require('./clinicalReportController'),
     ...require('./patientReportController'),

@@ -11,6 +11,8 @@ let calls = [];
 db.withTransaction = async fn => {
     try {
         const result = await fn({ execute: async (sql, params) => {
+            if (sql.includes('FROM master_slots') && sql.includes('LOCK IN SHARE MODE')) return [[{id:1}]];
+            if (sql.includes('FROM tbl_branch_slot_booking_weekdays')) return [[]];
             calls.push({ sql, params });
             if (sql.includes('FROM master_users')) return [[{ id: 5521, uuid: 'DTH115', full_name: 'Patient DTH115', mobile_no: '7999561623', age: 0, gender: 'other', role: 'PAT', is_active: 1 }]];
             return [[]];

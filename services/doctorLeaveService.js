@@ -1,3 +1,4 @@
+const { getWeeklyBranchStatus } = require('./bookingWeekdayService');
 const { query, withTransaction } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { getDoctorSessionStatus } = require('./doctorSessionService');
@@ -712,6 +713,13 @@ const getBranchDoctorAvailability = async ({ branchId, appointmentDate, connecti
         };
     }
 
+    const weekly = await getWeeklyBranchStatus({ branchId: normalizedBranchId, appointmentDate: normalizedAppointmentDate, executor: execute });
+    if (!weekly.booking_enabled) {
+        return { branch_id: normalizedBranchId, appointment_date: normalizedAppointmentDate,
+            booking_enabled: false, reason: weekly.reason, source: 'WEEKLY_BOOKING',
+            leave: null, live_status: null, slot_time_overrides: slotTimeOverrides, slots: weekly.slots };
+    }
+
     if (normalizedAppointmentDate === getTodayDateString()) {
         const liveStatus = await getDoctorSessionStatus({
             branchId: normalizedBranchId,
@@ -724,6 +732,7 @@ const getBranchDoctorAvailability = async ({ branchId, appointmentDate, connecti
             booking_enabled: true,
             reason: null,
             source: 'LIVE_SESSION',
+            slots: weekly.slots,
             leave: null,
             live_status: liveStatus,
             slot_time_overrides: slotTimeOverrides,
@@ -736,6 +745,7 @@ const getBranchDoctorAvailability = async ({ branchId, appointmentDate, connecti
         booking_enabled: true,
         reason: null,
         source: 'SCHEDULE',
+        slots: weekly.slots,
         leave: null,
         live_status: null,
         slot_time_overrides: slotTimeOverrides,

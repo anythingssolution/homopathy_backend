@@ -1,3 +1,4 @@
+const { assertWeeklyBookingOpen } = require('../../services/bookingWeekdayService');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
@@ -493,6 +494,8 @@ const getBookingTokenPlate = asyncHandler(async (req, res) => {
         throw new AppError('You can access token plate only for the selected branch', 403);
     }
 
+    await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate });
+
     const [branchRows, slotRows, treatmentRows, bookedAppointments] = await Promise.all([
         query(
             `SELECT id
@@ -700,6 +703,7 @@ const createAppointment = asyncHandler(async (req, res) => {
     }
 
     const result = await withTransaction(async (connection) => {
+        await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate: appointment_date, connection });
         const [branchRows] = await connection.execute(
             'SELECT id FROM master_clinic_branches WHERE id = ? AND is_active = 1 LIMIT 1',
             [branchId]
@@ -1067,6 +1071,11 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     const treatmentName = req.query.treatment_name ? String(req.query.treatment_name).trim() : null;
     const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
     const prescriptionsOnly = ['1', 'true', 'yes'].includes(String(req.query.prescriptions_only || '').trim().toLowerCase());
+    const listView = String(req.query.view || 'all').toLowerCase();
+    if (!['all', 'upcoming', 'completed'].includes(listView)) {
+        throw new AppError('Invalid appointment view', 400);
+    }
+    const clinicToday = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
     const { page, pageSize } = parsePagination(req.query);
 
     if (appointmentDate && appointmentDate !== 'all' && !isValidDateString(appointmentDate)) {
@@ -1077,8 +1086,8 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     const params = [req.user.id];
 
     if (search) {
-        conditions.push('(t.treatment_name LIKE ? OR a.auid LIKE ? OR CAST(a.current_token_number AS CHAR) LIKE ? OR CAST(a.original_token_number AS CHAR) LIKE ?)');
-        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+        conditions.push('(t.treatment_name LIKE ? OR a.auid LIKE ? OR EXISTS (SELECT 1 FROM master_users reg WHERE reg.id = a.fk_patient_id AND reg.uuid LIKE ?) OR CAST(a.current_token_number AS CHAR) LIKE ? OR CAST(a.original_token_number AS CHAR) LIKE ?)');
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
     if (branchName && branchName !== 'all') {
         conditions.push('b.branch_name = ?');
@@ -1091,6 +1100,11 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     if (appointmentDate && appointmentDate !== 'all') {
         conditions.push('a.appointment_date = ?');
         params.push(appointmentDate);
+    }
+    if (listView === 'completed') conditions.push("a.status = 'Completed'");
+    if (listView === 'upcoming') {
+        conditions.push("a.status IN ('Confirmed', 'Pending') AND a.appointment_date >= ?");
+        params.push(clinicToday);
     }
     if (prescriptionsOnly) {
         conditions.push("a.status = 'Completed'");
@@ -1110,7 +1124,7 @@ const listMyAppointments = asyncHandler(async (req, res) => {
          ${getAppointmentPatientJoinClause(familyBookingSchema.enabled)}
          ${whereClause}`;
 
-    const [countRows, filterOptionRows] = await Promise.all([
+    const [countRows, filterOptionRows, summaryRows] = await Promise.all([
         query(`SELECT COUNT(*) AS total ${fromSql}`, params),
         query(
             `SELECT DISTINCT b.branch_name, t.treatment_name, a.appointment_date
@@ -1121,6 +1135,11 @@ const listMyAppointments = asyncHandler(async (req, res) => {
              ORDER BY a.appointment_date DESC`,
             [req.user.id]
         ),
+        query(`SELECT COUNT(*) AS total,
+                      COALESCE(SUM(a.status = 'Completed'), 0) AS completed,
+                      COALESCE(SUM(a.status = 'Completed' AND EXISTS
+                        (SELECT 1 FROM tbl_consultations pc WHERE pc.appointment_id = a.appointment_id)), 0) AS prescriptions
+               FROM tbl_appointments a WHERE a.fk_patient_id = ?`, [req.user.id]),
     ]);
     const pagination = resolvePagination({
         page,
@@ -1131,7 +1150,7 @@ const listMyAppointments = asyncHandler(async (req, res) => {
     const appointments = await query(
         `SELECT ${getAppointmentSelectColumns(familyBookingSchema.enabled)}
          ${fromSql}
-         ORDER BY a.appointment_date DESC, a.created_at DESC
+         ORDER BY ${listView === 'upcoming' ? 'a.appointment_date ASC, s.start_time ASC, a.created_at ASC' : 'a.appointment_date DESC, a.created_at DESC'}
          LIMIT ${pagination.pageSize} OFFSET ${pagination.offset}`,
         params
     );
@@ -1306,12 +1325,18 @@ const listMyAppointments = asyncHandler(async (req, res) => {
         meta: {
             ...buildPaginationMeta(pagination),
             total: pagination.total,
+            summary: {
+                total: Number(summaryRows[0]?.total || 0),
+                completed: Number(summaryRows[0]?.completed || 0),
+                prescriptions: Number(summaryRows[0]?.prescriptions || 0),
+            },
             filters: {
                 search,
                 branch_name: branchName || 'all',
                 treatment_name: treatmentName || 'all',
                 appointment_date: appointmentDate || 'all',
                 prescriptions_only: prescriptionsOnly,
+                view: listView,
             },
             filter_options: {
                 branches: [...new Set(filterOptionRows.map((row) => row.branch_name).filter(Boolean))],

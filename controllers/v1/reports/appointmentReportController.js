@@ -1,6 +1,7 @@
 const asyncHandler = require('../../../utils/asyncHandler');
 const { getAppointmentReports } = require('../../../services/reports/appointment');
 const getBookedVsConsultedReport = require('../../../services/reports/appointment/bookedVsConsulted');
+const { getAppointmentList } = require('../../../services/reports/appointment/appointmentList');
 const { buildReportResponseMeta, parseReportFilters } = require('./shared');
 
 const getAppointmentReportsController = asyncHandler(async (req, res) => {
@@ -32,7 +33,14 @@ const getBookedVsConsultedController = asyncHandler(async (req, res) => {
     });
 });
 
+const getAppointmentListController = asyncHandler(async (req, res) => {
+    const filters = { ...parseReportFilters(req), status: String(req.query.status || 'all').toLowerCase() };
+    const data = await getAppointmentList(filters);
+    res.json({ success: true, message: 'Appointment card list fetched', data });
+});
+
 module.exports = {
+    getAppointmentListController,
     getAppointmentReportsController,
     getBookedVsConsultedController,
 };

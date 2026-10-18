@@ -7,6 +7,9 @@ const { getPublicCallTune } = require('../../controllers/v1/callTuneController')
 
 const router = express.Router();
 
+const { getDateAvailability } = require('../../controllers/v1/bookingWeekdayController');
+router.get('/booking-date-availability', getDateAvailability);
+
 router.get('/doctor-status', getPublicStatus);
 router.get('/doctor-booking-availability', getPublicDoctorBookingAvailability);
 router.get('/schedule-rules', getPublicScheduleRules);

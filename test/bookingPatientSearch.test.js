@@ -11,6 +11,8 @@ db.query = async (sql, params) => {
   return sql.includes('COUNT(*) AS total') ? [{total: 0}] : [];
 };
 db.withTransaction = async fn => fn({execute: async (sql, params) => {
+  if (sql.includes('FROM master_slots')) return [[{id:1}]];
+  if (sql.includes('FROM tbl_branch_slot_booking_weekdays')) return [[]];
   calls.push({sql, params});
   assert.match(sql, /WHERE mobile_no = \?/);
   return [[{id: 42, role: 'PAT', is_active: 1}]];

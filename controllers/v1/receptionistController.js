@@ -1,3 +1,5 @@
+const { attachTimingNotices } = require('../../services/slotTimingNoticeService');
+const { assertWeeklyBookingOpen } = require('../../services/bookingWeekdayService');
 const { normalizeBookingPatientUpdates, saveBookingPatientUpdates } = require('../../utils/bookingPatientUpdates');
 const { normalizePatientRegistrationId, assertRegistrationIdAvailable } = require('../../utils/patientRegistrationId');
 const bcrypt = require('bcryptjs');
@@ -332,6 +334,8 @@ const appointmentSelectColumns = `
     COALESCE(sto.override_start_time, s.start_time) AS start_time, COALESCE(sto.override_end_time, s.end_time) AS end_time, s.default_consult_minutes, a.current_token_number AS token_number, a.original_token_number, a.current_token_number,
     a.is_shifted, a.shift_reason, a.not_available_at, a.booked_by_type, a.booked_by_user_id,
     a.rescheduled_from_appointment_id, a.reschedule_reason,
+    DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS notice_date,
+    DATE_FORMAT(a.planned_start_at, '%Y-%m-%d %H:%i:%s') AS notice_planned_at,
     a.queue_status, a.planned_start_at, a.planned_end_at, a.live_estimated_start_at, a.live_estimated_end_at,
     a.actual_called_at, a.actual_started_at, a.actual_completed_at, a.last_queue_event_at,
     a.checked_in_at, a.arrival_sequence,
@@ -1799,6 +1803,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const createdIp = getClientIp(req);
 
     const result = await withTransaction(async (connection) => {
+        await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate: appointment_date, connection });
         let resolvedPatientId = patientId;
         let patientRows = [];
 
@@ -2348,7 +2353,7 @@ const listReceptionistAppointments = asyncHandler(async (req, res) => {
     });
     const rowsWithFollowUpHints = await attachFollowUpPaymentHints(decoratedRows);
     const rowsWithInvestigations = await attachAppointmentInvestigations(rowsWithFollowUpHints);
-    const rowsWithPendingDues = await attachAccountPendingDues(rowsWithInvestigations);
+    const rowsWithPendingDues = await attachTimingNotices(query, await attachAccountPendingDues(rowsWithInvestigations));
 
     return res.status(200).json({
         success: true,
@@ -2721,6 +2726,7 @@ const rescheduleAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const createdIp = getClientIp(req);
 
     const rescheduleResult = await withTransaction(async (connection) => {
+        await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate: appointment_date, connection });
         const [oldRows] = await connection.execute(
             `SELECT appointment_id, fk_patient_id, fk_patient_family_member_id, booked_for_type, fk_branch_id, fk_slot_id, appointment_date, current_token_number, queue_status, status, is_active, consultation_bill_id, consultation_payment_status, consultation_payment_settlement_type
              FROM tbl_appointments

@@ -86,7 +86,12 @@ const {
 
 const router = express.Router();
 
-router.use(authenticate, authorizeRoles('doctor'), enforceSelectedBranchScope);
+const { getBookingWeekdays, saveBookingWeekdays } = require('../../controllers/v1/bookingWeekdayController');
+router.use(authenticate, authorizeRoles('doctor'));
+// This doctor-only matrix validates branch access per slot, independently of the working branch.
+router.get('/booking-weekdays', getBookingWeekdays);
+router.put('/booking-weekdays', saveBookingWeekdays);
+router.use(enforceSelectedBranchScope);
 const { listLabTests, saveLabTest } = require('../../controllers/v1/labTestMasterController');
 router.get('/test-master', listLabTests);
 router.post('/test-master', saveLabTest);

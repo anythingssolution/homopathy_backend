@@ -1,3 +1,4 @@
+const { buildProfileAddressUpdate } = require('../../utils/profileAddress');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { randomUUID, createHash } = require('crypto');
@@ -34,7 +35,7 @@ const getDefaultLanguage = async () => {
 
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
 const validateMobile = (mobileNo) => /^[0-9]{10,15}$/.test(String(mobileNo || '').trim());
-const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'description', 'mobile_no'];
+const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'area_name', 'city', 'pincode', 'description', 'mobile_no'];
 
 const validateEmail = (email) => {
     if (!email) {
@@ -332,13 +333,16 @@ const buildProfileAuditSnapshot = (userRow) => ({
     gender: userRow?.gender ?? null,
     email: userRow?.email ?? null,
     address: userRow?.address ?? null,
+    area_name: userRow?.area_name ?? null,
+    city: userRow?.city ?? null,
+    pincode: userRow?.pincode ?? null,
     description: userRow?.description ?? null,
     mobile_no: userRow?.mobile_no ?? null,
 });
 
 const getUserProfileSelectColumns = () => `
     id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
-    gender, email, address, description, mobile_no, role,
+    gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
     profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
     COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
     is_active, created_at, updated_at
@@ -992,7 +996,7 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
 const getCurrentPatient = asyncHandler(async (req, res) => {
     const users = await query(
         `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
-                gender, email, address, description, mobile_no, role,
+                gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
                 profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
@@ -1104,6 +1108,9 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         fullName: fullNameCamel,
         email,
         address,
+        area_name,
+        city,
+        pincode,
         age,
         date_of_birth,
         gender,
@@ -1119,6 +1126,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         full_name === undefined
         && email === undefined
         && address === undefined
+        && area_name === undefined && city === undefined && pincode === undefined
         && age === undefined
         && date_of_birth === undefined
         && gender === undefined
@@ -1158,7 +1166,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         }
     }
 
-    if (updateParts.length === 0 && email === undefined && address === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
+    if (updateParts.length === 0 && email === undefined && address === undefined && area_name === undefined && city === undefined && pincode === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
         throw new AppError('At least one field is required to update profile', 400);
     }
 
@@ -1198,7 +1206,12 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
             values.push(normalizeOptionalText(email));
         }
 
-        if (address !== undefined) {
+        const structuredAddress = buildProfileAddressUpdate(body, existingUser);
+        if (structuredAddress) {
+            for (const [field, value] of Object.entries(structuredAddress)) {
+                updateParts.push(`${field} = ?`); values.push(value);
+            }
+        } else if (address !== undefined) {
             updateParts.push('address = ?');
             values.push(normalizeOptionalText(address));
         }

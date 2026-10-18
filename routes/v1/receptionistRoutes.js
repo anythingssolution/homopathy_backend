@@ -1,3 +1,4 @@
+const { getTimingChangeDraft } = require('../../controllers/v1/slotTimingNoticeController');
 const express = require('express');
 const {
     createAppointmentByReceptionist,
@@ -64,6 +65,7 @@ router.post('/patients/:patient_id/family-members', createReceptionistPatientFam
 router.use(enforceSelectedBranchScope);
 router.get('/form-data', getReceptionistFormData);
 router.get('/appointments', listReceptionistAppointments);
+router.get('/appointments/:appointment_id/timing-change', authorizeAppointmentBranchScope, getTimingChangeDraft);
 router.get('/session/status', getSessionStatusForReceptionist);
 router.post('/session/start', startSessionByReceptionist);
 router.post('/session/pause', pauseSessionByReceptionist);

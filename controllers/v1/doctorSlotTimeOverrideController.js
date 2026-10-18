@@ -1,3 +1,4 @@
+const { snapshotTimingAppointments, recordTimingNotice } = require('../../services/slotTimingNoticeService');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
@@ -113,6 +114,7 @@ const saveSlotTiming = asyncHandler(async (req, res) => {
     result = await withTransaction(async (connection) => {
         await assertQueueCanShift(connection, context);
         const current = await resolveEffectiveSlotTiming({ executor: connection, ...context, lock: true });
+        const before = await snapshotTimingAppointments(connection, context);
         const shifted = calculateShiftedTiming({
             defaultStartTime: current.defaultStartTime,
             defaultEndTime: current.defaultEndTime,
@@ -188,6 +190,7 @@ const saveSlotTiming = asyncHandler(async (req, res) => {
             ]
         );
 
+        await recordTimingNotice(connection, { context, before, oldStart: current.effectiveStartTime, newStart: shifted.overrideStartTime });
         return {
             ...context,
             ...shifted,
@@ -216,34 +219,30 @@ const resetSlotTiming = asyncHandler(async (req, res) => {
     const ip = getClientIp(req);
 
     const result = await withTransaction(async (connection) => {
-        // "Reset" means back to the schedule for that day: the weekly rule time when one applies,
-        // otherwise the slot's default time.
+        await assertQueueCanShift(connection, context);
+        const current = await resolveEffectiveSlotTiming({ executor: connection, ...context, lock: true, materializeRule: false });
+        const before = await snapshotTimingAppointments(connection, context);
         const rule = await findRecurringRuleForSlot({ executor: connection, ...context });
-
+        let response;
         if (rule) {
             const restored = await shiftSlotOverrideForDate(connection, {
-                ...context,
-                overrideStartTime: String(rule.override_start_time),
-                reason: buildRecurringRuleReason(rule),
-                actorUserId: req.user.id,
-                ip,
+                ...context, overrideStartTime: String(rule.override_start_time),
+                reason: buildRecurringRuleReason(rule), actorUserId: req.user.id, ip,
                 action: 'RESET_TO_WEEKLY_RULE',
             });
-            return {
-                ...context,
-                changed: Boolean(restored),
-                restored_to: 'WEEKLY_RULE',
-                effective_start_time: restored ? restored.overrideStartTime : String(rule.override_start_time),
-            };
+            response = { ...context, changed: Boolean(restored), restored_to: 'WEEKLY_RULE',
+                effective_start_time: restored ? restored.overrideStartTime : String(rule.override_start_time) };
+        } else {
+            const cancelled = await cancelSlotOverrideForDate(connection, {
+                ...context, actorUserId: req.user.id, ip, action: 'RESET',
+            });
+            response = { ...context, changed: Boolean(cancelled), restored_to: 'DEFAULT' };
         }
-
-        const cancelled = await cancelSlotOverrideForDate(connection, {
-            ...context,
-            actorUserId: req.user.id,
-            ip,
-            action: 'RESET',
-        });
-        return { ...context, changed: Boolean(cancelled), restored_to: 'DEFAULT' };
+        if (response.changed) {
+            const next = await resolveEffectiveSlotTiming({ executor: connection, ...context, materializeRule: false });
+            await recordTimingNotice(connection, { context, before, oldStart: current.effectiveStartTime, newStart: next.effectiveStartTime });
+        }
+        return response;
     });
 
     if (result.changed) {

@@ -49,6 +49,8 @@ const getCourierRegisterReport = async (filters) => {
             d.full_name AS doctor_name,
             COALESCE(items.medicine_count, 0) AS medicine_count,
             items.medicine_names,
+            GREATEST(0, COALESCE(b.gross_amount, b.total_amount, 0) - COALESCE(items.test_gross, 0) - COALESCE(items.courier_gross, 0)) AS medicine_gross,
+            COALESCE(discounts.medicine_discount, 0) AS medicine_discount,
             COALESCE(items.courier_gross, 0) AS courier_gross,
             COALESCE(discounts.courier_discount, 0) AS courier_discount,
             GREATEST(0, COALESCE(items.courier_gross, 0) - COALESCE(discounts.courier_discount, 0)) AS courier_net,
@@ -79,14 +81,17 @@ const getCourierRegisterReport = async (filters) => {
                     END
                     ORDER BY id ASC SEPARATOR ', '
                 ) AS medicine_names,
-                SUM(CASE WHEN item_type = 'DELIVERY' OR LOWER(item_name) = 'courier charge' THEN amount ELSE 0 END) AS courier_gross
+                SUM(CASE WHEN item_type = 'DELIVERY' OR LOWER(item_name) = 'courier charge' THEN amount ELSE 0 END) AS courier_gross,
+                SUM(CASE WHEN UPPER(item_type) = 'TEST' THEN amount ELSE 0 END) AS test_gross
             FROM tbl_bill_items
             GROUP BY bill_id
          ) items ON items.bill_id = b.id
          LEFT JOIN (
-            SELECT bill_id, SUM(discount_amount) AS courier_discount
+            SELECT bill_id,
+                SUM(CASE WHEN discount_category = 'COURIER' THEN discount_amount ELSE 0 END) AS courier_discount,
+                SUM(CASE WHEN discount_category = 'MEDICINE' THEN discount_amount ELSE 0 END) AS medicine_discount
             FROM tbl_bill_discounts
-            WHERE status = 'ACTIVE' AND discount_category = 'COURIER'
+            WHERE status = 'ACTIVE' AND discount_category IN ('COURIER', 'MEDICINE')
             GROUP BY bill_id
          ) discounts ON discounts.bill_id = b.id
          ${whereClause}
