@@ -334,6 +334,7 @@ const listConsultationHistoryForDoctor = asyncHandler(async (req, res) => {
                 appointment_date: row.appointment_date,
                 symptoms: row.appointment_symptoms,
                 status: row.appointment_status,
+                actual_completed_at: row.actual_completed_at || null,
                 history_queue_position: row.history_queue_position == null
                     ? null : Number(row.history_queue_position),
                 position_explanation: row.history_queue_position == null ? null

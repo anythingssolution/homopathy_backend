@@ -1184,6 +1184,7 @@ const getConsultationHistoryRows = async ({
             a.appointment_date,
             a.symptoms AS appointment_symptoms,
             a.status AS appointment_status,
+            a.actual_completed_at,
             ${consultationPositionSql} AS history_queue_position,
             a.cancelled_at,
             a.cancelled_by_user_id,
