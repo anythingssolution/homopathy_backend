@@ -24,7 +24,7 @@ const {
     bulkRejectReceptionistAppointments,
     transferAppointmentByReceptionist,
 } = require('../../controllers/v1/receptionistController');
-const { getBookingTokenPlate } = require('../../controllers/v1/appointmentController');
+const { getReceptionistBookingTokenPlate } = require('../../controllers/v1/appointmentController');
 const {
     getExtensionPreview,
     createExtension,
@@ -53,7 +53,7 @@ router.use(authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'));
 router.post('/book-appointment', createAppointmentByReceptionist);
 router.get('/booking-form-data', getReceptionistFormData);
 router.get('/booking-patients', listReceptionistPatients);
-router.get('/token-plate', getBookingTokenPlate);
+router.get('/token-plate', getReceptionistBookingTokenPlate);
 
 // Patient accounts are shared across clinics, including patients without a visit.
 router.get('/patients', listReceptionistPatients);

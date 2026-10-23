@@ -476,7 +476,8 @@ const getAppointmentFormData = asyncHandler(async (req, res) => {
     });
 });
 
-const getBookingTokenPlate = asyncHandler(async (req, res) => {
+// Only the authenticated reception route selects this exception; request flags cannot enable it.
+const createBookingTokenPlateHandler = ({ allowScheduleException = false } = {}) => asyncHandler(async (req, res) => {
     const branchId = toPositiveInt(req.query.branch_id ?? req.query.fk_branch_id);
     const slotId = toPositiveInt(req.query.slot_id ?? req.query.fk_slot_id);
     const treatmentId = toPositiveInt(req.query.treatment_id ?? req.query.fk_treatment_id);
@@ -494,7 +495,7 @@ const getBookingTokenPlate = asyncHandler(async (req, res) => {
         throw new AppError('You can access token plate only for the selected branch', 403);
     }
 
-    await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate });
+    if (!allowScheduleException) await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate });
 
     const [branchRows, slotRows, treatmentRows, bookedAppointments] = await Promise.all([
         query(
@@ -600,6 +601,9 @@ const getBookingTokenPlate = asyncHandler(async (req, res) => {
         },
     });
 });
+
+const getBookingTokenPlate = createBookingTokenPlateHandler();
+const getReceptionistBookingTokenPlate = createBookingTokenPlateHandler({ allowScheduleException: true });
 
 const listEligibleFollowUpsForBooking = asyncHandler(async (req, res) => {
     const subject = await resolveEligibleFollowUpSubject({ req });
@@ -1524,6 +1528,7 @@ const cancelAppointment = asyncHandler(async (req, res) => {
 module.exports = {
     getAppointmentFormData,
     getBookingTokenPlate,
+    getReceptionistBookingTokenPlate,
     listEligibleFollowUpsForBooking,
     createAppointment,
     listMyAppointments,

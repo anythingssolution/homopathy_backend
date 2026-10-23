@@ -15,10 +15,9 @@ const patient = require('../controllers/v1/appointmentController');
 const reception = require('../controllers/v1/receptionistController');
 const invoke = (fn,req) => new Promise((resolve,reject)=>fn(req,{status(){return this;},json:resolve},reject));
 const body={fk_branch_id:2,fk_slot_id:3,fk_treatment_id:1,appointment_date:'2099-01-01',booking_for:'SELF'};
-test('closed weekday rejects patient, reception and reschedule before any patient, bill or appointment write', async () => {
+test('closed weekday still rejects patient booking and reception reschedule before any write', async () => {
     for(const [fn,extra] of [
         [patient.createAppointment,{}],
-        [reception.createAppointmentByReceptionist,{body:{...body,patient:{full_name:'Fixture',mobile_no:'9999999999',age:25,gender:'male'}}}],
         [reception.rescheduleAppointmentByReceptionist,{params:{appointment_id:'10'}}],
     ]) {
         writes=[];

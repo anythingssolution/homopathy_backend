@@ -25,6 +25,7 @@ const {
     getConsultationByAppointmentId,
     saveConsultationTestFindings,
     getRepeatTreatmentDraft,
+    getRepeatTreatmentOptions,
     getPrescriptionSuggestions,
     getDoctorHomepageCms,
     listHeroCms,
@@ -50,6 +51,7 @@ const {
 const {
     getOwnSessionStatus,
     startSession,
+    switchSessionSlot,
     startBreak,
     resumeBreak,
     pauseSession,
@@ -135,6 +137,7 @@ router.get('/consultations-history', listConsultationHistoryForDoctor);
 router.get('/billed-prescriptions', listBilledPrescriptionsForDoctor);
 router.get('/session/status', getOwnSessionStatus);
 router.post('/session/start', startSession);
+router.post('/session/select-slot', switchSessionSlot);
 router.post('/session/break', startBreak);
 router.post('/session/resume-break', resumeBreak);
 router.post('/session/pause', pauseSession);
@@ -156,6 +159,7 @@ router.delete('/leaves/:leave_id', removeDoctorLeave);
 router.patch('/patients/:patient_id', updateDoctorPatient);
 router.post('/consultations', createConsultation);
 router.get('/consultations/:appointment_id/repeat-draft', authorizeAppointmentBranchScope, getRepeatTreatmentDraft);
+router.get('/consultations/:appointment_id/repeat-options', authorizeAppointmentBranchScope, getRepeatTreatmentOptions);
 router.put('/consultations/:appointment_id/test-findings', authorizeAppointmentBranchScope, saveConsultationTestFindings);
 router.get('/consultations/prescription-suggestions', getPrescriptionSuggestions);
 router.get('/consultations/:appointment_id', authorizeAppointmentBranchScope, getConsultationByAppointmentId);

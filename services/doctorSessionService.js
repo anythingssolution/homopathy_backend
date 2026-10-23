@@ -11,6 +11,7 @@ const {
     recalculateLiveRuntimeProjection,
     listBranchSlotBlockContexts,
     ensureQueueSession,
+    logQueueEvent,
     parseMysqlDateTime,
     formatDateTimeForSql,
 } = require('./liveQueueService');
@@ -751,6 +752,9 @@ const startDoctorSession = async ({
     actorRole,
     ipAddress = null,
     userAgent = null,
+    allowSlotSwitch = false,
+    previewOnly = false,
+    confirmedCalledPatients = [],
 }) => {
     const normalizedDoctorId = toPositiveInt(doctorId);
     const normalizedBranchId = branchId ? toPositiveInt(branchId) : null;
@@ -771,6 +775,14 @@ const startDoctorSession = async ({
     const result = await withTransaction(async (connection) => {
         const referenceDateTime = new Date();
         const appointmentDate = formatDateToSqlDate(referenceDateTime);
+        let pausedQueueSessions = [];
+        if (allowSlotSwitch) {
+            if (!normalizedBranchId || !normalizedSlotId) throw new AppError('Select a branch and session', 400);
+            // Serialize explicit selections even when no live-session row exists yet.
+            await connection.execute('SELECT id FROM master_users WHERE id = ? FOR UPDATE', [normalizedDoctorId]);
+            const [slots] = await connection.execute('SELECT id FROM master_slots WHERE id = ? AND fk_branch_id = ? AND is_active = 1 LIMIT 1', [normalizedSlotId, normalizedBranchId]);
+            if (!slots.length) throw new AppError('Session is unavailable in selected branch', 409);
+        }
         const [existingRows] = await connection.execute(
             `SELECT
                 s.id AS doctor_session_id,
@@ -798,6 +810,66 @@ const startDoctorSession = async ({
             [normalizedDoctorId]
         );
 
+        const activeSession = existingRows[0] || null;
+        if (allowSlotSwitch && activeSession?.branch_id && Number(activeSession.branch_id) !== normalizedBranchId) {
+            throw new AppError('Doctor is already active in another branch', 409);
+        }
+        let outgoingCalledPatients = [];
+        if (allowSlotSwitch && (!activeSession || Number(activeSession.slot_id) !== normalizedSlotId)) {
+            const [patients] = await connection.execute(`SELECT a.appointment_id, a.fk_slot_id,
+                a.current_token_number, a.queue_status, a.checked_in_at, a.actual_started_at,
+                DATE_FORMAT(a.actual_called_at, '%Y-%m-%d %H:%i:%s') AS called_at,
+                COALESCE(fm.full_name, p.full_name) AS patient_name
+                FROM tbl_appointments a
+                JOIN master_users p ON p.id = a.fk_patient_id
+                LEFT JOIN tbl_patient_family_members fm ON fm.id = a.fk_patient_family_member_id
+                WHERE a.fk_branch_id = ? AND a.appointment_date = ? AND a.is_active = 1
+                AND a.status NOT IN ('Completed', 'Cancelled')
+                AND (a.queue_status = 'IN_PROGRESS' OR a.actual_started_at IS NOT NULL OR a.actual_called_at IS NOT NULL)
+                FOR UPDATE`, [normalizedBranchId, appointmentDate]);
+            if (patients.some(patient => patient.queue_status === 'IN_PROGRESS' || patient.actual_started_at)) {
+                throw new AppError('A consultation is in progress. Complete it before switching sessions.', 409);
+            }
+            outgoingCalledPatients = patients.filter(patient => patient.called_at && Number(patient.fk_slot_id) !== normalizedSlotId);
+        }
+        if (allowSlotSwitch && previewOnly) return { selectionPreview: true, calledPatients: outgoingCalledPatients };
+        if (outgoingCalledPatients.length) {
+            const confirmed = new Set((Array.isArray(confirmedCalledPatients) ? confirmedCalledPatients : [])
+                .map(patient => `${Number(patient.appointment_id)}:${patient.called_at}`));
+            if (outgoingCalledPatients.some(patient => !confirmed.has(`${Number(patient.appointment_id)}:${patient.called_at}`))) {
+                throw new AppError('The called patient has changed. Review the patient below and confirm again.', 409,
+                    { code: 'CONFIRM_CALLED_SESSION_SWITCH', called_patients: outgoingCalledPatients });
+            }
+        }
+        if (allowSlotSwitch && (!activeSession || Number(activeSession.slot_id) !== normalizedSlotId)) {
+            const oldSlotIds = [...new Set([
+                ...(activeSession?.slot_id ? [Number(activeSession.slot_id)] : []),
+                ...outgoingCalledPatients.map(patient => Number(patient.fk_slot_id)),
+            ])].filter(id => id !== normalizedSlotId);
+            if (oldSlotIds.length) {
+                pausedQueueSessions = await syncLiveQueueSessionsForDoctorPause(connection, {
+                    branchId: normalizedBranchId, actorUserId, appointmentDate, slotIds: oldSlotIds,
+                });
+            }
+            for (const queue of pausedQueueSessions) {
+                await connection.execute(`UPDATE tbl_live_queue_sessions SET auto_call_next_due_at = NULL,
+                    auto_call_next_reason = NULL WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ?`,
+                [queue.branchId, queue.slotId, queue.appointmentDate]);
+            }
+            for (const patient of outgoingCalledPatients) {
+                // Release the call only. Presence, arrival order, token, booking and payment remain intact.
+                await connection.execute(`UPDATE tbl_appointments SET actual_called_at = NULL,
+                    queue_status = ?, last_queue_event_at = NOW(), updated_by = ?, updated_ip = ?
+                    WHERE appointment_id = ?`,
+                [patient.checked_in_at ? 'CHECKED_IN' : 'BOOKED', actorUserId, ipAddress, patient.appointment_id]);
+                await logQueueEvent(connection, { appointmentId: patient.appointment_id, branchId: normalizedBranchId,
+                    slotId: patient.fk_slot_id, appointmentDate, tokenNumber: patient.current_token_number,
+                    eventType: 'SESSION_SWITCH_CALL_RELEASED', oldQueueStatus: patient.queue_status,
+                    newQueueStatus: patient.checked_in_at ? 'CHECKED_IN' : 'BOOKED', createdBy: actorUserId,
+                    meta: { target_slot_id: normalizedSlotId, previous_called_at: patient.called_at } });
+            }
+        }
+
         if (existingRows.length > 0) {
             const activeSession = existingRows[0];
             const activeBranchId = activeSession.branch_id ? Number(activeSession.branch_id) : null;
@@ -810,11 +882,18 @@ const startDoctorSession = async ({
                 });
             }
 
-            return {
-                changed: false,
-                payload: mapDoctorSessionPayload(activeSession),
-                resumedQueueSessions: [],
-            };
+            if (!allowSlotSwitch || Number(activeSession.slot_id) === normalizedSlotId) {
+                return { changed: false, payload: mapDoctorSessionPayload(activeSession), resumedQueueSessions: [] };
+            }
+
+            // End the old session and start the chosen session in the same transaction.
+            await connection.execute(`UPDATE tbl_doctor_live_sessions SET session_status = 'OUT', break_started_at = NULL,
+                ended_at = NOW(), ended_by_user_id = ?, ended_by_role = ?, note = COALESCE(?, note) WHERE id = ?`,
+            [actorUserId, actorRole, note, activeSession.doctor_session_id]);
+            await logDoctorSessionChange(connection, { doctorSessionId: activeSession.doctor_session_id,
+                doctorId: normalizedDoctorId, branchId: normalizedBranchId, oldStatus: activeSession.session_status,
+                newStatus: DOCTOR_SESSION_STATUS.OUT, action: SESSION_ACTION.PAUSE_SESSION, note,
+                changedByUserId: actorUserId, changedByRole: actorRole, source: 'MANUAL', ipAddress, userAgent });
         }
 
         const resolvedSlotId = normalizedBranchId
@@ -892,9 +971,16 @@ const startDoctorSession = async ({
             changed: true,
             payload: mapDoctorSessionPayload(createdRows[0] || null),
             resumedQueueSessions,
+            pausedQueueSessions,
         };
     });
 
+    for (const queue of result.pausedQueueSessions || []) {
+        await cancelScheduledAutoCallNext(queue);
+        await withTransaction(connection => recalculateLiveRuntimeProjection(connection, {
+            ...queue, actorUserId, actorIp: ipAddress,
+        }));
+    }
     if (result.payload) {
         emitDoctorSessionUpdate(result.payload);
     }

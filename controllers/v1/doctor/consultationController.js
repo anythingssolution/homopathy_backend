@@ -22,6 +22,7 @@ const {
     getAppointmentChain,
     getVisitTypeCode,
     findRepeatTreatmentSourceAppointmentId,
+    listRepeatTreatmentSources,
     buildFollowUpHistorySubjectScope,
 } = require('../../../services/followupService');
 const {
@@ -763,7 +764,7 @@ const saveConsultationTestFindings = asyncHandler(async (req, res) => {
     });
 });
 
-const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
+const getRepeatTreatmentAppointment = async (req) => {
     const appointmentId = Number(req.params.appointment_id);
 
     if (!Number.isInteger(appointmentId) || appointmentId <= 0) {
@@ -785,11 +786,10 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
         throw new AppError('Repeat treatment is available only for follow-up visits', 409);
     }
 
-    const sourceAppointmentId = await findRepeatTreatmentSourceAppointmentId(appointment);
-    if (!sourceAppointmentId) {
-        throw new AppError('No previous consultation found to repeat for this patient', 404);
-    }
+    return appointment;
+};
 
+const buildRepeatTreatmentDraft = async (sourceAppointmentId) => {
     const sourceConsultation = await getConsultationAggregateByAppointmentId(sourceAppointmentId);
     if (!sourceConsultation) {
         throw new AppError('Previous consultation not found', 404);
@@ -803,10 +803,7 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
         ])
     );
 
-    return res.status(200).json({
-        success: true,
-        message: 'Repeat treatment draft fetched successfully',
-        data: {
+    return {
             source_consultation_id: sourceConsultation.consultation_id,
             source_appointment_id: sourceConsultation.appointment_id,
             medication_duration_days: sourceConsultation.medication_duration_days,
@@ -827,8 +824,36 @@ const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
                     doses: medication.doses,
                     amount: pricingByMedicationId.get(Number(medication.consultation_medication_id)) || 0,
                 })),
-        },
-    });
+    };
+};
+
+const getRepeatTreatmentOptions = asyncHandler(async (req, res) => {
+    const appointment = await getRepeatTreatmentAppointment(req);
+    const sources = await listRepeatTreatmentSources(appointment);
+    const data = await Promise.all(sources.map(async (source) => ({
+        ...source,
+        ...await buildRepeatTreatmentDraft(source.appointment_id),
+    })));
+    return res.status(200).json({ success: true, message: 'Previous prescription options fetched successfully', data });
+});
+
+const getRepeatTreatmentDraft = asyncHandler(async (req, res) => {
+    const appointment = await getRepeatTreatmentAppointment(req);
+    let sourceAppointmentId;
+    if (req.query?.source_consultation_id !== undefined) {
+        const sourceId = Number(req.query.source_consultation_id);
+        if (!Number.isInteger(sourceId) || sourceId <= 0) throw new AppError('Valid source_consultation_id is required', 400);
+        const sources = await listRepeatTreatmentSources(appointment);
+        const source = sources.find(item => Number(item.consultation_id) === sourceId);
+        if (!source) throw new AppError('This prescription is no longer eligible. Reload the previous prescriptions.', 409);
+        sourceAppointmentId = source.appointment_id;
+    } else {
+        // Keep the original endpoint response/selection for existing clients.
+        sourceAppointmentId = await findRepeatTreatmentSourceAppointmentId(appointment);
+    }
+    if (!sourceAppointmentId) throw new AppError('No previous consultation found to repeat for this patient', 404);
+    const data = await buildRepeatTreatmentDraft(sourceAppointmentId);
+    return res.status(200).json({ success: true, message: 'Repeat treatment draft fetched successfully', data });
 });
 
 const normalizeSequenceNumber = (val) => {
@@ -954,5 +979,6 @@ module.exports = {
     getConsultationByAppointmentId,
     saveConsultationTestFindings,
     getRepeatTreatmentDraft,
+    getRepeatTreatmentOptions,
     getPrescriptionSuggestions,
 };

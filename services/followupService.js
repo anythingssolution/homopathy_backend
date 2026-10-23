@@ -634,6 +634,31 @@ const createNextFollowUpIfNeeded = async ({
     return withTransaction(async (transactionConnection) => run(transactionConnection));
 };
 
+const listRepeatTreatmentSources = async (appointment) => {
+    const subject = buildFollowUpHistorySubjectScope(appointment.fk_patient_family_member_id, 'a.fk_patient_family_member_id');
+    return query(`SELECT c.id AS consultation_id, a.appointment_id, a.appointment_date,
+            COALESCE(a.actual_completed_at, c.doctor_finalized_at, c.created_at) AS consulted_at,
+            b.branch_name, t.treatment_name,
+            CASE WHEN a.appointment_id = ? THEN 1 ELSE 0 END AS is_linked_parent
+        FROM tbl_consultations c
+        JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+        JOIN master_clinic_branches b ON b.id = a.fk_branch_id
+        JOIN master_treatments t ON t.id = a.fk_treatment_id
+        WHERE a.fk_patient_id = ? AND a.appointment_id <> ?
+          AND a.is_active = 1 AND a.status = 'Completed'
+          AND a.appointment_date <= ?
+          AND COALESCE(a.actual_completed_at, c.doctor_finalized_at, c.created_at) <= COALESCE(?, NOW())
+          ${subject.sql}
+          AND EXISTS (SELECT 1 FROM tbl_consultation_medications cm
+              WHERE cm.consultation_id = c.id AND UPPER(COALESCE(cm.added_by_role, 'DOCTOR')) <> 'MEDICAL')
+        ORDER BY consulted_at DESC, c.id DESC LIMIT 3`, [
+        appointment.parent_appointment_id || null,
+        Number(appointment.fk_patient_id || appointment.patient_id), Number(appointment.appointment_id),
+        appointment.appointment_date, appointment.actual_started_at || appointment.actual_completed_at || null,
+        ...subject.params,
+    ]);
+};
+
 const findRepeatTreatmentSourceAppointmentId = async (appointment) => {
     const currentAppointmentId = Number(appointment?.appointment_id);
     const patientId = Number(appointment?.fk_patient_id || appointment?.patient_id);
@@ -696,6 +721,7 @@ module.exports = {
     getAppointmentChain,
     createNextFollowUpIfNeeded,
     findRepeatTreatmentSourceAppointmentId,
+    listRepeatTreatmentSources,
     processDuePendingFollowUps,
     startPendingFollowUpNotifier,
     stopPendingFollowUpNotifier,

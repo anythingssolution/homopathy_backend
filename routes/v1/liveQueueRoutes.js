@@ -12,6 +12,7 @@ const {
     startDoctorSession,
     completeDoctorSession,
     checkInAppointment,
+    markPatientLeft,
     callToken,
     callNextReadyToken,
     startConsultation,
@@ -29,6 +30,7 @@ router.post('/:slot_id/session/start', authenticate, authorizeRolesOrModuleAcces
 router.post('/:slot_id/session/end', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, completeDoctorSession);
 router.post('/:slot_id/call-next', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, callNextReadyToken);
 router.post('/appointments/:appointment_id/check-in', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, checkInAppointment);
+router.post('/appointments/:appointment_id/leave', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, markPatientLeft);
 router.post('/appointments/:appointment_id/call', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, callToken);
 router.post('/appointments/:appointment_id/start', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, startConsultation);
 router.post('/appointments/:appointment_id/complete', authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'), enforceSelectedBranchScope, authorizeAppointmentBranchScope, completeConsultation);

@@ -39,6 +39,12 @@ test('cross-branch booking requires authenticated reception access without restr
     }
 });
 
+test('schedule exception token plate is exposed only behind reception authentication and module access', () => {
+    assert.deepEqual(routeGuards('get', '/token-plate'), [
+        'authentication', 'reception-access', 'getReceptionistBookingTokenPlate',
+    ]);
+});
+
 test('operational lists and appointment mutations retain branch restrictions', () => {
     for (const [method, route] of [['get', '/appointments'], ['get', '/form-data'], ['post', '/appointments/:appointment_id/approve']]) {
         assert.ok(routeGuards(method, route).includes('selected-branch'));

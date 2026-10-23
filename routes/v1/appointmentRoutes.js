@@ -10,6 +10,9 @@ const {
 const { authenticate, authorizeRoles } = require('../../middleware/authMiddleware');
 
 const router = express.Router();
+const { getSource, saveSource } = require('../../controllers/v1/patientDiscoverySourceController');
+router.get('/:appointment_id/discovery-source', authenticate, authorizeRoles('patient'), getSource);
+router.post('/:appointment_id/discovery-source', authenticate, authorizeRoles('patient'), saveSource);
 
 router.get('/form-data', authenticate, authorizeRoles('patient'), getAppointmentFormData);
 router.get('/token-plate', authenticate, authorizeRoles('patient', 'receptionist'), getBookingTokenPlate);

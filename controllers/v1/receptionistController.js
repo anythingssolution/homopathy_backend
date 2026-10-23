@@ -28,7 +28,6 @@ const {
     getSlotQueueContext,
     getActiveProtectedWindowAppointmentIds,
 } = require('../../services/liveQueueService');
-const { assertBranchDoctorAvailableForBooking } = require('../../services/doctorLeaveService');
 const { emitToRole } = require('../../utils/realtime');
 const { decorateTokenFields } = require('../../utils/tokenDisplay');
 const { projectDispensingStatus } = require('../../services/dispensaryPricingService');
@@ -1803,7 +1802,8 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
     const createdIp = getClientIp(req);
 
     const result = await withTransaction(async (connection) => {
-        await assertWeeklyBookingOpen({ branchId, slotId, appointmentDate: appointment_date, connection });
+        // Reception booking can override weekly closure/leave. All patient, slot,
+        // token and duplicate checks below still apply; other mutations keep their guards.
         let resolvedPatientId = patientId;
         let patientRows = [];
 
@@ -1935,12 +1935,6 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
             treatmentId,
             treatmentName: treatment?.treatment_name,
             treatmentCode: treatment?.treatment_code,
-        });
-
-        await assertBranchDoctorAvailableForBooking({
-            branchId,
-            appointmentDate: appointment_date,
-            connection,
         });
 
         await resolveEffectiveSlotTiming({

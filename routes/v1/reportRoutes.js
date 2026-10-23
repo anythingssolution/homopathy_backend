@@ -33,6 +33,7 @@ router.get('/booked-vs-consulted', getBookedVsConsultedController);
 router.get('/clinical', getClinicalReportsController);
 router.get('/patients', getPatientReportsController);
 router.get('/location-patients', authorizeRoles('doctor'), getLocationPatientReportController);
+router.get('/patient-sources', authorizeRoles('doctor'), require('../../controllers/v1/patientDiscoverySourceController').getSourceReport);
 router.get('/not-returned', authorizeRoles('doctor'), getNotReturnedReportController);
 router.get('/billing', getBillingReportsController);
 router.get('/billing/revenue-by-consultant', getRevenueByConsultantController);

@@ -109,7 +109,7 @@ const hasExplicitDoctorId = (req) => (
     || (req.query?.doctor_id !== undefined && req.query?.doctor_id !== null)
 );
 
-const startSessionInternal = async ({ req, res, doctorId, branchId, slotId, note }) => {
+const startSessionInternal = async ({ req, res, doctorId, branchId, slotId, note, allowSlotSwitch = false }) => {
     if (hasExplicitBranchId(req) && !branchId) {
         throw new AppError('branch_id must be a positive integer', 400);
     }
@@ -126,9 +126,16 @@ const startSessionInternal = async ({ req, res, doctorId, branchId, slotId, note
         actorUserId: req.user.id,
         actorRole: req.user.role_code,
         ...getClientMetadata(req),
+        allowSlotSwitch,
+        previewOnly: allowSlotSwitch && req.body?.preview_only === true,
+        confirmedCalledPatients: allowSlotSwitch ? req.body?.confirmed_called_patients : [],
     });
 
-    const realtimeQueueSessions = result.resumedQueueSessions?.length
+    if (result.selectionPreview) {
+        return res.status(200).json({ success: true, data: { called_patients: result.calledPatients } });
+    }
+
+    const realtimeQueueSessions = !allowSlotSwitch && result.resumedQueueSessions?.length
         ? result.resumedQueueSessions
         : await listTodayLiveQueueSessionsForBroadcast({
             branchId: result.payload?.branch_id || req.selectedBranchId || branchId || null,
@@ -140,7 +147,7 @@ const startSessionInternal = async ({ req, res, doctorId, branchId, slotId, note
             slotId: queueSession.slotId,
             appointmentDate: queueSession.appointmentDate,
             eventName: 'doctor-session-started',
-            reason: req.user?.role_code === 'REC'
+            reason: allowSlotSwitch ? 'DOCTOR_SESSION_SLOT_SELECTED' : req.user?.role_code === 'REC'
                 ? 'DOCTOR_SESSION_RESUMED_FROM_RECEPTIONIST_DASHBOARD'
                 : 'DOCTOR_SESSION_RESUMED_FROM_DOCTOR_DASHBOARD',
         });
@@ -305,6 +312,15 @@ const startSession = asyncHandler(async (req, res) => {
         branchId,
         slotId,
         note,
+    });
+});
+
+const switchSessionSlot = asyncHandler(async (req, res) => {
+    const slotId = toPositiveInt(req.body?.slot_id);
+    if (!slotId) throw new AppError('Select a valid session', 400);
+    return startSessionInternal({ req, res, doctorId: req.user.id,
+        branchId: req.selectedBranchId, slotId, allowSlotSwitch: true,
+        note: 'Doctor selected session slot',
     });
 });
 
@@ -518,6 +534,7 @@ const getPublicStatus = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    switchSessionSlot,
     getOwnSessionStatus,
     startSession,
     startBreak,

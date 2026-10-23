@@ -44,6 +44,14 @@ const getClientIp = (req) => {
 };
 
 const getActorUserId = (req) => req.user?.id || null;
+const markPatientLeft = asyncHandler(async (req, res) => {
+    const context = await require('../../services/patientPresenceService').markPatientLeft({
+        appointmentId: Number(req.params.appointment_id), branchId: Number(req.selectedBranchId),
+        actorUserId: getActorUserId(req), actorIp: getClientIp(req), reason: req.body?.reason,
+    });
+    await emitLiveQueueEvent({ ...context, eventName: 'queue-updated', reason: 'PATIENT_LEFT', appointmentId: Number(req.params.appointment_id) });
+    res.json({ success: true, message: 'Patient marked left. Booking, fee and token number are unchanged.' });
+});
 const PROTECTED_VISIBLE_QUEUE_WINDOW_SIZE = 5;
 
 const extractProtectedVisibleWindowAppointmentIds = (snapshot = {}) => {
@@ -819,6 +827,7 @@ const checkInAppointment = asyncHandler(async (req, res) => {
             `UPDATE tbl_appointments
              SET queue_status = ?,
                  checked_in_at = COALESCE(checked_in_at, ?),
+                 not_available_at = NULL,
                  arrival_sequence = COALESCE(arrival_sequence, ?),
                  last_queue_event_at = NOW(),
                  updated_by = ?,
@@ -1748,6 +1757,7 @@ module.exports = {
     startDoctorSession,
     completeDoctorSession,
     checkInAppointment,
+    markPatientLeft,
     callToken,
     callNextReadyToken,
     startConsultation,
