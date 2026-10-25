@@ -1,3 +1,4 @@
+const path = require('path');
 const { query } = require('../config/db');
 const AppError = require('../utils/AppError');
 
@@ -9,9 +10,12 @@ const TABLES = {
 
 const ORDER_BY = {
     hero: 'sort_order ASC, id ASC',
-    testimonials: 'sort_order ASC, id ASC',
+    testimonials: 'sort_order ASC, id DESC',
     gallery: 'sort_order ASC, id ASC',
 };
+
+const TESTIMONIAL_SEED_PATH = path.join(__dirname, '../data/seed-testimonials.json');
+let testimonialSeedPromise = null;
 
 const queryOptional = async (sql, params = []) => {
     try {
@@ -68,7 +72,11 @@ const buildHeroRow = (item) => ({
 const buildTestimonialRow = (item) => ({
     ...item,
     image_url: item.image_url || item.image_original_url || null,
-    tags: safeJsonParse(item.tags_json, []),
+    tags: Array.isArray(item.tags)
+        ? item.tags
+        : Array.isArray(item.tags_json)
+            ? item.tags_json
+            : safeJsonParse(item.tags_json, []),
 });
 
 const buildGalleryRow = (item) => ({
@@ -76,7 +84,37 @@ const buildGalleryRow = (item) => ({
     image_url: item.image_url || item.poster_url || item.image_original_url || null,
 });
 
+const seedTestimonialsIfEmpty = async () => {
+    if (testimonialSeedPromise) return testimonialSeedPromise;
+    testimonialSeedPromise = (async () => {
+        const counts = await queryOptional(`SELECT COUNT(*) AS total FROM ${TABLES.testimonials}`);
+        if (!counts.length || Number(counts[0]?.total || 0) > 0) return;
+        let catalog = [];
+        try {
+            catalog = require(TESTIMONIAL_SEED_PATH);
+        } catch (_error) {
+            catalog = [];
+        }
+        for (const item of catalog) {
+            const data = validateTestimonialPayload(item);
+            const columns = Object.keys(data);
+            await query(
+                `INSERT INTO ${TABLES.testimonials}
+                 (${columns.join(', ')}, created_by, updated_by)
+                 VALUES (${columns.map(() => '?').join(', ')}, ?, ?)`,
+                [...Object.values(data), null, null]
+            );
+        }
+    })();
+    try {
+        await testimonialSeedPromise;
+    } finally {
+        testimonialSeedPromise = null;
+    }
+};
+
 const getHomepageCmsPayload = async ({ onlyActive = true } = {}) => {
+    await seedTestimonialsIfEmpty();
     const activeFilter = onlyActive ? 'WHERE is_active = 1' : '';
     const [hero, testimonials, gallery] = await Promise.all([
         queryOptional(
@@ -94,7 +132,8 @@ const getHomepageCmsPayload = async ({ onlyActive = true } = {}) => {
                 id, person_name, person_title, testimonial_text,
                 image_url, image_key, image_original_url, image_original_key,
                 image_mime_type, image_size, image_width, image_height,
-                tags_json, display_date, sort_order, is_active, created_at, updated_at
+                tags_json, DATE_FORMAT(display_date, '%Y-%m-%d') AS display_date,
+                sort_order, is_active, created_at, updated_at
              FROM ${TABLES.testimonials}
              ${activeFilter}
              ORDER BY ${ORDER_BY.testimonials}`
@@ -215,15 +254,65 @@ const validateTestimonialPayload = (payload = {}) => {
     };
 };
 
+const PHOTO_GALLERY_CATEGORIES = new Set(['TREATMENT', 'MEDIA', 'AWARDS']);
+
+const parseYoutubeVideo = (url) => {
+    const raw = String(url || '').trim();
+    if (!raw) return null;
+
+    let parsed;
+    try {
+        parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+    } catch (_error) {
+        return null;
+    }
+
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    let videoId = null;
+    if (host === 'youtu.be') {
+        videoId = parsed.pathname.replace(/^\/+/, '').split('/')[0] || null;
+    } else if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+        if (parsed.pathname.startsWith('/shorts/')) {
+            videoId = parsed.pathname.split('/')[2] || null;
+        } else if (parsed.pathname.startsWith('/embed/')) {
+            videoId = parsed.pathname.split('/')[2] || null;
+        } else {
+            videoId = parsed.searchParams.get('v') || null;
+        }
+    }
+
+    if (!videoId || !/^[a-zA-Z0-9_-]{6,}$/.test(videoId)) {
+        return null;
+    }
+
+    return {
+        videoId,
+        videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+        posterUrl: `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+    };
+};
+
 const validateGalleryPayload = (payload = {}) => {
-    const mediaType = String(payload.media_type || 'IMAGE').trim().toUpperCase();
+    const category = normalizeOptionalText(payload.category)?.toUpperCase() || 'MEDIA';
     const title = normalizeOptionalText(payload.title);
+    let mediaType = String(payload.media_type || 'IMAGE').trim().toUpperCase();
 
     if (!title) {
         throw new AppError('title is required', 400);
     }
+    if (category === 'VIDEO') {
+        mediaType = 'VIDEO';
+    } else if (PHOTO_GALLERY_CATEGORIES.has(category)) {
+        mediaType = 'IMAGE';
+    }
     if (!['IMAGE', 'VIDEO'].includes(mediaType)) {
         throw new AppError('media_type must be IMAGE or VIDEO', 400);
+    }
+    if (mediaType === 'VIDEO' && category !== 'VIDEO') {
+        throw new AppError('Only the VIDEO category can use a YouTube link', 400);
+    }
+    if (mediaType === 'IMAGE' && category === 'VIDEO') {
+        throw new AppError('VIDEO category requires a YouTube link, not a photo', 400);
     }
 
     const imageUrl = normalizeOptionalText(payload.image_url);
@@ -238,27 +327,41 @@ const validateGalleryPayload = (payload = {}) => {
     const posterKey = normalizeOptionalText(payload.poster_key);
 
     if (mediaType === 'IMAGE' && !(imageUrl || imageOriginalUrl)) {
-        throw new AppError('image_url is required for IMAGE media_type', 400);
+        throw new AppError('A photo is required for Treatment, Media, and Awards', 400);
     }
-    if (mediaType === 'VIDEO' && !videoUrl) {
-        throw new AppError('video_url is required for VIDEO media_type', 400);
+
+    let resolvedVideoUrl = videoUrl;
+    let resolvedVideoKey = videoKey;
+    let resolvedPosterUrl = posterUrl || imageUrl;
+    let resolvedPosterKey = posterKey || imageKey;
+    let resolvedImageUrl = imageUrl || posterUrl || imageOriginalUrl;
+
+    if (mediaType === 'VIDEO') {
+        const youtube = parseYoutubeVideo(videoUrl);
+        if (!youtube) {
+            throw new AppError('Paste a valid YouTube link for VIDEO', 400);
+        }
+        resolvedVideoUrl = youtube.videoUrl;
+        resolvedVideoKey = youtube.videoId;
+        resolvedPosterUrl = youtube.posterUrl;
+        resolvedImageUrl = youtube.posterUrl;
     }
 
     return {
-        category: normalizeOptionalText(payload.category)?.toUpperCase() || 'MEDIA',
+        category,
         media_type: mediaType,
         title,
         description: normalizeOptionalText(payload.description),
-        image_url: imageUrl || posterUrl || imageOriginalUrl,
+        image_url: resolvedImageUrl,
         image_key: imageKey || posterKey,
         image_original_url: imageOriginalUrl,
         image_original_key: imageOriginalKey,
         thumb_url: thumbUrl,
         thumb_key: thumbKey,
-        video_url: videoUrl,
-        video_key: videoKey,
-        poster_url: posterUrl || imageUrl,
-        poster_key: posterKey || imageKey,
+        video_url: resolvedVideoUrl,
+        video_key: resolvedVideoKey,
+        poster_url: resolvedPosterUrl,
+        poster_key: resolvedPosterKey,
         file_mime_type: normalizeOptionalText(payload.file_mime_type),
         file_size: normalizeOptionalNumber(payload.file_size),
         image_width: normalizeOptionalNumber(payload.image_width),

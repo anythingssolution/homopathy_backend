@@ -12,8 +12,9 @@ const { validateImageUpload, validateVideoUpload } = require('../utils/uploadVal
 
 const execFileAsync = promisify(execFile);
 
-const IMAGE_SECTIONS = new Set(['hero', 'testimonials', 'gallery']);
+const IMAGE_SECTIONS = new Set(['hero', 'testimonials', 'gallery', 'treatments']);
 const VIDEO_SECTIONS = new Set(['gallery']);
+const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
 
 const getDateParts = () => {
     const now = new Date();
@@ -26,10 +27,16 @@ const CMS_STORAGE_ROOT = 'homopathy-clinic';
 
 const buildCmsBasePath = (section, bucketType) => {
     const { year, month } = getDateParts();
+    if (!isSpacesDriver()) {
+        return `cms/${section}/${bucketType}/${year}/${month}`;
+    }
     return `${CMS_STORAGE_ROOT}/cms/${section}/${bucketType}/${year}/${month}`;
 };
 
 const getPublicUrlForKey = (key) => {
+    if (!isSpacesDriver()) {
+        return `/uploads/${String(key || '').replace(/\\/g, '/')}`;
+    }
     const base = String(env.storage.spaces.fileEndpoint || '').replace(/\/+$/, '');
     return `${base}/${key}`;
 };
@@ -41,9 +48,32 @@ const getUploadClass = () => {
     return Upload;
 };
 
+const writeBufferToLocal = async ({ key, buffer, contentType }) => {
+    const relativeKey = String(key || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!relativeKey || relativeKey.includes('..')) {
+        throw new AppError('Invalid upload path', 400);
+    }
+
+    const absolutePath = path.join(UPLOADS_ROOT, relativeKey);
+    const relativePath = path.relative(UPLOADS_ROOT, absolutePath);
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+        throw new AppError('Invalid upload path', 400);
+    }
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, buffer);
+
+    return {
+        key: relativeKey,
+        url: `/uploads/${relativeKey}`,
+        content_type: contentType,
+        size: buffer.length,
+    };
+};
+
 const uploadBufferToSpaces = async ({ key, buffer, contentType, contentDisposition = 'inline' }) => {
     if (!isSpacesDriver()) {
-        throw new AppError('Only FILESYSTEM_DRIVER=spaces is supported for CMS media uploads', 500);
+        return writeBufferToLocal({ key, buffer, contentType });
     }
 
     ensureSpacesConfigured();

@@ -1,5 +1,6 @@
 const asyncHandler = require('../../utils/asyncHandler');
 const { getHomepageCmsPayload, listPublicGallery } = require('../../services/homepageCmsService');
+const { listTreatments } = require('../../services/cmsTreatmentsService');
 
 const getPublicHomepageCms = asyncHandler(async (_req, res) => {
     const data = await getHomepageCmsPayload({ onlyActive: true });
@@ -22,7 +23,17 @@ const getPublicGalleryCms = asyncHandler(async (req, res) => {
     });
 });
 
+const getPublicTreatmentsCms = asyncHandler(async (_req, res) => {
+    const data = await listTreatments({ onlyActive: true });
+    return res.status(200).json({
+        success: true,
+        message: 'Treatments CMS fetched successfully',
+        data,
+    });
+});
+
 module.exports = {
     getPublicHomepageCms,
     getPublicGalleryCms,
+    getPublicTreatmentsCms,
 };

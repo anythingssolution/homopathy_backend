@@ -6,6 +6,12 @@ const {
     updateCmsSectionItem,
     removeCmsSectionItem,
 } = require('../../../services/homepageCmsService');
+const {
+    listTreatments,
+    createTreatment,
+    updateTreatment,
+    deleteTreatment,
+} = require('../../../services/cmsTreatmentsService');
 
 const createSectionHandlers = (section) => ({
     list: asyncHandler(async (_req, res) => {
@@ -54,6 +60,41 @@ const getDoctorHomepageCms = asyncHandler(async (_req, res) => {
     });
 });
 
+const listTreatmentsCms = asyncHandler(async (_req, res) => {
+    const data = await listTreatments({ onlyActive: false });
+    return res.status(200).json({
+        success: true,
+        message: 'Treatments CMS fetched successfully',
+        data,
+    });
+});
+
+const createTreatmentsCms = asyncHandler(async (req, res) => {
+    const data = await createTreatment(req.body, req.user?.id || null);
+    return res.status(201).json({
+        success: true,
+        message: 'Treatment created successfully',
+        data,
+    });
+});
+
+const updateTreatmentsCms = asyncHandler(async (req, res) => {
+    const data = await updateTreatment(req.params.id, req.body, req.user?.id || null);
+    return res.status(200).json({
+        success: true,
+        message: 'Treatment updated successfully',
+        data,
+    });
+});
+
+const deleteTreatmentsCms = asyncHandler(async (req, res) => {
+    await deleteTreatment(req.params.id);
+    return res.status(200).json({
+        success: true,
+        message: 'Treatment deleted successfully',
+    });
+});
+
 module.exports = {
     getDoctorHomepageCms,
     listHeroCms: heroHandlers.list,
@@ -68,4 +109,8 @@ module.exports = {
     createGalleryCms: galleryHandlers.create,
     updateGalleryCms: galleryHandlers.update,
     deleteGalleryCms: galleryHandlers.remove,
+    listTreatmentsCms,
+    createTreatmentsCms,
+    updateTreatmentsCms,
+    deleteTreatmentsCms,
 };

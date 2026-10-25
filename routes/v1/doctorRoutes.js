@@ -40,6 +40,10 @@ const {
     createGalleryCms,
     updateGalleryCms,
     deleteGalleryCms,
+    listTreatmentsCms,
+    createTreatmentsCms,
+    updateTreatmentsCms,
+    deleteTreatmentsCms,
     uploadDoctorCmsImage,
     uploadDoctorCmsVideo,
     updateDoctorPatient,
@@ -129,6 +133,10 @@ router.get('/cms/gallery', listGalleryCms);
 router.post('/cms/gallery', createGalleryCms);
 router.put('/cms/gallery/:id', updateGalleryCms);
 router.delete('/cms/gallery/:id', deleteGalleryCms);
+router.get('/cms/treatments', listTreatmentsCms);
+router.post('/cms/treatments', createTreatmentsCms);
+router.put('/cms/treatments/:id', updateTreatmentsCms);
+router.delete('/cms/treatments/:id', deleteTreatmentsCms);
 router.get('/staff-access', listDoctorStaffAccess);
 router.put('/staff-access', updateDoctorStaffAccess);
 router.get('/appointments', listAppointmentsForDoctor);
