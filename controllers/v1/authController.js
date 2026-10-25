@@ -35,7 +35,7 @@ const getDefaultLanguage = async () => {
 
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
 const validateMobile = (mobileNo) => /^[0-9]{10,15}$/.test(String(mobileNo || '').trim());
-const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'area_name', 'city', 'pincode', 'description', 'mobile_no'];
+const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'area_name', 'city', 'pincode', 'ward_no', 'vidhan_sabha', 'description', 'mobile_no'];
 
 const validateEmail = (email) => {
     if (!email) {
@@ -334,6 +334,8 @@ const buildProfileAuditSnapshot = (userRow) => ({
     email: userRow?.email ?? null,
     address: userRow?.address ?? null,
     area_name: userRow?.area_name ?? null,
+    ward_no: userRow?.ward_no ?? null,
+    vidhan_sabha: userRow?.vidhan_sabha ?? null,
     city: userRow?.city ?? null,
     pincode: userRow?.pincode ?? null,
     description: userRow?.description ?? null,
@@ -1109,6 +1111,8 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         email,
         address,
         area_name,
+        ward_no,
+        vidhan_sabha,
         city,
         pincode,
         age,
@@ -1126,7 +1130,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         full_name === undefined
         && email === undefined
         && address === undefined
-        && area_name === undefined && city === undefined && pincode === undefined
+        && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined
         && age === undefined
         && date_of_birth === undefined
         && gender === undefined
@@ -1166,7 +1170,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         }
     }
 
-    if (updateParts.length === 0 && email === undefined && address === undefined && area_name === undefined && city === undefined && pincode === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
+    if (updateParts.length === 0 && email === undefined && address === undefined && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
         throw new AppError('At least one field is required to update profile', 400);
     }
 

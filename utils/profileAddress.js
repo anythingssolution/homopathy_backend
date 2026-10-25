@@ -1,5 +1,6 @@
 const AppError = require('./AppError');
-const FIELDS = ['area_name', 'city', 'pincode'];
+const { normalizeOptionalAddressFields } = require('./patientAddressFields');
+const FIELDS = ['area_name', 'city', 'pincode', 'ward_no', 'vidhan_sabha'];
 const text = value => value == null ? null : String(value).trim() || null;
 const legacyAreaValue = existing => {
     let area = text(existing.address) || '';
@@ -18,6 +19,8 @@ function buildProfileAddressUpdate(body, existing) {
             throw new AppError(`${field} must be text`, 400);
         }
     }
+    const optionalFields = normalizeOptionalAddressFields(body);
+    const effective = { ...existing, ...optionalFields };
     const area = body.area_name !== undefined ? text(body.area_name) : text(existing.area_name) || legacyAreaValue(existing);
     const city = body.city !== undefined ? text(body.city) : text(existing.city);
     const pincode = body.pincode !== undefined ? text(body.pincode) : text(existing.pincode);
@@ -25,8 +28,8 @@ function buildProfileAddressUpdate(body, existing) {
     if (city.length > 100) throw new AppError('city must be at most 100 characters', 400);
     if (area && area.length > 150) throw new AppError('area_name must be at most 150 characters', 400);
     if (pincode && !/^\d{6}$/.test(pincode)) throw new AppError('pincode must contain exactly 6 digits', 400);
-    const address = [area, existing.ward_no ? `Ward ${existing.ward_no}` : null,
-        existing.vidhan_sabha, pincode, city].filter(Boolean).join(', ');
-    return {area_name:area,city,pincode,address};
+    const address = [area, effective.ward_no ? `Ward ${effective.ward_no}` : null,
+        effective.vidhan_sabha, pincode, city].filter(Boolean).join(', ');
+    return {area_name:area,city,pincode,...optionalFields,address};
 }
 module.exports = {buildProfileAddressUpdate};

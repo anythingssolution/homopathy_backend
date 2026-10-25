@@ -26,3 +26,15 @@ test('PATCH /me saves structured and full address together, audits fields, and G
     await assert.rejects(invoke(updateCurrentPatientProfile,{city:'',pincode:'492001'}),{statusCode:400});
     assert.deepEqual(row,before);assert.equal(audit.length,count);
 });
+
+test('profile ward / assembly update is returned, audited and survives unrelated edits',async()=>{
+    const saved=await invoke(updateCurrentPatientProfile,{ward_no:'12',vidhan_sabha:'Raipur West'});
+    assert.equal(saved.data.ward_no,'12');assert.equal(saved.data.vidhan_sabha,'Raipur West');
+    assert.ok(saved.data.address.includes('Ward 12, Raipur West'));
+    const changed=JSON.parse(audit.at(-1)[5]);assert.ok(changed.includes('ward_no'));assert.ok(changed.includes('vidhan_sabha'));
+    const loaded=await invoke(getCurrentPatient);assert.equal(loaded.data.ward_no,'12');
+    await invoke(updateCurrentPatientProfile,{full_name:'Changed name'});
+    assert.equal(row.ward_no,'12');assert.equal(row.vidhan_sabha,'Raipur West');
+    await invoke(updateCurrentPatientProfile,{ward_no:'',vidhan_sabha:null});
+    assert.equal(row.ward_no,null);assert.equal(row.vidhan_sabha,null);assert.ok(!row.address.includes('Ward 12'));
+});

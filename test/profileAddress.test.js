@@ -18,3 +18,11 @@ test('legacy address-only and unrelated profile updates remain compatible',()=>{
     assert.equal(buildProfileAddressUpdate({address:'Legacy text'},existing),null);
     assert.equal(buildProfileAddressUpdate({full_name:'Updated Name'},existing),null);
 });
+
+test('ward and assembly can change independently, clear explicitly, and preserve other address parts',()=>{
+    const updated=buildProfileAddressUpdate({ward_no:' 12 ',vidhan_sabha:' Raipur West '},existing);
+    assert.equal(updated.ward_no,'12');assert.equal(updated.vidhan_sabha,'Raipur West');
+    assert.equal(updated.address,'Mowa, Ward 12, Raipur West, 492001, Raipur');
+    assert.equal(buildProfileAddressUpdate({ward_no:'',vidhan_sabha:null},existing).address,'Mowa, 492001, Raipur');
+    for(const body of [{ward_no:'x'.repeat(51)},{vidhan_sabha:'x'.repeat(151)},{ward_no:[]},{vidhan_sabha:{}}]) assert.throws(()=>buildProfileAddressUpdate(body,existing),{statusCode:400});
+});

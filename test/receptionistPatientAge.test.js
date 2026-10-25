@@ -28,6 +28,7 @@ function loadHandler(calls) {
         validateGender: () => true,
         validateMobile: () => true,
         getClientIp: () => '127.0.0.1',
+        normalizeOptionalAddressFields: require('../utils/patientAddressFields').normalizeOptionalAddressFields,
         PATIENT_ROLE: 'PAT',
         withTransaction: (handler) => handler(connection),
     });

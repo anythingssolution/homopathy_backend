@@ -1,3 +1,4 @@
+const { normalizeOptionalAddressFields } = require('../../../utils/patientAddressFields');
 const {
     query,
     withTransaction,
@@ -41,13 +42,14 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
         ? (String(req.body.pincode ?? '').trim() || null)
         : undefined;
     const city = req.body?.city !== undefined ? String(req.body.city).trim() : undefined;
+    const optionalAddressFields = normalizeOptionalAddressFields(req.body || {});
 
     if (!patientId) {
         throw new AppError('Valid patient_id is required', 400);
     }
 
     if (fullName === undefined && mobileNo === undefined && gender === undefined && age === undefined && dateOfBirth === undefined
-        && areaName === undefined && pincode === undefined && city === undefined) {
+        && areaName === undefined && pincode === undefined && city === undefined && Object.keys(optionalAddressFields).length === 0) {
         throw new AppError('At least one patient detail is required', 400);
     }
 
@@ -166,10 +168,10 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                 fmNewValues.mobile_no = mobileNo;
             }
 
-            const accountAddressValues = { area_name: areaName, pincode, city };
+            const accountAddressValues = { area_name: areaName, pincode, city, ...optionalAddressFields };
             const accountAddressChanges = {};
             for (const [field, value] of Object.entries(accountAddressValues)) {
-                if (value !== undefined && String(value) !== String(patient[field] ?? '')) {
+                if (value !== undefined && String(value ?? '') !== String(patient[field] ?? '')) {
                     accountAddressChanges[field] = value;
                     fmChangedFields.push(field);
                     fmOldValues[field] = patient[field];
@@ -251,8 +253,10 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     date_of_birth: fmNewValues.date_of_birth ?? fm.date_of_birth,
                     gender: fmNewValues.gender ?? fm.gender,
                     mobile_no: mobileNo ?? patient.mobile_no,
-                    area_name: areaName ?? patient.area_name,
-                    pincode: pincode ?? patient.pincode,
+                    ward_no: optionalAddressFields.ward_no !== undefined ? optionalAddressFields.ward_no : patient.ward_no,
+                    vidhan_sabha: optionalAddressFields.vidhan_sabha !== undefined ? optionalAddressFields.vidhan_sabha : patient.vidhan_sabha,
+                    area_name: areaName !== undefined ? areaName : patient.area_name,
+                    pincode: pincode !== undefined ? pincode : patient.pincode,
                     city: city ?? patient.city,
                 },
                 changed_fields: fmChangedFields,
@@ -285,12 +289,13 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             age,
             date_of_birth: dateOfBirth,
             area_name: areaName,
+            ...optionalAddressFields,
             pincode,
             city,
         };
 
         for (const [field, value] of Object.entries(requestedValues)) {
-            if (value !== undefined && String(value) !== String(patient[field] ?? '')) {
+            if (value !== undefined && String(value ?? '') !== String(patient[field] ?? '')) {
                 changedFields.push(field);
                 oldValues[field] = patient[field];
                 newValues[field] = value;
@@ -303,7 +308,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
-        if (changedFields.some((field) => ['area_name', 'pincode', 'city'].includes(field))) {
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha'].includes(field))) {
             const effective = { ...patient, ...newValues };
             const address = [
                 effective.area_name,
@@ -345,7 +350,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
                     ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
                     gender, email, mobile_no,
-                    address, area_name, pincode, city, description, created_at, updated_at
+                    address, area_name, ward_no, vidhan_sabha, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,

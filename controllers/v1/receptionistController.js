@@ -1,3 +1,4 @@
+const { normalizeOptionalAddressFields } = require('../../utils/patientAddressFields');
 const { attachTimingNotices } = require('../../services/slotTimingNoticeService');
 const { assertWeeklyBookingOpen } = require('../../services/bookingWeekdayService');
 const { normalizeBookingPatientUpdates, saveBookingPatientUpdates } = require('../../utils/bookingPatientUpdates');
@@ -890,6 +891,8 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             u.mobile_no,
             u.address,
             u.area_name,
+            u.ward_no,
+            u.vidhan_sabha,
             u.pincode,
             u.city,
             u.description,
@@ -995,6 +998,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         ? (String(req.body.pincode ?? '').trim() || null)
         : undefined;
     const city = req.body?.city !== undefined ? String(req.body.city).trim() : undefined;
+    const optionalAddressFields = normalizeOptionalAddressFields(req.body || {});
     const relationship =
         req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
     const registrationId = req.body?.patient_uuid !== undefined
@@ -1010,7 +1014,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             throw new AppError('At least one of full_name, gender, age, date_of_birth or relationship is required', 400);
         }
     } else if (fullName === undefined && mobileNo === undefined && gender === undefined && registrationId === undefined
-        && age === undefined && dateOfBirth === undefined && areaName === undefined && pincode === undefined && city === undefined) {
+        && age === undefined && dateOfBirth === undefined && areaName === undefined && pincode === undefined && city === undefined && Object.keys(optionalAddressFields).length === 0) {
         throw new AppError('At least one patient detail is required', 400);
     }
 
@@ -1216,6 +1220,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             date_of_birth: dateOfBirth,
             uuid: registrationId,
             area_name: areaName,
+            ...optionalAddressFields,
             pincode,
             city,
         };
@@ -1234,7 +1239,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
-        if (changedFields.some((field) => ['area_name', 'pincode', 'city'].includes(field))) {
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha'].includes(field))) {
             const effective = { ...patient, ...newValues };
             const address = [
                 effective.area_name,
@@ -1275,7 +1280,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         const [updatedRows] = await connection.execute(
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
                     gender, email, mobile_no,
-                    address, area_name, pincode, city, description, created_at, updated_at
+                    address, area_name, ward_no, vidhan_sabha, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,
