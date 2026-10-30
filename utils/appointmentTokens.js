@@ -21,8 +21,8 @@ const TOKEN_PLATE_VISIT_TYPE_RULES = {
     [VISIT_TYPE.CHRONIC_CASE_DISCUSSION]: {
         count: 1,
         total_duration_minutes: 14,
-        label: 'Chronic Case Discussion',
-        short_label: 'Chronic',
+        label: 'Online Consultation',
+        short_label: 'Online',
         color_code: '#7C3AED',
     },
     [VISIT_TYPE.FOLLOW_UP_VISIT]: {

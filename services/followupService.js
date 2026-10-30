@@ -56,7 +56,8 @@ const getVisitTypeCode = ({ treatmentId = null, treatmentName = null, treatmentC
         return VISIT_TYPE.ACUTE_TREATMENT;
     }
 
-    if (normalizedName === 'chronic case discussion') {
+    // Keep the persisted visit code and existing rules when the display name changes.
+    if (normalizedName === 'chronic case discussion' || normalizedName === 'online consultation') {
         return VISIT_TYPE.CHRONIC_CASE_DISCUSSION;
     }
 
