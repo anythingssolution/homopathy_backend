@@ -29,6 +29,31 @@ const controller = require('../controllers/v1/patientRegistrationController');
 const invoke = (fn, req) => new Promise((resolve,reject)=>fn(req,{status(){return this;},json:resolve},reject));
 const req = () => ({body:{patient_uuid:'115', full_name:'Patient Name', age:25, gender:'female', mobile_no:'9999999999'},user:{id:2,role:'REC'},headers:{},params:{patient_id:'7'}});
 
+test('registration create, edit and contact linking save state and preserve omitted stored state', async () => {
+    calls = []; existing = null;
+    const create = req(); create.body.state_name = ' Chhattisgarh ';
+    await invoke(controller.createRegisteredPatient, create);
+    const insert = calls.find(c => c.sql.includes('INSERT INTO master_users'));
+    const columns = insert.sql.match(/\(([^)]+)\)\s*VALUES/s)[1].split(',').map(c => c.trim());
+    assert.equal(insert.params[columns.indexOf('state_name')], 'Chhattisgarh');
+    assert.ok(insert.params[columns.indexOf('address')].endsWith('Chhattisgarh'));
+
+    for (const handler of [controller.updateRegisteredPatient, controller.createRegisteredPatient]) {
+        calls = []; existing = { id: 7, uuid: 'DTH_115', role: 'PAT', is_active: 1, state_name: 'Chhattisgarh' };
+        await invoke(handler, req());
+        let update = calls.find(c => c.sql.includes('UPDATE master_users'));
+        let fields = [...update.sql.matchAll(/([a-z_]+)\s*=\s*\?/g)].map(m => m[1]);
+        assert.equal(update.params[fields.indexOf('state_name')], 'Chhattisgarh');
+        assert.ok(update.params[fields.indexOf('address')].endsWith('Chhattisgarh'));
+        calls = [];
+        const clear = req(); clear.body.state_name = '';
+        await invoke(handler, clear);
+        update = calls.find(c => c.sql.includes('UPDATE master_users'));
+        fields = [...update.sql.matchAll(/([a-z_]+)\s*=\s*\?/g)].map(m => m[1]);
+        assert.equal(update.params[fields.indexOf('state_name')], null);
+    }
+});
+
 test('registration normalizes numeric and DTH IDs without allowing blank or arbitrary strings', () => {
     assert.equal(normalizePatientRegistrationId(' dth 115 '),'DTH_115');
     assert.equal(normalizePatientRegistrationId(115),'DTH_115');

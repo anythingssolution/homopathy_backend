@@ -362,6 +362,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             p.address,
             p.ward_no,
             p.vidhan_sabha,
+            p.state_name,
             MAX(a.appointment_date) AS latest_visit_date,
             NULLIF(GREATEST(
                 COALESCE(MAX(a.appointment_date), '1000-01-01 00:00:00'),
@@ -438,6 +439,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             address: row.address,
             ward_no: row.ward_no,
             vidhan_sabha: row.vidhan_sabha,
+            state_name: row.state_name,
             latest_visit_date: row.latest_visit_date,
             latest_activity_date: row.latest_activity_date,
             summary: {
@@ -566,7 +568,7 @@ const getPatientRecordDetail = async ({ patientId, actor }) => {
                 email,
                 address,
                 ward_no,
-                vidhan_sabha
+                vidhan_sabha, state_name
          FROM master_users
          WHERE id = ?
            AND role = 'PAT'
@@ -651,6 +653,7 @@ const PATIENT_SELECT = `
     ${buildAgeDisplaySql('p.date_of_birth', 'p.age')} AS primary_patient_age_display,
     p.ward_no AS primary_patient_ward_no,
     p.vidhan_sabha AS primary_patient_vidhan_sabha,
+    p.state_name AS primary_patient_state_name,
     COALESCE(fm.full_name, p.full_name) AS patient_full_name,
     COALESCE(fm.age, p.age) AS patient_age,
     COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
@@ -722,6 +725,7 @@ const fetchAppointmentTimeline = async (filters) => {
             queue_status: row.queue_status,
             ward_no: row.primary_patient_ward_no || null,
             vidhan_sabha: row.primary_patient_vidhan_sabha || null,
+            state_name: row.primary_patient_state_name || null,
         },
     }));
 };
@@ -775,6 +779,7 @@ const buildVisitRecord = (row) => ({
         document_types: row.document_types || null,
         ward_no: row.primary_patient_ward_no || null,
         vidhan_sabha: row.primary_patient_vidhan_sabha || null,
+        state_name: row.primary_patient_state_name || null,
     },
 });
 
@@ -1616,6 +1621,7 @@ const fetchDocumentTimeline = async (filters) => {
             p.mobile_no AS primary_patient_mobile_no,
             p.ward_no AS primary_patient_ward_no,
             p.vidhan_sabha AS primary_patient_vidhan_sabha,
+            p.state_name AS primary_patient_state_name,
             CASE WHEN doc.family_member_id IS NULL THEN 'SELF' ELSE 'FAMILY_MEMBER' END AS booked_for_type,
             CASE WHEN doc.family_member_id IS NULL THEN 0 ELSE 1 END AS is_family_member_booking,
             fm.relationship AS family_member_relationship,
@@ -1662,6 +1668,7 @@ const fetchDocumentTimeline = async (filters) => {
             file_size: row.file_size,
             ward_no: row.primary_patient_ward_no || null,
             vidhan_sabha: row.primary_patient_vidhan_sabha || null,
+            state_name: row.primary_patient_state_name || null,
         },
     }));
 };

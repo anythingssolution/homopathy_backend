@@ -2,6 +2,19 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {buildProfileAddressUpdate}=require('../utils/profileAddress');
 const existing={area_name:'Mowa',city:'Raipur',pincode:'492001',ward_no:'4',vidhan_sabha:'Raipur North',address:'Mowa, Ward 4, Raipur North, 492001, Raipur'};
+test('state trims, persists in full address, preserves on omission and clears explicitly', () => {
+    const updated = buildProfileAddressUpdate({ state_name: ' Chhattisgarh ' }, existing);
+    assert.equal(updated.state_name, 'Chhattisgarh');
+    assert.equal(updated.address, `${existing.address}, Chhattisgarh`);
+    const saved = { ...existing, ...updated };
+    assert.equal(buildProfileAddressUpdate({ city: 'Bhilai' }, saved).address, 'Mowa, Ward 4, Raipur North, 492001, Bhilai, Chhattisgarh');
+    assert.equal(buildProfileAddressUpdate({ state_name: '' }, saved).address, existing.address);
+    assert.equal(buildProfileAddressUpdate({ state_name: null }, saved).state_name, null);
+    assert.equal(buildProfileAddressUpdate({ city: 'Raipur' }, { ...saved, area_name: null }).area_name, 'Mowa');
+    for (const state_name of [123, {}, [], 'x'.repeat(101)]) {
+        assert.throws(() => buildProfileAddressUpdate({ state_name }, existing), { statusCode: 400 });
+    }
+});
 test('structured profile address updates derive full address and preserve ward / assembly',()=>{
     assert.deepEqual(buildProfileAddressUpdate({area_name:'  Shankar Nagar ',city:' Raipur ',pincode:'492007',address:'ignored'},existing),{area_name:'Shankar Nagar',city:'Raipur',pincode:'492007',address:'Shankar Nagar, Ward 4, Raipur North, 492007, Raipur'});
 });

@@ -1,3 +1,4 @@
+const { normalizeOptionalAddressFields } = require('../../utils/patientAddressFields');
 const { buildProfileAddressUpdate } = require('../../utils/profileAddress');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -35,7 +36,7 @@ const getDefaultLanguage = async () => {
 
 const validateGender = (gender) => ['male', 'female', 'other'].includes(String(gender || '').toLowerCase());
 const validateMobile = (mobileNo) => /^[0-9]{10,15}$/.test(String(mobileNo || '').trim());
-const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'area_name', 'city', 'pincode', 'ward_no', 'vidhan_sabha', 'description', 'mobile_no'];
+const PROFILE_AUDIT_FIELDS = ['full_name', 'age', 'date_of_birth', 'gender', 'email', 'address', 'area_name', 'city', 'pincode', 'ward_no', 'vidhan_sabha', 'state_name', 'description', 'mobile_no'];
 
 const validateEmail = (email) => {
     if (!email) {
@@ -336,6 +337,7 @@ const buildProfileAuditSnapshot = (userRow) => ({
     area_name: userRow?.area_name ?? null,
     ward_no: userRow?.ward_no ?? null,
     vidhan_sabha: userRow?.vidhan_sabha ?? null,
+    state_name: userRow?.state_name ?? null,
     city: userRow?.city ?? null,
     pincode: userRow?.pincode ?? null,
     description: userRow?.description ?? null,
@@ -344,7 +346,7 @@ const buildProfileAuditSnapshot = (userRow) => ({
 
 const getUserProfileSelectColumns = () => `
     id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
-    gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
+    gender, email, address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, mobile_no, role,
     profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
     COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
     is_active, created_at, updated_at
@@ -614,6 +616,7 @@ const registerUser = asyncHandler(async (req, res) => {
         address,
         ward_no,
         vidhan_sabha,
+        state_name,
         pincode,
         city,
         mobile_no,
@@ -665,6 +668,7 @@ const registerUser = asyncHandler(async (req, res) => {
     const normalizedArea = normalizeOptionalText(address);
     const normalizedWardNo = normalizeOptionalText(ward_no);
     const normalizedVidhanSabha = normalizeOptionalText(vidhan_sabha);
+    const normalizedState = normalizeOptionalAddressFields({ state_name }).state_name ?? null;
     const normalizedPincode = normalizeOptionalText(pincode);
     const normalizedCity = normalizeOptionalText(city);
 
@@ -686,6 +690,7 @@ const registerUser = asyncHandler(async (req, res) => {
         normalizedVidhanSabha,
         normalizedPincode,
         normalizedCity,
+        normalizedState,
     ].filter(Boolean).join(', ');
 
     const result = await withTransaction(async (connection) => {
@@ -713,8 +718,8 @@ const registerUser = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
+             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, mobile_no, password, role, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAT', NULL, NULL, ?, ?)`,
             [
                 patientUuid,
                 String(full_name).trim(),
@@ -726,6 +731,7 @@ const registerUser = asyncHandler(async (req, res) => {
                 normalizedArea,
                 normalizedWardNo,
                 normalizedVidhanSabha,
+                normalizedState,
                 normalizedPincode,
                 normalizedCity,
                 normalizedMobileNo,
@@ -740,7 +746,7 @@ const registerUser = asyncHandler(async (req, res) => {
 
     const patientRows = await query(
         `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
-                gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
+                gender, email, address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, mobile_no, role,
                 profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
@@ -998,7 +1004,7 @@ const verifyLoginOtp = asyncHandler(async (req, res) => {
 const getCurrentPatient = asyncHandler(async (req, res) => {
     const users = await query(
         `SELECT id, uuid, full_name, age, date_of_birth, ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
-                gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, role,
+                gender, email, address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, mobile_no, role,
                 profile_image_url, profile_image_key, profile_image_mime_type, profile_image_size,
                 COALESCE(has_cross_module_access, 0) AS has_cross_module_access,
                 is_active, created_at, updated_at
@@ -1113,6 +1119,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         area_name,
         ward_no,
         vidhan_sabha,
+        state_name,
         city,
         pincode,
         age,
@@ -1130,7 +1137,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         full_name === undefined
         && email === undefined
         && address === undefined
-        && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined
+        && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined && state_name === undefined
         && age === undefined
         && date_of_birth === undefined
         && gender === undefined
@@ -1170,7 +1177,7 @@ const updateCurrentPatientProfile = asyncHandler(async (req, res) => {
         }
     }
 
-    if (updateParts.length === 0 && email === undefined && address === undefined && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
+    if (updateParts.length === 0 && email === undefined && address === undefined && area_name === undefined && city === undefined && pincode === undefined && ward_no === undefined && vidhan_sabha === undefined && state_name === undefined && gender === undefined && description === undefined && mobile_no === undefined) {
         throw new AppError('At least one field is required to update profile', 400);
     }
 

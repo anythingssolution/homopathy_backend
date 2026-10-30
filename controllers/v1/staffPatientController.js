@@ -67,6 +67,7 @@ const mapPatientRow = (row) => ({
     age_display: row.age_display || null,
     gender: row.gender,
     mobile_no: row.mobile_no,
+    state_name: row.state_name || null,
     created_at: row.created_at,
     created_by_user_id: row.created_by_user_id ? Number(row.created_by_user_id) : null,
     created_by_name: row.created_by_name || null,
@@ -88,11 +89,12 @@ const createStaffPatient = asyncHandler(async (req, res) => {
     const area = optionalText('address', 150);
     const ward = optionalText('ward_no', 50);
     const constituency = optionalText('vidhan_sabha', 150);
+    const stateName = optionalText('state_name', 100);
     const pincode = optionalText('pincode', 6);
     const city = optionalText('city', 100);
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new AppError('Enter a valid email address', 400);
     if (pincode && !/^\d{6}$/.test(pincode)) throw new AppError('Pincode must contain 6 digits', 400);
-    const address = [area, ward ? `Ward ${ward}` : null, constituency, pincode, city].filter(Boolean).join(', ') || null;
+    const address = [area, ward ? `Ward ${ward}` : null, constituency, pincode, city, stateName].filter(Boolean).join(', ') || null;
 
     if (!fullName || !mobileNo || (req.body?.age === undefined && !req.body?.date_of_birth) || !gender || !registrationToken) {
         throw new AppError('full_name, mobile_no, age or date_of_birth, gender and verified OTP token are required', 400);
@@ -129,15 +131,15 @@ const createStaffPatient = asyncHandler(async (req, res) => {
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users
-             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, pincode, city, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, mobile_no, password, role, is_active, created_by, updated_by, created_ip, updated_ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1, ?, ?, ?, ?)`,
             [
                 generatedPatientUuid,
                 fullName,
                 agePayload.age,
                 agePayload.date_of_birth,
                 gender,
-                email, address, area, ward, constituency, pincode, city,
+                email, address, area, ward, constituency, stateName, pincode, city,
                 mobileNo,
                 generatedPasswordHash,
                 PATIENT_ROLE,
@@ -161,6 +163,7 @@ const createStaffPatient = asyncHandler(async (req, res) => {
             ${buildAgeDisplaySql('u.date_of_birth', 'u.age')} AS age_display,
             u.gender,
             u.mobile_no,
+            u.state_name,
             u.created_at,
             u.created_by AS created_by_user_id,
             creator.full_name AS created_by_name,
@@ -255,6 +258,7 @@ const listStaffPatients = asyncHandler(async (req, res) => {
                 ${buildAgeDisplaySql('u.date_of_birth', 'u.age')} AS age_display,
                 u.gender,
                 u.mobile_no,
+                u.state_name,
                 u.created_at,
                 u.created_by AS created_by_user_id,
                 creator.full_name AS created_by_name,

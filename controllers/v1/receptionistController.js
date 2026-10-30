@@ -893,6 +893,7 @@ const listReceptionistPatients = asyncHandler(async (req, res) => {
             u.area_name,
             u.ward_no,
             u.vidhan_sabha,
+            u.state_name,
             u.pincode,
             u.city,
             u.description,
@@ -1056,7 +1057,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
             `SELECT id, uuid, full_name, mobile_no, gender, age, date_of_birth, address, area_name,
-                    ward_no, vidhan_sabha, pincode, city, role, is_active, updated_at
+                    ward_no, vidhan_sabha, state_name, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -1239,7 +1240,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
-        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha'].includes(field))) {
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha', 'state_name'].includes(field))) {
             const effective = { ...patient, ...newValues };
             const address = [
                 effective.area_name,
@@ -1247,6 +1248,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
                 effective.vidhan_sabha,
                 effective.pincode,
                 effective.city,
+                    effective.state_name,
             ].filter(Boolean).join(', ') || null;
             updateParts.push('address = ?');
             updateValues.push(address);
@@ -1280,7 +1282,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         const [updatedRows] = await connection.execute(
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
                     gender, email, mobile_no,
-                    address, area_name, ward_no, vidhan_sabha, pincode, city, description, created_at, updated_at
+                    address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,

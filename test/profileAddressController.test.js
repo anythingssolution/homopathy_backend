@@ -16,6 +16,18 @@ db.withTransaction=async handler=>{
 };
 const {updateCurrentPatientProfile,getCurrentPatient}=require('../controllers/v1/authController');
 const invoke=(fn,body={})=>new Promise((resolve,reject)=>fn({body,user:{id:42,role:'patient',role_code:'PAT'},headers:{},ip:'127.0.0.1'},{status(){return this;},json:resolve},reject));
+test('patient profile state survives save, GET, unrelated edit and explicit clearing', async () => {
+    const saved = await invoke(updateCurrentPatientProfile, { state_name: ' Chhattisgarh ' });
+    assert.equal(saved.data.state_name, 'Chhattisgarh');
+    assert.ok(saved.data.address.endsWith(', Chhattisgarh'));
+    assert.ok(JSON.parse(audit.at(-1)[5]).includes('state_name'));
+    assert.equal((await invoke(getCurrentPatient)).data.state_name, 'Chhattisgarh');
+    await invoke(updateCurrentPatientProfile, { full_name: 'Fixture updated' });
+    assert.equal(row.state_name, 'Chhattisgarh');
+    await invoke(updateCurrentPatientProfile, { state_name: '' });
+    assert.equal(row.state_name, null);
+    assert.ok(!row.address.includes('Chhattisgarh'));
+});
 test('PATCH /me saves structured and full address together, audits fields, and GET returns saved values',async()=>{
     const saved=await invoke(updateCurrentPatientProfile,{area_name:'Shankar Nagar',city:'Raipur',pincode:'492007'});
     assert.equal(saved.data.address,'Shankar Nagar, 492007, Raipur');

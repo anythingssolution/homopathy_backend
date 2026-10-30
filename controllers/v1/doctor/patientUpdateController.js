@@ -84,7 +84,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
     const result = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
             `SELECT id, uuid, full_name, mobile_no, gender, age, date_of_birth, address, area_name, ward_no,
-                    vidhan_sabha, pincode, city, role, is_active, updated_at
+                    vidhan_sabha, state_name, pincode, city, role, is_active, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1
@@ -187,6 +187,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     effective.vidhan_sabha,
                     effective.pincode,
                     effective.city,
+                    effective.state_name,
                 ].filter(Boolean).join(', ') || null;
                 const accountFields = Object.keys(accountAddressChanges);
                 await connection.execute(
@@ -255,6 +256,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                     mobile_no: mobileNo ?? patient.mobile_no,
                     ward_no: optionalAddressFields.ward_no !== undefined ? optionalAddressFields.ward_no : patient.ward_no,
                     vidhan_sabha: optionalAddressFields.vidhan_sabha !== undefined ? optionalAddressFields.vidhan_sabha : patient.vidhan_sabha,
+                    state_name: optionalAddressFields.state_name !== undefined ? optionalAddressFields.state_name : patient.state_name,
                     area_name: areaName !== undefined ? areaName : patient.area_name,
                     pincode: pincode !== undefined ? pincode : patient.pincode,
                     city: city ?? patient.city,
@@ -308,7 +310,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
 
         const updateParts = changedFields.map((field) => `${field} = ?`);
         const updateValues = changedFields.map((field) => newValues[field]);
-        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha'].includes(field))) {
+        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha', 'state_name'].includes(field))) {
             const effective = { ...patient, ...newValues };
             const address = [
                 effective.area_name,
@@ -316,6 +318,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
                 effective.vidhan_sabha,
                 effective.pincode,
                 effective.city,
+                    effective.state_name,
             ].filter(Boolean).join(', ') || null;
             updateParts.push('address = ?');
             updateValues.push(address);
@@ -350,7 +353,7 @@ const updateDoctorPatient = asyncHandler(async (req, res) => {
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
                     ${buildAgeDisplaySql('date_of_birth', 'age')} AS age_display,
                     gender, email, mobile_no,
-                    address, area_name, ward_no, vidhan_sabha, pincode, city, description, created_at, updated_at
+                    address, area_name, ward_no, vidhan_sabha, state_name, pincode, city, description, created_at, updated_at
              FROM master_users
              WHERE id = ?
              LIMIT 1`,

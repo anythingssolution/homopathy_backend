@@ -48,6 +48,23 @@ function fixture(role, branchAllowed = true) {
     }};
 }
 for (const role of ['doctor', 'reception']) {
+    test(`${role}: state saves, returns, audits, survives unrelated edits and clears`, async () => {
+        const f = fixture(role);
+        const saved = await f.call({ state_name: ' Chhattisgarh ' });
+        assert.equal(saved.data.patient.state_name, 'Chhattisgarh');
+        assert.equal(f.patient().address, 'Mowa, Ward 4, Raipur North, 492001, Raipur, Chhattisgarh');
+        assert.ok(JSON.parse(f.audits.at(-1)[5]).includes('state_name'));
+        await f.call({ full_name: 'Updated name' });
+        assert.equal(f.patient().state_name, 'Chhattisgarh');
+        await f.call({ state_name: '' });
+        assert.equal(f.patient().state_name, null);
+        assert.equal(f.patient().address, 'Mowa, Ward 4, Raipur North, 492001, Raipur');
+        for (const state_name of [123, {}, 'x'.repeat(101)]) {
+            const invalid = fixture(role);
+            await assert.rejects(invalid.call({ state_name }), { statusCode: 400 });
+            assert.equal(invalid.writes.length, 0);
+        }
+    });
     test(`${role}: ward / assembly persist, return in response, audit and preserve unrelated fields`, async () => {
         const f = fixture(role);
         const response = await f.call({ ward_no: ' 12 ', vidhan_sabha: ' Raipur West ' });

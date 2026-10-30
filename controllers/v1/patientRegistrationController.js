@@ -1,3 +1,4 @@
+const { normalizeOptionalAddressFields } = require('../../utils/patientAddressFields');
 const bcrypt = require('bcryptjs');
 const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
@@ -42,6 +43,7 @@ const normalizeCreatePayload = (body = {}) => {
     const addressRaw = body.address !== undefined && body.address !== null ? String(body.address).trim() : '';
     const wardNoRaw = body.ward_no !== undefined && body.ward_no !== null ? String(body.ward_no).trim() : '';
     const vidhanSabhaRaw = body.vidhan_sabha !== undefined && body.vidhan_sabha !== null ? String(body.vidhan_sabha).trim() : '';
+    const stateName = normalizeOptionalAddressFields(body).state_name;
     const pincodeRaw = body.pincode !== undefined && body.pincode !== null ? String(body.pincode).trim() : '';
     const cityRaw = body.city !== undefined && body.city !== null ? String(body.city).trim() : '';
     const descriptionRaw =
@@ -77,6 +79,7 @@ const normalizeCreatePayload = (body = {}) => {
         vidhanSabhaRaw || null,
         pincodeRaw || null,
         cityRaw || null,
+        stateName || null,
     ].filter(Boolean).join(', ');
 
     return {
@@ -91,6 +94,7 @@ const normalizeCreatePayload = (body = {}) => {
         area_name: addressRaw || null,
         ward_no: wardNoRaw || null,
         vidhan_sabha: vidhanSabhaRaw || null,
+        state_name: stateName,
         pincode: pincodeRaw || null,
         city: cityRaw || null,
         description: descriptionRaw || null,
@@ -116,7 +120,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
 
     const saved = await withTransaction(async (connection) => {
         const [matchedRows] = await connection.execute(
-            `SELECT id, role, uuid, is_active
+            `SELECT id, role, uuid, is_active, state_name
              FROM master_users
              WHERE mobile_no = ?
              LIMIT 1
@@ -133,6 +137,10 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
 
         if (matchedRows.length > 0) {
             const matched = matchedRows[0];
+            if (payload.state_name === undefined) {
+                payload.state_name = matched.state_name;
+                payload.address = [payload.address, matched.state_name].filter(Boolean).join(', ') || null;
+            }
             if (String(matched.role || '').toUpperCase() !== PATIENT_ROLE) {
                 throw new AppError('Mobile number already belongs to a non-patient user', 409);
             }
@@ -143,6 +151,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
                      area_name = ?,
                      ward_no = ?,
                      vidhan_sabha = ?,
+                     state_name = ?,
                      pincode = ?,
                      city = ?,
                      address = ?,
@@ -154,6 +163,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
                     payload.area_name,
                     payload.ward_no,
                     payload.vidhan_sabha,
+                    payload.state_name ?? null,
                     payload.pincode,
                     payload.city,
                     payload.address,
@@ -174,9 +184,9 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
             const [insertResult] = await connection.execute(
                 `INSERT INTO master_users
                  (uuid, full_name, age, date_of_birth, gender, email, address, area_name, ward_no,
-                  vidhan_sabha, pincode, city, description, mobile_no, password,
+                  vidhan_sabha, state_name, pincode, city, description, mobile_no, password,
                   role, is_active, created_by, updated_by, created_ip, updated_ip)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
                 [
                     payload.patient_uuid,
                     payload.full_name,
@@ -188,6 +198,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
                     payload.area_name,
                     payload.ward_no,
                     payload.vidhan_sabha,
+                    payload.state_name ?? null,
                     payload.pincode,
                     payload.city,
                     payload.description,
@@ -220,6 +231,7 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
                 u.area_name,
                 u.ward_no,
                 u.vidhan_sabha,
+                u.state_name,
                 u.pincode,
                 u.city,
                 u.description,
@@ -269,7 +281,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
 
     const saved = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
-            `SELECT id, uuid
+            `SELECT id, uuid, state_name
              FROM master_users
              WHERE id = ?
                AND role = ?
@@ -283,8 +295,13 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
             throw new AppError('Patient not found', 404);
         }
 
+        if (payload.state_name === undefined) {
+            payload.state_name = patientRows[0].state_name;
+            payload.address = [payload.address, payload.state_name].filter(Boolean).join(', ') || null;
+        }
+
         const [mobileRows] = await connection.execute(
-            `SELECT id, role, uuid, is_active
+            `SELECT id, role, uuid, is_active, state_name
              FROM master_users
              WHERE mobile_no = ?
                AND id <> ?
@@ -323,6 +340,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
                  area_name = ?,
                  ward_no = ?,
                  vidhan_sabha = ?,
+                 state_name = ?,
                  pincode = ?,
                  city = ?,
                  description = ?,
@@ -341,6 +359,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
                 payload.area_name,
                 payload.ward_no,
                 payload.vidhan_sabha,
+                payload.state_name ?? null,
                 payload.pincode,
                 payload.city,
                 payload.description,
@@ -371,6 +390,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
                 u.area_name,
                 u.ward_no,
                 u.vidhan_sabha,
+                u.state_name,
                 u.pincode,
                 u.city,
                 u.description,
@@ -439,6 +459,7 @@ const listRegisteredPatients = asyncHandler(async (req, res) => {
                 u.area_name,
                 u.ward_no,
                 u.vidhan_sabha,
+                u.state_name,
                 u.pincode,
                 u.city,
                 u.description,
