@@ -50,7 +50,23 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
     const appointmentDate = req.query.appointment_date ? String(req.query.appointment_date).trim() : null;
     const status = req.query.status ? normalizeAppointmentStatus(req.query.status) : null;
     const patientSearch = req.query.patient_search ? String(req.query.patient_search).trim() : null;
-    const includeConsulted = String(req.query.include_consulted || '').trim().toLowerCase() === 'true';
+    const sessionScope = String(req.query.session_scope || 'current').trim().toLowerCase();
+    const listSlotId = req.query.slot_id !== undefined ? toPositiveInt(req.query.slot_id) : null;
+    if (!['current', 'all', 'slot'].includes(sessionScope)) {
+        throw new AppError('session_scope must be current, all or slot', 400);
+    }
+    if (sessionScope !== 'current' && !branchId) {
+        throw new AppError('branch_id is required for a session list', 400);
+    }
+    if (sessionScope === 'slot' && (!branchId || !listSlotId)) {
+        throw new AppError('branch_id and a valid slot_id are required for a session list', 400);
+    }
+    if (req.query.slot_id !== undefined && (sessionScope !== 'slot' || !listSlotId)) {
+        throw new AppError('slot_id is only supported with session_scope=slot', 400);
+    }
+    // Broader list views include completed visits; the default current-session behaviour is unchanged.
+    const includeConsulted = sessionScope !== 'current'
+        || String(req.query.include_consulted || '').trim().toLowerCase() === 'true';
 
     if (req.query.branch_id !== undefined && !branchId) {
         throw new AppError('branch_id must be a positive integer', 400);
@@ -99,7 +115,14 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
         conditions.push('c.id IS NULL');
     }
 
-    const shouldResolveVisibleSlot = Boolean(branchId && appointmentDate && appointmentDate === todayDateString);
+    if (sessionScope === 'slot') {
+        const slots = await query('SELECT id FROM master_slots WHERE id = ? AND fk_branch_id = ? AND is_active = 1 LIMIT 1', [listSlotId, branchId]);
+        if (!slots.length) throw new AppError('Selected session is not available in this branch', 400);
+        conditions.push('a.fk_slot_id = ?');
+        params.push(listSlotId);
+    }
+
+    const shouldResolveVisibleSlot = Boolean(sessionScope === 'current' && branchId && appointmentDate && appointmentDate === todayDateString);
     const resolvedVisibleSlotId = shouldResolveVisibleSlot
         ? await resolveDoctorVisibleSlotId({
             doctorId: req.user?.id || null,
@@ -120,7 +143,7 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
     const appointments = await query(
         `${DOCTOR_APPOINTMENT_SELECT}
          WHERE ${conditions.join(' AND ')}
-         ORDER BY a.appointment_date DESC, a.current_token_number ASC, a.created_at DESC`,
+         ORDER BY a.appointment_date DESC, ${sessionScope === 'all' ? 'COALESCE(sto.override_start_time, s.start_time) ASC, a.fk_slot_id ASC,' : ''} a.current_token_number ASC, a.created_at DESC`,
         params
     );
     const queueGroups = appointments.reduce((groups, appointment) => {
@@ -265,6 +288,8 @@ const listAppointmentsForDoctor = asyncHandler(async (req, res) => {
             filters: {
                 branch_id: branchId,
                 resolved_slot_id: resolvedVisibleSlotId,
+                session_scope: sessionScope,
+                list_slot_id: listSlotId,
                 appointment_date: appointmentDate,
                 status,
                 patient_search: patientSearch,
