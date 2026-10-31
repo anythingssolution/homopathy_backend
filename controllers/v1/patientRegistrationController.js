@@ -84,7 +84,7 @@ const normalizeCreatePayload = (body = {}) => {
 
     return {
         full_name: fullName,
-        patient_uuid: normalizePatientRegistrationId(patientIdRaw),
+        patient_uuid: patientIdRaw ? normalizePatientRegistrationId(patientIdRaw) : null,
         age: agePayload.age,
         date_of_birth: agePayload.date_of_birth,
         gender,
@@ -114,9 +114,6 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
         throw new AppError('Unable to determine actor role for audit log', 400);
     }
 
-    if (!payload.patient_uuid) {
-        throw new AppError('Registration number is required', 400);
-    }
 
     const saved = await withTransaction(async (connection) => {
         const [matchedRows] = await connection.execute(
@@ -128,6 +125,13 @@ const createRegisteredPatient = asyncHandler(async (req, res) => {
             [payload.mobile_no]
         );
 
+        if (!matchedRows.length && payload.patient_uuid) {
+            throw new AppError('New patients receive their registration number at first check-in', 400);
+        }
+        if (matchedRows.length && !matchedRows[0].uuid && payload.patient_uuid) {
+            throw new AppError('Registration number will be assigned at first check-in', 400);
+        }
+        payload.patient_uuid = payload.patient_uuid || matchedRows[0]?.uuid || null;
         await assertRegistrationIdAvailable(connection, payload.patient_uuid, matchedRows[0]?.id || null);
         if (matchedRows[0] && !matchedRows[0].is_active) {
             throw new AppError('This contact belongs to an inactive patient account', 409);
@@ -275,9 +279,6 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
         throw new AppError('Authenticated user is required', 401);
     }
 
-    if (!payload.patient_uuid) {
-        throw new AppError('Registration number is required', 400);
-    }
 
     const saved = await withTransaction(async (connection) => {
         const [patientRows] = await connection.execute(
@@ -300,6 +301,11 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
             payload.address = [payload.address, payload.state_name].filter(Boolean).join(', ') || null;
         }
 
+        if (!patientRows[0].uuid && payload.patient_uuid) {
+            throw new AppError('Registration number will be assigned at first check-in', 400);
+        }
+        payload.patient_uuid = payload.patient_uuid || patientRows[0].uuid || null;
+
         const [mobileRows] = await connection.execute(
             `SELECT id, role, uuid, is_active, state_name
              FROM master_users
@@ -314,19 +320,7 @@ const updateRegisteredPatient = asyncHandler(async (req, res) => {
             throw new AppError('Mobile number already belongs to another user', 409);
         }
 
-        const [patientIdRows] = await connection.execute(
-            `SELECT id
-             FROM master_users
-             WHERE uuid = ?
-               AND id <> ?
-             LIMIT 1
-             FOR UPDATE`,
-            [payload.patient_uuid, patientAccountId]
-        );
-
-        if (patientIdRows.length > 0) {
-            throw new AppError('Patient ID already belongs to another patient', 409);
-        }
+        await assertRegistrationIdAvailable(connection, payload.patient_uuid, patientAccountId);
 
         await connection.execute(
             `UPDATE master_users

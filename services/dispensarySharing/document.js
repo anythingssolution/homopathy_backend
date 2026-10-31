@@ -19,7 +19,7 @@ const renderDispensaryDocument = model => new Promise((resolve, reject) => {
     text(model.labels?.title || (model.kind === 'RECEIPT' ? 'PAYMENT RECEIPT' : 'MEDICINE / TEST BILL'), 15, '#1f2937');
     text(`${model.labels?.bill || 'Bill'}: ${model.bill_number}    ${model.labels?.date || 'Date'}: ${model.date}`, 10);
     text(`${model.labels?.patient || 'Patient'}: ${model.patient_name}`, 11);
-    text(`${model.labels?.reg || 'Reg. No.'}: ${model.patient_uuid}`, 11, '#2d8789');
+    text(`${model.labels?.reg || 'Reg. No.'}: ${model.patient_uuid || (model.language === 'hi' ? 'रजिस्ट्रेशन नंबर लंबित' : 'Reg No. pending')}`, 11, '#2d8789');
     doc.moveDown();
     const heading = () => {
         const y = doc.y;

@@ -13,7 +13,6 @@ const { isBranchScopedRole } = require('../../utils/branchScope');
 const { sendRegistrationWelcomeWhatsApp } = require('../../utils/whatsappService');
 const { generateOtp } = require('../../utils/otp');
 const { createOtpSmsSender } = require('../../services/otpSmsService');
-const { generatePatientUuid } = require('../../utils/patientUuid');
 const { uploadProfileImage, removeProfileImage } = require('../../services/profileImageStorageService');
 const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 
@@ -714,7 +713,7 @@ const registerUser = asyncHandler(async (req, res) => {
             }
         }
 
-        const patientUuid = await generatePatientUuid(connection);
+        const patientUuid = null;
 
         const [insertResult] = await connection.execute(
             `INSERT INTO master_users

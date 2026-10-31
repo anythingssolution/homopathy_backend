@@ -77,7 +77,7 @@ test('patient registry defaults to natural displayed patient ID order before pag
 
     assert.equal(result.filters.sortBy, 'patient_id');
     assert.equal(result.filters.sortOrder, 'asc');
-    assert.match(sql, /ORDER BY CASE WHEN p\.uuid REGEXP '\^DTH_\?\[0-9\]\+\$'/);
+    assert.match(sql, /ORDER BY p\.uuid IS NULL ASC, CASE WHEN p\.uuid REGEXP '\^DTH_\?\[0-9\]\+\$'/);
     assert.match(sql, /CAST\(SUBSTRING\(REPLACE\(p\.uuid, '_', ''\), 4\) AS UNSIGNED\) END ASC/);
     assert.match(sql, /p\.uuid ASC, p\.id ASC\s+LIMIT \? OFFSET \?/);
     assert.deepEqual(params, [2, 2, 20, 20]);

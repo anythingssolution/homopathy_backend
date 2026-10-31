@@ -51,6 +51,7 @@ for (const [file, name] of [['authController', 'registerUser'], ['staffPatientCo
         const res = { status() { return this; }, json(value) { response = value; } };
         await handler({ body, user: { id: 2 }, headers: {} }, res);
         assert.equal(writes.length, 1);
+        assert.equal(patient.uuid, null, 'registration must wait for first check-in');
         assert.equal(patient.state_name, 'Chhattisgarh');
         assert.ok(patient.address.endsWith(', Raipur, Chhattisgarh'));
         assert.equal(response.data.state_name, 'Chhattisgarh');

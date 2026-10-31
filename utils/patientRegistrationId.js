@@ -12,6 +12,13 @@ const normalizePatientRegistrationId = (value) => {
 };
 
 const assertRegistrationIdAvailable = async (connection, uuid, patientId = null) => {
+    if (!uuid) return;
+    // Lock the counter before a uniqueness gap lock, matching allocation lock order.
+    // The enclosing transaction rolls this reservation back on validation failure.
+    await connection.execute(
+        'UPDATE tbl_patient_registration_sequence SET last_serial = GREATEST(last_serial, CAST(? AS UNSIGNED)) WHERE id = 1',
+        [uuid.replace(/^DTH_?/, '')]
+    );
     const [rows] = await connection.execute(
         `SELECT id FROM master_users WHERE uuid = ? ${patientId ? 'AND id <> ?' : ''} LIMIT 1 FOR UPDATE`,
         patientId ? [uuid, patientId] : [uuid]

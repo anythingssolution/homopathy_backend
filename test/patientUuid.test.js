@@ -6,7 +6,27 @@ const {
     PATIENT_UUID_FIRST_SERIAL,
     buildPatientUuid,
     generatePatientUuid,
+    ensurePatientRegistration,
 } = require('../utils/patientUuid');
+
+test('check-in assigns by arrival order, preserves existing numbers and is idempotent', async () => {
+    const patients = new Map([[1, null], [2, null], [3, null], [4, 'DTH_500']]);
+    let serial = 2020;
+    const connection = { execute: async (sql, params = []) => {
+        if (sql.includes('SELECT id, uuid')) return [[{ id: params[0], uuid: patients.get(params[0]) }]];
+        if (sql.includes('SELECT last_serial')) return [[{ last_serial: String(serial) }]];
+        if (sql.includes('UPDATE tbl_patient_registration_sequence')) { serial = Number(params[0]); return [{ affectedRows: 1 }]; }
+        if (sql.includes('UPDATE master_users')) { patients.set(params[1], params[0]); return [{ affectedRows: 1 }]; }
+        throw new Error(sql);
+    }};
+    assert.equal(await ensurePatientRegistration(connection, 1), 'DTH_2021');
+    assert.equal(await ensurePatientRegistration(connection, 3), 'DTH_2022');
+    assert.equal(patients.get(2), null);
+    assert.equal(await ensurePatientRegistration(connection, 2), 'DTH_2023');
+    assert.equal(await ensurePatientRegistration(connection, 3), 'DTH_2022');
+    assert.equal(await ensurePatientRegistration(connection, 4), 'DTH_500');
+    assert.equal(serial, 2023);
+});
 
 const createFakeConnection = ({ lastSerial, lockAcquired = 1 }) => {
     const calls = [];

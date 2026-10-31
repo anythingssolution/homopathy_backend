@@ -8,7 +8,6 @@ const { randomUUID } = require('crypto');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
-const { generatePatientUuid } = require('../../utils/patientUuid');
 const {
     createConsultationBillForAppointment,
     transferConsultationBillToAppointment,
@@ -1002,7 +1001,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
     const optionalAddressFields = normalizeOptionalAddressFields(req.body || {});
     const relationship =
         req.body?.relationship !== undefined ? String(req.body.relationship).trim() : undefined;
-    const registrationId = req.body?.patient_uuid !== undefined
+    const registrationId = req.body?.patient_uuid !== undefined && String(req.body.patient_uuid ?? '').trim() !== ''
         ? normalizePatientRegistrationId(req.body.patient_uuid)
         : undefined;
 
@@ -1206,6 +1205,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             }
         }
 
+        if (registrationId !== undefined && !patient.uuid) throw new AppError('Registration number will be assigned at first check-in', 400);
         if (registrationId !== undefined && registrationId !== patient.uuid) {
             await assertRegistrationIdAvailable(connection, registrationId, patientId);
         }
@@ -1836,7 +1836,7 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
             if (matchedPatientRows.length > 0) {
                 throw new AppError('This mobile number is already registered. Search and select the existing patient before booking. For a family member, select the account holder first.', 409);
             } else {
-                const generatedPatientUuid = await generatePatientUuid(connection);
+                const generatedPatientUuid = null;
                 const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
                 const [insertPatientResult] = await connection.execute(

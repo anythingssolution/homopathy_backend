@@ -8,6 +8,25 @@ const PATIENT_UUID_LOCK_TIMEOUT_SEC = 10;
 
 const buildPatientUuid = (serial) => `${PATIENT_UUID_PREFIX}${serial}`;
 
+// Called inside the successful attendance transaction. The patient row makes
+// retries idempotent; the singleton counter serializes allocations across branches.
+const ensurePatientRegistration = async (connection, patientId) => {
+    const [patients] = await connection.execute(
+        "SELECT id, uuid FROM master_users WHERE id = ? AND role = 'PAT' LIMIT 1 FOR UPDATE", [patientId]
+    );
+    if (!patients.length) throw new AppError('Patient account not found', 404);
+    if (patients[0].uuid) return patients[0].uuid;
+    const [sequence] = await connection.execute(
+        'SELECT last_serial FROM tbl_patient_registration_sequence WHERE id = 1 FOR UPDATE'
+    );
+    if (!sequence.length) throw new AppError('Patient registration sequence is not configured', 503);
+    const serial = BigInt(sequence[0].last_serial) + 1n;
+    const uuid = buildPatientUuid(serial);
+    await connection.execute('UPDATE tbl_patient_registration_sequence SET last_serial = ? WHERE id = 1', [serial.toString()]);
+    await connection.execute('UPDATE master_users SET uuid = ? WHERE id = ? AND uuid IS NULL', [uuid, patientId]);
+    return uuid;
+};
+
 /**
  * Generates the next patient uuid inside an open transaction.
  *
@@ -50,4 +69,5 @@ module.exports = {
     PATIENT_UUID_FIRST_SERIAL,
     buildPatientUuid,
     generatePatientUuid,
+    ensurePatientRegistration,
 };

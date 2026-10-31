@@ -17,7 +17,7 @@ db.withTransaction = async handler => handler({ execute: async (sql, params = []
     if (sql.includes('SELECT id, uuid') && sql.includes('WHERE id = ?')) return [[existing]];
     if (sql.includes('SELECT id, role') && sql.includes('id <>')) return [[]];
     if (sql.includes('INSERT INTO master_users')) return [{ insertId: 50, affectedRows: 1 }];
-    if (sql.includes('SELECT') && sql.includes('u.id AS patient_id')) return [[{patient_id: existing?.id || 50, patient_uuid:'DTH_115', import_action: existing ? 'LINK_EXISTING' : 'CREATE_PATIENT'}]];
+    if (sql.includes('SELECT') && sql.includes('u.id AS patient_id')) return [[{patient_id: existing?.id || 50, patient_uuid:existing?.uuid || null, import_action: existing ? 'LINK_EXISTING' : 'CREATE_PATIENT'}]];
     return [{ affectedRows: 1 }];
 } });
 db.query = async (sql, params = []) => {
@@ -31,7 +31,7 @@ const req = () => ({body:{patient_uuid:'115', full_name:'Patient Name', age:25, 
 
 test('registration create, edit and contact linking save state and preserve omitted stored state', async () => {
     calls = []; existing = null;
-    const create = req(); create.body.state_name = ' Chhattisgarh ';
+    const create = req(); create.body.patient_uuid = null; create.body.state_name = ' Chhattisgarh ';
     await invoke(controller.createRegisteredPatient, create);
     const insert = calls.find(c => c.sql.includes('INSERT INTO master_users'));
     const columns = insert.sql.match(/\(([^)]+)\)\s*VALUES/s)[1].split(',').map(c => c.trim());
@@ -64,15 +64,26 @@ test('duplicate registration number is rejected before modifying patient records
     await assert.rejects(assertRegistrationIdAvailable({execute:async()=>[[{id:99}]]},'DTH_115',7),e=>e.statusCode===409);
     calls=[]; existing={id:7,uuid:'DTH7',role:'PAT',is_active:1}; conflictingId=true;
     await assert.rejects(invoke(controller.createRegisteredPatient,req()),e=>e.statusCode===409);
-    assert(!calls.some(c=>/^\s*(UPDATE|INSERT)/.test(c.sql)));
+    assert(!calls.some(c=>/UPDATE master_users|INSERT INTO master_users/.test(c.sql)));
     conflictingId=false;
 });
-test('new patient saves entered registration as UUID with matching insert parameters', async () => {
+test('new patient remains without a DTH until check-in with matching insert parameters', async () => {
     calls=[];existing=null;
-    const response=await invoke(controller.createRegisteredPatient,req());
+    const request = req(); request.body.patient_uuid = null;
+    const response=await invoke(controller.createRegisteredPatient,request);
     const insert=calls.find(c=>c.sql.includes('INSERT INTO master_users'));
-    assert.equal(insert.params[0],'DTH_115');
-    assert.equal(response.data.patient_uuid,'DTH_115');
+    assert.equal(insert.params[0],null);
+    assert.equal(response.data.patient_uuid,null);
+});
+test('pending patient can be edited without a number but cannot be manually allocated one', async () => {
+    calls=[];existing={id:7,uuid:null,role:'PAT',is_active:1};
+    const request=req(); request.body.patient_uuid=null;
+    await invoke(controller.updateRegisteredPatient,request);
+    const update=calls.find(c=>c.sql.includes('UPDATE master_users'));
+    assert.equal(update.params[0],null);
+    calls=[];
+    await assert.rejects(invoke(controller.updateRegisteredPatient,req()),e=>e.statusCode===400);
+    assert(!calls.some(c=>c.sql.includes('UPDATE master_users')));
 });
 test('matching contact keeps internal ID and audits the registration correction', async () => {
     calls=[];existing={id:7,uuid:'DTH700',role:'PAT',is_active:1};

@@ -5,7 +5,6 @@ const { query, withTransaction } = require('../../config/db');
 const { env } = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
-const { generatePatientUuid } = require('../../utils/patientUuid');
 const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
 
 const PATIENT_ROLE = 'PAT';
@@ -126,7 +125,7 @@ const createStaffPatient = asyncHandler(async (req, res) => {
             throw new AppError('Mobile number already registered', 409);
         }
 
-        const generatedPatientUuid = await generatePatientUuid(connection);
+        const generatedPatientUuid = null;
         const generatedPasswordHash = await bcrypt.hash(randomUUID(), 10);
 
         const [insertResult] = await connection.execute(

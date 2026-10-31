@@ -1,3 +1,4 @@
+const { ensurePatientRegistration } = require('../utils/patientUuid');
 const { query } = require('../config/db');
 const AppError = require('../utils/AppError');
 const { emitToLiveQueueRoom, emitToPublicLiveQueueRoom } = require('../utils/realtime');
@@ -3712,7 +3713,7 @@ const markAppointmentQueueCompleted = async (connection, {
     const execute = getExecutor(connection);
 
     const appointments = await execute(
-        `SELECT appointment_id, fk_branch_id, fk_slot_id, appointment_date, current_token_number,
+        `SELECT appointment_id, fk_patient_id, fk_branch_id, fk_slot_id, appointment_date, current_token_number,
                 queue_status, checked_in_at, arrival_sequence
          FROM tbl_appointments
          WHERE appointment_id = ?
@@ -3752,6 +3753,8 @@ const markAppointmentQueueCompleted = async (connection, {
         session?.current_appointment_id
         && Number(session.current_appointment_id) === Number(appointmentId)
     );
+
+    await ensurePatientRegistration(connection, appointment.fk_patient_id);
 
     await execute(
         `UPDATE tbl_appointments

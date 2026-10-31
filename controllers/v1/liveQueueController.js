@@ -1,3 +1,4 @@
+const { ensurePatientRegistration } = require('../../utils/patientUuid');
 const { query, withTransaction } = require('../../config/db');
 const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
@@ -823,6 +824,8 @@ const checkInAppointment = asyncHandler(async (req, res) => {
             (protectedAppointmentId) => !displacedAppointmentIds.has(protectedAppointmentId)
         );
 
+        await ensurePatientRegistration(connection, current.fk_patient_id);
+
         await connection.execute(
             `UPDATE tbl_appointments
              SET queue_status = ?,
@@ -1193,6 +1196,8 @@ const startConsultation = asyncHandler(async (req, res) => {
                 appointmentDate: current.appointment_date,
             });
 
+            await ensurePatientRegistration(connection, current.fk_patient_id);
+
             await connection.execute(
                 `UPDATE tbl_appointments
                  SET queue_status = ?,
@@ -1326,6 +1331,7 @@ const completeConsultation = asyncHandler(async (req, res) => {
                     appointmentDate: current.appointment_date,
                 });
 
+            await ensurePatientRegistration(connection, current.fk_patient_id);
             await connection.execute(
                 `UPDATE tbl_appointments
                  SET queue_status = ?,
