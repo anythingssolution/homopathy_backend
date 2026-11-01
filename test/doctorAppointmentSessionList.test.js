@@ -9,6 +9,25 @@ const end = source.indexOf('\nconst ', start + 7);
 const now = new Date();
 const today = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
 
+test('clinic history carries saved patient address into the prescription appointment', async () => {
+    const historyStart = source.indexOf('const listConsultationHistoryForDoctor =');
+    const historyEnd = source.indexOf('\nconst ', historyStart + 7);
+    const handler = vm.runInNewContext(`${source.slice(historyStart, historyEnd)}; listConsultationHistoryForDoctor`, {
+        asyncHandler: fn => fn, AppError, toPositiveInt: Number,
+        parsePagination: () => ({ page: 1, pageSize: 20 }),
+        getConsultationHistoryRows: async () => ({ rows: [{ appointment_id: 7, patient_address: 'Mowa, Raipur, 492001' }],
+            pagination: {}, timeline: [{ event_type: 'CONSULTATION', event_id: 7 }], paymentRows: [], repeatRows: [] }),
+        decorateTokenFields: () => ({}), getConsultationAggregateByAppointmentId: async () => ({}),
+        getMedicalPricingAggregateByConsultationId: async () => null, getAppointmentChain: async () => [],
+        enrichAppointmentChainWithConsultationData: async value => value,
+        getMedicationPaymentSummaries: async () => ({ byConsultationId: new Map() }),
+        buildPaginationMeta: () => ({}),
+    });
+    let result;
+    await handler({ query: {} }, { status() { return this; }, json(value) { result = value; } });
+    assert.equal(result.data[0].appointment.patient_address, 'Mowa, Raipur, 492001');
+});
+
 function fixture({ visibleSlot = 1, validSlot = true } = {}) {
     const queries = [], resolved = [];
     const query = async (sql, params = []) => {

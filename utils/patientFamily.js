@@ -48,6 +48,7 @@ const getAppointmentPatientColumns = ({
     COALESCE(${familyAlias}.gender, ${patientAlias}.gender) AS patient_gender,
     ${patientAlias}.email AS patient_email,
     ${patientAlias}.mobile_no AS patient_mobile_no,
+    ${patientAlias}.address AS patient_address,
     ${patientAlias}.area_name AS patient_area_name,
     ${patientAlias}.ward_no AS patient_ward_no,
     ${patientAlias}.vidhan_sabha AS patient_vidhan_sabha,
