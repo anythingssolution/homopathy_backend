@@ -545,20 +545,28 @@ const mutateQueueAppointment = async ({
     allowedCurrentStatuses = ACTIVE_QUEUE_STATUSES,
     handler,
 }) => withTransaction(async (connection) => {
-    const [appointment] = await connection.execute(
-        `SELECT appointment_id, fk_branch_id, fk_slot_id, appointment_date, current_token_number, queue_status, status, is_active, checked_in_at, arrival_sequence, planned_start_at
-         FROM tbl_appointments
-         WHERE appointment_id = ?
-         LIMIT 1
-         FOR UPDATE`,
+    const [contexts] = await connection.execute(
+        `SELECT fk_branch_id, fk_slot_id, appointment_date FROM tbl_appointments WHERE appointment_id = ? LIMIT 1`,
         [appointmentId]
+    );
+    if (!contexts.length) throw new AppError('Appointment not found', 404);
+    const context = contexts[0];
+    const [appointment] = await connection.execute(
+        `SELECT appointment_id, fk_patient_id, fk_branch_id, fk_slot_id, appointment_date, current_token_number, queue_status, status, is_active, checked_in_at, arrival_sequence, planned_start_at
+         FROM tbl_appointments
+         WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ?
+         ORDER BY appointment_id ASC
+         FOR UPDATE`,
+        [context.fk_branch_id, context.fk_slot_id, context.appointment_date]
     );
 
     if (!appointment.length) {
         throw new AppError('Appointment not found', 404);
     }
 
-    const current = appointment[0];
+    const current = appointment.find(row => Number(row.appointment_id) === appointmentId);
+
+    if (!current) throw new AppError('Appointment not found', 404);
 
     if (Number(current.is_active) !== 1 || current.status === 'Cancelled') {
         throw new AppError('Only active non-cancelled appointments can be updated in live queue', 409);
@@ -569,7 +577,7 @@ const mutateQueueAppointment = async ({
     }
 
     return handler(connection, current);
-});
+}, { maxRetries: 2 });
 
 const checkInAppointment = asyncHandler(async (req, res) => {
     const appointmentId = toPositiveInt(req.params.appointment_id);
@@ -876,7 +884,7 @@ const checkInAppointment = asyncHandler(async (req, res) => {
             assignedPosition: boundedAssignment.assignedPosition || null,
             displacementCount: boundedAssignment.displacementCount || 0,
         };
-    });
+    }, { maxRetries: 2 });
 
     if (result.paymentRequired) {
         return res.status(409).json({
@@ -1054,7 +1062,7 @@ const callNextReadyToken = asyncHandler(async (req, res) => {
         actorIp: getClientIp(req),
         eventType: 'TOKEN_CALLED_AUTO_NEXT',
         selectionBasis: 'SCHEDULED_PRESENT_THEN_LONGEST_WAITING_PRESENT_HOLD',
-    }));
+    }), { maxRetries: 2 });
 
     const payload = await emitLiveQueueEvent({
         branchId: result.branchId,

@@ -104,7 +104,12 @@ const authenticate = async (req, res, next) => {
 
         return next();
     } catch (error) {
-        return next(new AppError('Invalid or expired token', 401));
+        // A database outage is not an expired login. Preserve it for normal server
+        // error logging; never log the raw bearer token or decoded credentials.
+        const reasons = { TokenExpiredError: 'ACCESS_EXPIRED', JsonWebTokenError: 'ACCESS_INVALID', NotBeforeError: 'ACCESS_NOT_ACTIVE' };
+        const reason = reasons[error?.name];
+        if (!reason) return next(error);
+        return next(new AppError('Invalid or expired token', 401, { auth_reason: reason }));
     }
 };
 

@@ -6,15 +6,27 @@ const AppError = require('../utils/AppError');
 const { normalizeOptionalAddressFields } = require('../utils/patientAddressFields');
 const age = require('../utils/age');
 
-function fixture(role, branchAllowed = true) {
+function fixture(role, branchAllowed = true, { familyOwner = 7, familyActive = 1 } = {}) {
     let patient = { id: 7, uuid: 'DTH7', full_name: 'Fixture', mobile_no: '9876543210', gender: 'male', age: 30,
         role: 'PAT', is_active: 1, area_name: 'Mowa', ward_no: '4', vidhan_sabha: 'Raipur North', city: 'Raipur', pincode: '492001' };
-    const member = { id: 8, full_name: 'Dependent', gender: 'female', age: 20 };
+    const member = { id: 8, fk_primary_patient_id: familyOwner, is_active: familyActive, full_name: 'Dependent', gender: 'female', age: 20 };
     const audits = [], writes = [];
     const connection = { execute: async (sql, values = []) => {
         if (sql.includes('SELECT') && sql.includes('FROM master_users')) return [[{ ...patient, patient_id: patient.id }]];
         if (sql.includes('FROM tbl_appointments')) return [branchAllowed ? [{ appointment_id: 1 }] : []];
-        if (sql.includes('FROM tbl_patient_family_members')) return [[{ ...member }]];
+        if (sql.includes('FROM tbl_patient_family_members')) {
+            assert.match(sql, /fk_primary_patient_id = \?/);
+            assert.doesNotMatch(sql, /\bAND patient_id =/);
+            return [values[0] === member.id && values[1] === member.fk_primary_patient_id ? [{ ...member }] : []];
+        }
+        if (sql.includes('UPDATE tbl_patient_family_members')) {
+            assert.match(sql, /fk_primary_patient_id = \?/);
+            assert.equal(values.at(-1),member.fk_primary_patient_id);
+            writes.push(sql);
+            const columns = [...sql.matchAll(/([a-z_]+)\s*=\s*\?/g)].map(m => m[1]);
+            columns.slice(0,-2).forEach((column,i) => { member[column] = values[i]; });
+            return [{ affectedRows: 1 }];
+        }
         if (sql.includes('UPDATE master_users')) {
             writes.push(sql);
             const columns = [...sql.matchAll(/([a-z_]+)\s*=\s*\?/g)].map(m => m[1]);
@@ -76,7 +88,10 @@ for (const role of ['doctor', 'reception']) {
         await f.call({ ward_no: '', vidhan_sabha: null });assert.equal(f.patient().ward_no, null);
         assert.equal(f.patient().address, 'Mowa, 492001, Raipur');
         const writeCount = f.writes.length;
-        await assert.rejects(f.call({ ward_no: '', vidhan_sabha: null }), { statusCode: 400 });
+        const auditCount=f.audits.length;
+        const unchanged=await f.call({ ward_no: '', vidhan_sabha: null });
+        assert.equal(unchanged.success,true); assert.equal(unchanged.data.unchanged,true);
+        assert.equal(f.audits.length,auditCount);
         assert.equal(f.writes.length, writeCount);
     });
     test(`${role}: invalid values and branch mismatch reject before writes`, async () => {
@@ -94,3 +109,20 @@ test('doctor dependent edit updates only shared account address and leaves depen
     assert.equal(response.data.patient.ward_no, '10');assert.equal(response.data.patient.vidhan_sabha, null);
     assert.equal(f.patient().full_name, 'Fixture');assert.equal(f.patient().address, 'Mowa, Ward 10, 492001, Raipur');
 });
+for (const role of ['doctor','reception']) {
+    test(`${role}: family identity save is scoped to its owner and unchanged saves do not write`,async()=>{
+        const f=fixture(role);
+        const saved=await f.call({family_member_id:8,full_name:'Updated dependent'});
+        assert.equal(saved.data.patient.full_name,'Updated dependent');
+        assert.equal(f.patient().full_name,'Fixture');
+        const count=f.writes.length,audits=f.audits.length;
+        const unchanged=await f.call({family_member_id:8,full_name:'Updated dependent'});
+        assert.equal(unchanged.data.unchanged,true);
+        assert.equal(f.writes.length,count);assert.equal(f.audits.length,audits);
+        for(const options of [{familyOwner:99},{familyActive:0}]){
+            const invalid=fixture(role,true,options);
+            await assert.rejects(invalid.call({family_member_id:8,full_name:'Forbidden'}),e=>[404,409].includes(e.statusCode));
+            assert.equal(invalid.writes.length,0);
+        }
+    });
+}

@@ -906,7 +906,7 @@ const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
     }
 
     let sqlPatient = `
-        SELECT DISTINCT c.quick_formula_input
+        SELECT TRIM(c.quick_formula_input) AS quick_formula_input
         FROM tbl_consultations c
         JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
         WHERE a.fk_patient_id = ? 
@@ -916,7 +916,9 @@ const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
     `;
 
     if (patientMatchConditions.length > 0) {
-        sqlPatient += ` AND (${patientMatchConditions.join(' OR ')}) ORDER BY c.created_at DESC LIMIT 50`;
+        sqlPatient += ` AND (${patientMatchConditions.join(' OR ')})
+            GROUP BY TRIM(c.quick_formula_input)
+            ORDER BY MAX(c.created_at) DESC, MAX(c.id) DESC LIMIT 50`;
         patientMatchRows = await query(sqlPatient, patientMatchParams);
     }
 
@@ -942,7 +944,7 @@ const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
         }
 
         let sqlGlobal = `
-            SELECT DISTINCT c.quick_formula_input
+            SELECT TRIM(c.quick_formula_input) AS quick_formula_input
             FROM tbl_consultations c
             JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
             WHERE a.is_active = 1 
@@ -951,7 +953,9 @@ const getPrescriptionSuggestions = asyncHandler(async (req, res) => {
         `;
 
         if (globalMatchConditions.length > 0) {
-            sqlGlobal += ` AND (${globalMatchConditions.join(' OR ')}) ORDER BY c.created_at DESC LIMIT 50`;
+            sqlGlobal += ` AND (${globalMatchConditions.join(' OR ')})
+                GROUP BY TRIM(c.quick_formula_input)
+                ORDER BY MAX(c.created_at) DESC, MAX(c.id) DESC LIMIT 50`;
             globalMatchRows = await query(sqlGlobal, globalMatchParams);
         }
         targetRows = globalMatchRows;

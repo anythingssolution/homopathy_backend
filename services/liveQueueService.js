@@ -190,6 +190,16 @@ const getExecutor = (connection = null) => async (sql, params = []) => {
     return query(sql, params);
 };
 
+// Queue mutations take appointment locks in the same order before session locks.
+const lockQueueAppointments = async (connection, { branchId, slotId, appointmentDate }) => {
+    await getExecutor(connection)(
+        `SELECT appointment_id FROM tbl_appointments
+         WHERE fk_branch_id = ? AND fk_slot_id = ? AND appointment_date = ?
+         ORDER BY appointment_id ASC FOR UPDATE`,
+        [branchId, slotId, appointmentDate]
+    );
+};
+
 const listBranchSlotBlockContexts = async ({
     connection = null,
     branchId,
@@ -2477,6 +2487,8 @@ const autoSelectAndCallNextReady = async (connection, {
 }) => {
     const execute = getExecutor(connection);
 
+    await lockQueueAppointments(connection, { branchId, slotId, appointmentDate });
+
     const sessions = await execute(
         `SELECT id, session_status, current_appointment_id, current_token_number
          FROM tbl_live_queue_sessions
@@ -3897,6 +3909,7 @@ const markAppointmentQueueCompleted = async (connection, {
 };
 
 module.exports = {
+    lockQueueAppointments,
     QUEUE_STATUS,
     ACTIVE_QUEUE_STATUSES,
     PRESENT_QUEUE_STATUSES,

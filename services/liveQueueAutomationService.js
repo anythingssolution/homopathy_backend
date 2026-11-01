@@ -5,6 +5,7 @@ const {
     autoSelectAndCallNextReady,
     recalculateLiveRuntimeProjection,
     formatDateTimeForSql,
+    lockQueueAppointments,
 } = require('./liveQueueService');
 
 const DEFAULT_AUTO_CALL_DELAY_MS = 0;
@@ -64,6 +65,7 @@ const processSingleDueAutoCallNext = async ({
     appointmentDate,
 }) => {
     const result = await withTransaction(async (connection) => {
+        await lockQueueAppointments(connection, { branchId, slotId, appointmentDate });
         const [rows] = await connection.execute(
             `SELECT id,
                     fk_branch_id,
@@ -139,9 +141,8 @@ const processSingleDueAutoCallNext = async ({
                 reason: session.auto_call_next_reason || 'AUTO_CALL_NEXT_SCHEDULED',
             };
         } catch (error) {
-            await clearSchedule();
-
             if (error instanceof AppError && [404, 409].includes(Number(error.statusCode))) {
+                await clearSchedule();
                 await recalculateLiveRuntimeProjection(connection, {
                     branchId,
                     slotId,
@@ -152,7 +153,7 @@ const processSingleDueAutoCallNext = async ({
 
             throw error;
         }
-    });
+    }, { maxRetries: 2 });
 
     if (result) {
         await emitLiveQueueEvent({

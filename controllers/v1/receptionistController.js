@@ -1125,53 +1125,52 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             };
 
             for (const [field, value] of Object.entries(fmRequestedValues)) {
-                if (value !== undefined && String(value) !== String(fm[field] ?? '')) {
+                if (value !== undefined && String(value ?? '') !== String(fm[field] ?? '')) {
                     fmChangedFields.push(field);
                     fmOldValues[field] = fm[field];
                     fmNewValues[field] = value;
                 }
             }
 
-            if (fmChangedFields.length === 0) {
-                throw new AppError('No family member details were changed', 400);
-            }
+            if (fmChangedFields.length > 0) {
 
-            const fmUpdateParts = [];
-            const fmUpdateValues = [];
-            for (const field of ['full_name', 'gender', 'age', 'date_of_birth', 'relationship']) {
-                if (fmNewValues[field] !== undefined) {
-                    fmUpdateParts.push(`${field} = ?`);
-                    fmUpdateValues.push(fmNewValues[field]);
+                const fmUpdateParts = [];
+                const fmUpdateValues = [];
+                for (const field of ['full_name', 'gender', 'age', 'date_of_birth', 'relationship']) {
+                    if (fmNewValues[field] !== undefined) {
+                        fmUpdateParts.push(`${field} = ?`);
+                        fmUpdateValues.push(fmNewValues[field]);
+                    }
                 }
+
+                fmUpdateParts.push('updated_by = ?', 'updated_ip = ?');
+                fmUpdateValues.push(req.user.id, actorIp, familyMemberId, patientId);
+
+                await connection.execute(
+                    `UPDATE tbl_patient_family_members
+                     SET ${fmUpdateParts.join(', ')}
+                     WHERE id = ?
+                       AND fk_primary_patient_id = ?`,
+                    fmUpdateValues
+                );
+
+                await connection.execute(
+                    `INSERT INTO log_user_profile_updates
+                     (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        patientId,
+                        req.user.id,
+                        actorRole,
+                        actorIp,
+                        actorUserAgent,
+                        JSON.stringify(fmChangedFields.map((f) => `family_member.${f}`)),
+                        JSON.stringify(fmOldValues),
+                        JSON.stringify(fmNewValues),
+                    ]
+                );
+
             }
-
-            fmUpdateParts.push('updated_by = ?', 'updated_ip = ?');
-            fmUpdateValues.push(req.user.id, actorIp, familyMemberId, patientId);
-
-            await connection.execute(
-                `UPDATE tbl_patient_family_members
-                 SET ${fmUpdateParts.join(', ')}
-                 WHERE id = ?
-                   AND fk_primary_patient_id = ?`,
-                fmUpdateValues
-            );
-
-            await connection.execute(
-                `INSERT INTO log_user_profile_updates
-                 (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    patientId,
-                    req.user.id,
-                    actorRole,
-                    actorIp,
-                    actorUserAgent,
-                    JSON.stringify(fmChangedFields.map((f) => `family_member.${f}`)),
-                    JSON.stringify(fmOldValues),
-                    JSON.stringify(fmNewValues),
-                ]
-            );
-
             return {
                 patient: {
                     patient_id: patientId,
@@ -1186,6 +1185,7 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
                     mobile_no: patient.mobile_no,
                 },
                 changed_fields: fmChangedFields,
+                unchanged: fmChangedFields.length === 0,
                 entity_type: 'FAMILY_MEMBER',
             };
         }
@@ -1234,51 +1234,50 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
             }
         }
 
-        if (changedFields.length === 0) {
-            throw new AppError('No patient details were changed', 400);
+        if (changedFields.length > 0) {
+
+            const updateParts = changedFields.map((field) => `${field} = ?`);
+            const updateValues = changedFields.map((field) => newValues[field]);
+            if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha', 'state_name'].includes(field))) {
+                const effective = { ...patient, ...newValues };
+                const address = [
+                    effective.area_name,
+                    effective.ward_no ? `Ward ${effective.ward_no}` : null,
+                    effective.vidhan_sabha,
+                    effective.pincode,
+                    effective.city,
+                        effective.state_name,
+                ].filter(Boolean).join(', ') || null;
+                updateParts.push('address = ?');
+                updateValues.push(address);
+            }
+            updateParts.push('updated_by = ?', 'updated_ip = ?');
+            updateValues.push(req.user.id, actorIp, patientId);
+
+            await connection.execute(
+                `UPDATE master_users
+                 SET ${updateParts.join(', ')}
+                 WHERE id = ?`,
+                updateValues
+            );
+
+            await connection.execute(
+                `INSERT INTO log_user_profile_updates
+                 (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    patientId,
+                    req.user.id,
+                    actorRole,
+                    actorIp,
+                    actorUserAgent,
+                    JSON.stringify(changedFields),
+                    JSON.stringify(oldValues),
+                    JSON.stringify(newValues),
+                ]
+            );
+
         }
-
-        const updateParts = changedFields.map((field) => `${field} = ?`);
-        const updateValues = changedFields.map((field) => newValues[field]);
-        if (changedFields.some((field) => ['area_name', 'pincode', 'city', 'ward_no', 'vidhan_sabha', 'state_name'].includes(field))) {
-            const effective = { ...patient, ...newValues };
-            const address = [
-                effective.area_name,
-                effective.ward_no ? `Ward ${effective.ward_no}` : null,
-                effective.vidhan_sabha,
-                effective.pincode,
-                effective.city,
-                    effective.state_name,
-            ].filter(Boolean).join(', ') || null;
-            updateParts.push('address = ?');
-            updateValues.push(address);
-        }
-        updateParts.push('updated_by = ?', 'updated_ip = ?');
-        updateValues.push(req.user.id, actorIp, patientId);
-
-        await connection.execute(
-            `UPDATE master_users
-             SET ${updateParts.join(', ')}
-             WHERE id = ?`,
-            updateValues
-        );
-
-        await connection.execute(
-            `INSERT INTO log_user_profile_updates
-             (user_id, changed_by_user_id, changed_by_role, ip_address, user_agent, changed_fields_json, old_values_json, new_values_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                patientId,
-                req.user.id,
-                actorRole,
-                actorIp,
-                actorUserAgent,
-                JSON.stringify(changedFields),
-                JSON.stringify(oldValues),
-                JSON.stringify(newValues),
-            ]
-        );
-
         const [updatedRows] = await connection.execute(
             `SELECT id AS patient_id, uuid AS patient_uuid, full_name, age, date_of_birth,
                     gender, email, mobile_no,
@@ -1292,13 +1291,14 @@ const updateReceptionistPatient = asyncHandler(async (req, res) => {
         return {
             patient: updatedRows[0],
             changed_fields: changedFields,
+            unchanged: changedFields.length === 0,
             entity_type: 'SELF',
         };
     });
 
     return res.status(200).json({
         success: true,
-        message: familyMemberId
+        message: result.unchanged ? 'No changes to save. Patient details are already up to date.' : familyMemberId
             ? 'Family member details updated successfully'
             : 'Patient details updated successfully',
         data: result,
