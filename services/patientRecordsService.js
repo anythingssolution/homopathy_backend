@@ -30,6 +30,15 @@ const toPositiveInt = (value) => {
 
 const isValidDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 
+// Explicit "all" is a read-only Patient Records scope. Other callers retain
+// their selected-branch default; document mutations still enforce branch access.
+const resolveRecordBranch = (filters = {}, actor = {}) => {
+    if (filters.branch_id === 'all') return null;
+    const branchId = toPositiveInt(filters.branch_id ?? actor.selected_branch_id);
+    if (!branchId) throw new AppError('Valid branch_id or all is required for patient records', 400);
+    return branchId;
+};
+
 const normalizeDateFilter = (value, label) => {
     if (value === undefined || value === null || value === '') {
         return null;
@@ -173,7 +182,7 @@ const appendCommonFilters = ({ conditions, params, filters, aliases = {} }) => {
         eventDateExpression = `${appointmentAlias}.appointment_date`,
     } = aliases;
 
-    conditions.push(`${appointmentAlias}.fk_branch_id = ?`);
+    conditions.push(`${appointmentAlias}.fk_branch_id = COALESCE(?, ${appointmentAlias}.fk_branch_id)`);
     params.push(filters.branchId);
 
     if (filters.fromDate) {
@@ -244,10 +253,7 @@ const REGISTRY_SORT_COLUMNS = Object.freeze({
 });
 
 const parseRegistryFilters = (rawFilters = {}, actor = {}) => {
-    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for patient records', 400);
-    }
+    const branchId = resolveRecordBranch(rawFilters, actor);
 
     const { page, pageSize } = parsePageFilters(rawFilters);
     const sortBy = String(rawFilters.sort_by || 'patient_id').trim().toLowerCase();
@@ -303,7 +309,7 @@ const buildRegistryWhere = (filters) => {
                 SELECT 1
                 FROM tbl_bills search_bill
                 WHERE search_bill.patient_id = p.id
-                  AND search_bill.fk_branch_id = ?
+                  AND search_bill.fk_branch_id = COALESCE(?, search_bill.fk_branch_id)
                   AND search_bill.status = 'ACTIVE'
                   AND search_bill.bill_number LIKE ?
             )
@@ -337,7 +343,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
         `SELECT COUNT(DISTINCT p.id) AS total
          FROM master_users p
          LEFT JOIN tbl_appointments a ON a.fk_patient_id = p.id
-           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?
+           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = COALESCE(?, a.fk_branch_id)
          LEFT JOIN tbl_patient_family_members fm ON fm.fk_primary_patient_id = p.id
          ${whereClause}`,
         [filters.branchId, ...params]
@@ -387,7 +393,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
             ) AS family_members_count
          FROM master_users p
          LEFT JOIN tbl_appointments a ON a.fk_patient_id = p.id
-           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?
+           AND a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = COALESCE(?, a.fk_branch_id)
          LEFT JOIN tbl_patient_family_members fm ON fm.fk_primary_patient_id = p.id
          LEFT JOIN tbl_consultations c ON c.appointment_id = a.appointment_id
          LEFT JOIN tbl_bills bills ON bills.appointment_id = a.appointment_id AND bills.status = 'ACTIVE'
@@ -404,7 +410,7 @@ const listPatientRegistry = async ({ filters: rawFilters, actor }) => {
                    END) AS repeat_medicine_count,
                    MAX(rb.created_at) AS latest_medicine_pickup_date
             FROM tbl_bills rb
-            WHERE rb.fk_branch_id = ?
+            WHERE rb.fk_branch_id = COALESCE(?, rb.fk_branch_id)
               AND rb.bill_type = 'MEDICATION'
               AND rb.appointment_id IS NULL
               AND rb.status = 'ACTIVE'
@@ -487,7 +493,7 @@ const getSubjectSummaryRows = async ({ branchId, patientId }) => query(
         FROM tbl_consultation_tests
         GROUP BY consultation_id
      ) test ON test.consultation_id = c.id
-     WHERE a.fk_branch_id = ?
+     WHERE a.fk_branch_id = COALESCE(?, a.fk_branch_id)
        AND a.fk_patient_id = ?
        AND a.is_active = 1
        AND a.status = 'Completed'
@@ -518,7 +524,7 @@ const getMedicinePurchaseSummaryRows = async ({ branchId, patientId }) => query(
      FROM tbl_bills rb
      LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
      LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
-     WHERE rb.fk_branch_id = ?
+     WHERE rb.fk_branch_id = COALESCE(?, rb.fk_branch_id)
        AND rb.patient_id = ?
        AND rb.bill_type = 'MEDICATION'
        AND rb.appointment_id IS NULL
@@ -550,11 +556,8 @@ const mergeSubjectSummary = (visitSummary = {}, purchaseSummary = {}) => {
     };
 };
 
-const getPatientRecordDetail = async ({ patientId, actor }) => {
-    const branchId = toPositiveInt(actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for patient records', 400);
-    }
+const getPatientRecordDetail = async ({ patientId, actor, filters = {} }) => {
+    const branchId = resolveRecordBranch(filters, actor);
 
     const patientRows = await query(
         `SELECT id AS patient_id,
@@ -833,7 +836,7 @@ const fetchStandaloneMedicinePurchaseRows = async (filters) => {
         "rb.bill_type = 'MEDICATION'",
         'rb.appointment_id IS NULL',
         "rb.status = 'ACTIVE'",
-        'rb.fk_branch_id = ?',
+        'rb.fk_branch_id = COALESCE(?, rb.fk_branch_id)',
     ];
     const params = [filters.branchId];
     if (filters.patientId) {
@@ -925,10 +928,7 @@ const fetchMedicinePurchaseTimeline = async (filters) => (
 );
 
 const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
-    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for patient records', 400);
-    }
+    const branchId = resolveRecordBranch(rawFilters, actor);
 
     const familyMemberId = toPositiveInt(rawFilters.family_member_id);
     const subjectScope = normalizeSubjectScope(rawFilters.subject_scope);
@@ -942,7 +942,7 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
 
     const filters = parseTimelineFilters({
         ...rawFilters,
-        branch_id: branchId,
+        branch_id: branchId ?? 'all',
         patient_id: patientId,
         family_member_id: familyMemberId || undefined,
         subject_scope: familyMemberId ? 'FAMILY_MEMBER' : subjectScope,
@@ -1074,6 +1074,7 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
         return Number(b.source_id || 0) - Number(a.source_id || 0);
     });
     const total = allItems.length;
+    const printableTotal = allItems.filter(item => item.timeline_type === 'MEDICINE_PURCHASE' || item.consultation_id).length;
     const totalPages = Math.max(1, Math.ceil(total / filters.pageSize));
     const currentPage = Math.min(filters.page, totalPages);
     const offset = (currentPage - 1) * filters.pageSize;
@@ -1086,6 +1087,7 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
             page_size: filters.pageSize,
             total,
             total_pages: totalPages,
+            printable_total: printableTotal,
             breakdown: {
                 clinical_visits: visitRows.length,
                 medicine_pickups: medicinePurchaseRows.length,
@@ -1097,10 +1099,7 @@ const listPatientVisits = async ({ patientId, filters: rawFilters, actor }) => {
 };
 
 const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters, actor }) => {
-    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for prescription timeline', 400);
-    }
+    const branchId = resolveRecordBranch(rawFilters, actor);
 
     const familyMemberId = toPositiveInt(rawFilters.family_member_id);
     const subjectScope = normalizeSubjectScope(rawFilters.subject_scope);
@@ -1116,7 +1115,7 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
         'a.is_active = 1',
         "a.status = 'Completed'",
         'a.fk_patient_id = ?',
-        'a.fk_branch_id = ?',
+        'a.fk_branch_id = COALESCE(?, a.fk_branch_id)',
     ];
     const consultationParams = [patientId, branchId];
     if (familyMemberId) {
@@ -1197,7 +1196,7 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
         'rb.appointment_id IS NULL',
         "rb.status = 'ACTIVE'",
         'rb.patient_id = ?',
-        'rb.fk_branch_id = ?',
+        'rb.fk_branch_id = COALESCE(?, rb.fk_branch_id)',
     ];
     const billParams = [patientId, branchId];
     if (familyMemberId) {
@@ -1526,7 +1525,7 @@ const fetchBillTimeline = async (filters) => {
 };
 
 const appendDocumentFilters = ({ conditions, params, filters }) => {
-    conditions.push('doc.fk_branch_id = ?');
+    conditions.push('doc.fk_branch_id = COALESCE(?, doc.fk_branch_id)');
     params.push(filters.branchId);
 
     if (filters.fromDate) {
@@ -1674,10 +1673,7 @@ const fetchDocumentTimeline = async (filters) => {
 };
 
 const parseTimelineFilters = (rawFilters = {}, actor = {}) => {
-    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for patient records', 400);
-    }
+    const branchId = resolveRecordBranch(rawFilters, actor);
 
     const fromDate = normalizeDateFilter(rawFilters.from_date, 'from_date');
     const toDate = normalizeDateFilter(rawFilters.to_date, 'to_date');
@@ -1756,7 +1752,7 @@ const assertPatientHistoryScope = async ({ patientId, familyMemberId = null, sub
             SELECT a.appointment_id AS source_id
             FROM tbl_appointments a
             WHERE a.fk_patient_id = ?
-              AND a.fk_branch_id = ?
+              AND a.fk_branch_id = COALESCE(?, a.fk_branch_id)
               AND a.is_active = 1
               AND a.status = 'Completed'
               ${appointmentScope.length ? `AND ${appointmentScope.join(' AND ')}` : ''}
@@ -1768,7 +1764,7 @@ const assertPatientHistoryScope = async ({ patientId, familyMemberId = null, sub
             LEFT JOIN tbl_consultations source_c ON source_c.id = rb.consultation_id
             LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = source_c.appointment_id
             WHERE rb.patient_id = ?
-              AND rb.fk_branch_id = ?
+              AND rb.fk_branch_id = COALESCE(?, rb.fk_branch_id)
               AND rb.bill_type = 'MEDICATION'
               AND rb.appointment_id IS NULL
               AND rb.status = 'ACTIVE'
@@ -1785,16 +1781,12 @@ const assertPatientHistoryScope = async ({ patientId, familyMemberId = null, sub
         ]
     );
 
-    if (accessRows.length === 0) {
-        throw new AppError('Patient records not found for selected branch', 404);
-    }
+    // An existing, authorized patient with no history is a valid empty result.
+    return accessRows.length > 0;
 };
 
 const listPatientHistory = async ({ patientId, filters: rawFilters, actor }) => {
-    const branchId = toPositiveInt(rawFilters.branch_id || actor.selected_branch_id);
-    if (!branchId) {
-        throw new AppError('branch_id is required for patient records', 400);
-    }
+    const branchId = resolveRecordBranch(rawFilters, actor);
 
     const familyMemberId = toPositiveInt(rawFilters.family_member_id);
     const subjectScope = normalizeSubjectScope(rawFilters.subject_scope);
@@ -1809,7 +1801,7 @@ const listPatientHistory = async ({ patientId, filters: rawFilters, actor }) => 
     return listPatientTimeline({
         filters: {
             ...rawFilters,
-            branch_id: branchId,
+            branch_id: branchId ?? 'all',
             patient_id: patientId,
             family_member_id: familyMemberId || undefined,
             subject_scope: familyMemberId ? 'FAMILY_MEMBER' : subjectScope,

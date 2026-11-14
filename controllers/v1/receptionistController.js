@@ -1,4 +1,5 @@
 const { normalizeOptionalAddressFields } = require('../../utils/patientAddressFields');
+const { guardFamilyMemberCreation } = require('../../services/familyMemberDuplicateService');
 const { attachTimingNotices } = require('../../services/slotTimingNoticeService');
 const { assertWeeklyBookingOpen } = require('../../services/bookingWeekdayService');
 const { normalizeBookingPatientUpdates, saveBookingPatientUpdates } = require('../../utils/bookingPatientUpdates');
@@ -1648,6 +1649,10 @@ const createReceptionistPatientFamilyMember = asyncHandler(async (req, res) => {
         if (Number(patientRows[0].is_active) !== 1) {
             throw new AppError('Selected patient is inactive', 409);
         }
+
+        await guardFamilyMemberCreation(connection, {
+            patientId, payload, confirmationToken: req.body?.duplicate_confirmation_token,
+        });
 
         const [activeRows] = await connection.execute(
             `SELECT COUNT(*) AS active_count

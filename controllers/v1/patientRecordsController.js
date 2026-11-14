@@ -37,6 +37,7 @@ const getPatientDetail = asyncHandler(async (req, res) => {
     const result = await getPatientRecordDetail({
         patientId,
         actor: req.user,
+        filters: req.query || {},
     });
 
     return res.status(200).json({

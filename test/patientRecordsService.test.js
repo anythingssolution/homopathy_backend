@@ -21,6 +21,7 @@ const {
     buildMedicinePurchaseVisitRecord,
     listPatientRegistry,
     listPatientVisits,
+    listPatientPrescriptionTimeline,
     parseRegistryFilters,
     parseTimelineFilters,
     sortPrescriptionTimelineItems,
@@ -44,6 +45,35 @@ test('prescription timeline orders consultations and medicine collections by act
     assert.deepEqual(items.slice(2).map((item) => item.source_id), [31, 30]);
 });
 
+test('explicit all-branch registry scope uses shared visit and bill counts without changing the working branch', async () => {
+    registryQueries = [];
+    const actor = { selected_branch_id: 1 };
+    const result = await listPatientRegistry({ filters: { branch_id: 'all', registration_no: 'DTH_550' }, actor });
+    assert.equal(result.filters.branchId, null);
+    assert.equal(actor.selected_branch_id, 1);
+    assert.deepEqual(registryQueries[1].params.slice(0, 2), [null, null]);
+    assert.match(registryQueries[1].sql, /rb\.fk_branch_id = COALESCE\(\?, rb\.fk_branch_id\)/);
+    assert.equal(parseTimelineFilters({ branch_id: 'all', family_member_id: 723 }).familyMemberId, 723);
+    assert.equal(parseTimelineFilters({}, actor).branchId, 1);
+    assert.throws(() => parseTimelineFilters({ branch_id: 'all OR 1=1' }, actor), error => error.statusCode === 400);
+});
+
+test('empty authorized patient history and print timeline return empty lists, but foreign family IDs stay rejected', async () => {
+    registryQueries = [];
+    queryResponder = sql => sql.includes('FROM master_users') ? [{ id: 2960 }] : [];
+    try {
+        const args = { patientId: 2960, actor: { selected_branch_id: 1 }, filters: { branch_id: 'all' } };
+        const visits = await listPatientVisits(args);
+        const timeline = await listPatientPrescriptionTimeline(args);
+        assert.deepEqual(visits.items, []);
+        assert.equal(visits.meta.total, 0);
+        assert.deepEqual(timeline.items, []);
+        await assert.rejects(listPatientVisits({ ...args, filters: { branch_id: 'all', family_member_id: 999 } }), error => error.statusCode === 400);
+        queryResponder = () => [];
+        await assert.rejects(listPatientVisits(args), error => error.statusCode === 404);
+    } finally { queryResponder = null; }
+});
+
 test('patient record branch access accepts an active direct medicine bill without an appointment', async () => {
     registryQueries = [];
     queryResponder = (sql) => {
@@ -65,7 +95,7 @@ test('patient record branch access accepts an active direct medicine bill withou
     const accessQuery = registryQueries.find(({ sql }) => sql.includes('UNION ALL'));
     assert.ok(accessQuery);
     assert.match(accessQuery.sql, /rb\.patient_id = \?/);
-    assert.match(accessQuery.sql, /rb\.fk_branch_id = \?/);
+    assert.match(accessQuery.sql, /rb\.fk_branch_id = COALESCE\(\?, rb\.fk_branch_id\)/);
     assert.match(accessQuery.sql, /rb\.bill_type = 'MEDICATION'/);
     assert.deepEqual(accessQuery.params, [1594, 1, 1594, 1]);
 });
@@ -111,7 +141,7 @@ test('patient registry sorting preserves global registrations and branch-scoped 
         filters: { branch_id: 2, patient_search: 'Rahul', sort_by: 'full_name', sort_order: 'desc', page_size: 10 },
     });
     for (const { sql, params } of registryQueries) {
-        assert.ok(sql.includes("a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = ?"));
+        assert.ok(sql.includes("a.is_active = 1 AND a.status = 'Completed' AND a.fk_branch_id = COALESCE(?, a.fk_branch_id)"));
         assert.ok(sql.includes("p.role = 'PAT' AND p.is_active = 1"));
         assert.ok(!sql.includes('OR p.uuid LIKE ?'));
         assert.equal(params[0], 2);

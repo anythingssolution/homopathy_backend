@@ -3,6 +3,7 @@ const AppError = require('../../utils/AppError');
 const asyncHandler = require('../../utils/asyncHandler');
 const { MAX_ACTIVE_FAMILY_MEMBERS } = require('../../utils/patientFamily');
 const { buildAgeDisplaySql, normalizeAgePayload } = require('../../utils/age');
+const { guardFamilyMemberCreation } = require('../../services/familyMemberDuplicateService');
 
 const toPositiveInt = (value) => {
     const parsed = Number(value);
@@ -101,6 +102,9 @@ const createFamilyMember = asyncHandler(async (req, res) => {
     const payload = normalizeFamilyMemberPayload(req.body);
 
     const familyMemberId = await withTransaction(async (connection) => {
+        await guardFamilyMemberCreation(connection, {
+            patientId: req.user.id, payload, confirmationToken: req.body?.duplicate_confirmation_token,
+        });
         const [activeRows] = await connection.execute(
             `SELECT COUNT(*) AS active_count
              FROM tbl_patient_family_members
