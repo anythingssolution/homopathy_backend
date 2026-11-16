@@ -91,9 +91,12 @@ const {
 } = require('../../middleware/authMiddleware');
 
 const router = express.Router();
+const { getDoctorConsultationPreferences, updateDoctorConsultationPreferences, getLastVisitPrefill } = require('../../controllers/v1/doctor/consultationPrefillController');
 
 const { getBookingWeekdays, saveBookingWeekdays } = require('../../controllers/v1/bookingWeekdayController');
 router.use(authenticate, authorizeRoles('doctor'));
+router.get('/consultation-preferences', getDoctorConsultationPreferences);
+router.put('/consultation-preferences', updateDoctorConsultationPreferences);
 // This doctor-only matrix validates branch access per slot, independently of the working branch.
 router.get('/booking-weekdays', getBookingWeekdays);
 router.put('/booking-weekdays', saveBookingWeekdays);
@@ -167,6 +170,7 @@ router.delete('/leaves/:leave_id', removeDoctorLeave);
 router.patch('/patients/:patient_id', updateDoctorPatient);
 router.post('/consultations', createConsultation);
 router.get('/consultations/:appointment_id/repeat-draft', authorizeAppointmentBranchScope, getRepeatTreatmentDraft);
+router.get('/consultations/:appointment_id/last-visit-prefill', authorizeAppointmentBranchScope, getLastVisitPrefill);
 router.get('/consultations/:appointment_id/repeat-options', authorizeAppointmentBranchScope, getRepeatTreatmentOptions);
 router.put('/consultations/:appointment_id/test-findings', authorizeAppointmentBranchScope, saveConsultationTestFindings);
 router.get('/consultations/prescription-suggestions', getPrescriptionSuggestions);
