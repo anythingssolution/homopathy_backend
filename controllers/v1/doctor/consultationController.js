@@ -179,6 +179,7 @@ const createConsultation = asyncHandler(async (req, res) => {
         allergiesHistory,
         gynecologicalHistory,
         personalSocialHistory,
+        lifestyleHistory,
         generalExamination,
         systematicExamination,
         differentialDiagnosis,
@@ -451,6 +452,13 @@ const createConsultation = asyncHandler(async (req, res) => {
             createdConsultationId = consultationResult.insertId;
         }
 
+        if (lifestyleHistory !== undefined) {
+            await connection.execute(
+                'UPDATE tbl_consultations SET lifestyle_history = ? WHERE id = ?',
+                [lifestyleHistory ? JSON.stringify(lifestyleHistory) : null, createdConsultationId]
+            );
+        }
+
         if (Array.isArray(investigations)) {
             await replaceAppointmentInvestigations(
                 (sql, params) => connection.execute(sql, params),
@@ -482,7 +490,9 @@ const createConsultation = asyncHandler(async (req, res) => {
                     true
                 );
 
-                if (medicineTextId && (variantValue || Number(medication.variant_unit_price) > 0)) {
+                // A saved manual name must also be manageable from Product Master,
+                // even before the doctor supplies a packing or a price.
+                if (medicineTextId) {
                     const qty = medication.quantity || displayParts.quantity || 1;
                     const unitPrice = medication.variant_unit_price != null
                         ? medication.variant_unit_price
@@ -789,7 +799,7 @@ const getRepeatTreatmentAppointment = async (req) => {
     return appointment;
 };
 
-const buildRepeatTreatmentDraft = async (sourceAppointmentId) => {
+const buildRepeatTreatmentDraft = async (sourceAppointmentId, { includePreview = false } = {}) => {
     const sourceConsultation = await getConsultationAggregateByAppointmentId(sourceAppointmentId);
     if (!sourceConsultation) {
         throw new AppError('Previous consultation not found', 404);
@@ -804,6 +814,12 @@ const buildRepeatTreatmentDraft = async (sourceAppointmentId) => {
     );
 
     return {
+            ...(includePreview ? {
+                prescription_preview: {
+                    appointment: await getDoctorAppointmentById(sourceAppointmentId),
+                    consultation: sourceConsultation,
+                },
+            } : {}),
             source_consultation_id: sourceConsultation.consultation_id,
             source_appointment_id: sourceConsultation.appointment_id,
             medication_duration_days: sourceConsultation.medication_duration_days,
@@ -832,7 +848,7 @@ const getRepeatTreatmentOptions = asyncHandler(async (req, res) => {
     const sources = await listRepeatTreatmentSources(appointment);
     const data = await Promise.all(sources.map(async (source) => ({
         ...source,
-        ...await buildRepeatTreatmentDraft(source.appointment_id),
+        ...await buildRepeatTreatmentDraft(source.appointment_id, { includePreview: true }),
     })));
     return res.status(200).json({ success: true, message: 'Previous prescription options fetched successfully', data });
 });

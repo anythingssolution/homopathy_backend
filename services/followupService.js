@@ -637,7 +637,7 @@ const createNextFollowUpIfNeeded = async ({
 
 const listRepeatTreatmentSources = async (appointment) => {
     const subject = buildFollowUpHistorySubjectScope(appointment.fk_patient_family_member_id, 'a.fk_patient_family_member_id');
-    return query(`SELECT c.id AS consultation_id, a.appointment_id, a.appointment_date,
+    const sql = `SELECT c.id AS consultation_id, a.appointment_id, a.appointment_date,
             COALESCE(a.actual_completed_at, c.doctor_finalized_at, c.created_at) AS consulted_at,
             b.branch_name, t.treatment_name,
             CASE WHEN a.appointment_id = ? THEN 1 ELSE 0 END AS is_linked_parent
@@ -652,12 +652,27 @@ const listRepeatTreatmentSources = async (appointment) => {
           ${subject.sql}
           AND EXISTS (SELECT 1 FROM tbl_consultation_medications cm
               WHERE cm.consultation_id = c.id AND UPPER(COALESCE(cm.added_by_role, 'DOCTOR')) <> 'MEDICAL')
-        ORDER BY consulted_at DESC, c.id DESC LIMIT 3`, [
+        `;
+    const params = [
         appointment.parent_appointment_id || null,
         Number(appointment.fk_patient_id || appointment.patient_id), Number(appointment.appointment_id),
         appointment.appointment_date, appointment.actual_started_at || appointment.actual_completed_at || null,
         ...subject.params,
+    ];
+    const [recent, first] = await Promise.all([
+        query(`${sql} ORDER BY consulted_at DESC, c.id DESC LIMIT 2`, params),
+        query(`${sql} ORDER BY consulted_at ASC, c.id ASC LIMIT 1`, params),
     ]);
+    const seen = new Set();
+    return [...recent, ...first].filter(source => {
+        const id = Number(source.consultation_id);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+    }).map(source => ({
+        ...source,
+        is_first_prescription: Number(source.consultation_id) === Number(first[0]?.consultation_id),
+    }));
 };
 
 const findRepeatTreatmentSourceAppointmentId = async (appointment) => {

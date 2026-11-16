@@ -1,3 +1,4 @@
+const { normalizeLifestyleHistory, readLifestyleHistory } = require('../../../utils/lifestyleHistory');
 const { consultationPositionSql } = require('../../../utils/consultationPosition');
 const { query, withTransaction } = require('../../../config/db');
 const AppError = require('../../../utils/AppError');
@@ -180,6 +181,7 @@ const DOCTOR_APPOINTMENT_SELECT = `SELECT
     COALESCE(NULLIF(c.allergies_history, ''), v.allergies_history) AS allergies_history,
     COALESCE(NULLIF(c.gynecological_history, ''), v.gynecological_history) AS gynecological_history,
     COALESCE(NULLIF(c.personal_social_history, ''), v.personal_social_history) AS personal_social_history,
+    c.lifestyle_history,
     COALESCE(NULLIF(c.general_examination, ''), v.general_examination) AS general_examination,
     COALESCE(NULLIF(c.systematic_examination, ''), v.systematic_examination) AS systematic_examination,
     COALESCE(NULLIF(c.differential_diagnosis, ''), v.differential_diagnosis) AS differential_diagnosis,
@@ -426,8 +428,8 @@ const upsertMasterTextMedicine = async (connection, medicineValue, isDoctorManua
 };
 
 const upsertDoctorManualVariant = async (connection, medicineTextId, medicineValue, variantLabel, unitPrice) => {
-    const packing = String(variantLabel || '').trim();
-    if (!medicineTextId || !packing) {
+    const packing = String(variantLabel || '').trim() || 'N/A';
+    if (!medicineTextId) {
         return;
     }
 
@@ -446,14 +448,21 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
         : null;
 
     const existingResult = await connection.execute(
-        `SELECT id, source_type, product_name, normalized_product_name, packing, size_or_weight, is_active
+        `SELECT id, medicine_text_id, source_type, product_name, normalized_product_name, packing, size_or_weight, is_active
          FROM master_medical_products
-         WHERE normalized_product_name = ?`,
-        [normalizedProductName]
+         WHERE medicine_text_id = ? OR normalized_product_name = ?`,
+        [medicineTextId, normalizedProductName]
     );
     const existingRows = Array.isArray(existingResult?.[0]) ? existingResult[0] : existingResult;
+    const products = Array.isArray(existingRows) ? existingRows : [];
 
-    const existingProduct = (Array.isArray(existingRows) ? existingRows : [])
+    // A stale consultation or repeat must not undo a Product Master deletion.
+    // Restoring an entirely inactive medicine is an explicit master edit.
+    if (products.length && products.every((row) => Number(row.is_active) !== 1)) {
+        return;
+    }
+
+    const existingProduct = products
         .find((row) => hasSameMedicalProductIdentity(row, productIdentity));
     if (existingProduct) {
         if (existingProduct.source_type === 'DOCTOR_MANUAL' && Number(existingProduct.is_active) === 1) {
@@ -463,7 +472,7 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
                      product_name = ?,
                      packing = ?,
                      mrp_rate = COALESCE(?, mrp_rate)
-                 WHERE id = ?`,
+                 WHERE id = ? AND is_active = 1`,
                 [medicineTextId, productName, packing, mrpRate, existingProduct.id]
             );
         }
@@ -476,11 +485,7 @@ const upsertDoctorManualVariant = async (connection, medicineTextId, medicineVal
           normalized_product_name, dedupe_key, is_active)
          VALUES (?, 'DOCTOR_MANUAL', ?, ?, ?, ?, ?, 1)
          ON DUPLICATE KEY UPDATE
-             medicine_text_id = VALUES(medicine_text_id),
-             product_name = VALUES(product_name),
-             packing = VALUES(packing),
-             mrp_rate = COALESCE(VALUES(mrp_rate), mrp_rate),
-             is_active = 1`,
+             id = LAST_INSERT_ID(id)`,
         [medicineTextId, productName, packing, mrpRate, normalizedProductName, dedupeKey]
     );
 };
@@ -739,6 +744,7 @@ const mapConsultationResponse = (consultationRow, medicationRows, testRows = [])
         allergies_history: consultationRow.allergies_history,
         gynecological_history: consultationRow.gynecological_history,
         personal_social_history: consultationRow.personal_social_history,
+        lifestyle_history: readLifestyleHistory(consultationRow.lifestyle_history),
         general_examination: consultationRow.general_examination,
         systematic_examination: consultationRow.systematic_examination,
         differential_diagnosis: consultationRow.differential_diagnosis,
@@ -812,6 +818,7 @@ const getConsultationAggregateByAppointmentId = async (appointmentId) => {
             COALESCE(NULLIF(c.allergies_history, ''), v.allergies_history) AS allergies_history,
             COALESCE(NULLIF(c.gynecological_history, ''), v.gynecological_history) AS gynecological_history,
             COALESCE(NULLIF(c.personal_social_history, ''), v.personal_social_history) AS personal_social_history,
+    c.lifestyle_history,
             COALESCE(NULLIF(c.general_examination, ''), v.general_examination) AS general_examination,
             COALESCE(NULLIF(c.systematic_examination, ''), v.systematic_examination) AS systematic_examination,
             COALESCE(NULLIF(c.differential_diagnosis, ''), v.differential_diagnosis) AS differential_diagnosis,
@@ -1284,6 +1291,7 @@ const validateConsultationPayload = (body) => {
     const familyHistory = toNullableText(body?.family_history ?? body?.familyHistory);
     const allergiesHistory = toNullableText(body?.allergies_history ?? body?.allergiesHistory);
     const gynecologicalHistory = toNullableText(body?.gynecological_history ?? body?.gynecologicalHistory);
+    const lifestyleHistory = normalizeLifestyleHistory(body?.lifestyle_history);
     const personalSocialHistory = toNullableText(body?.personal_social_history ?? body?.personalSocialHistory);
     const generalExamination = toNullableText(body?.general_examination ?? body?.generalExamination);
     const systematicExamination = toNullableText(body?.systematic_examination ?? body?.systematicExamination);
@@ -1529,7 +1537,7 @@ const validateConsultationPayload = (body) => {
         universalRemarkHi,
     ].some(Boolean);
 
-    const hasMeaningfulStructuredData = medications.length > 0 || tests.length > 0;
+    const hasMeaningfulStructuredData = medications.length > 0 || tests.length > 0 || Boolean(lifestyleHistory);
 
     if (hasNoAdvice && !hasMeaningfulTextField && !hasMeaningfulStructuredData) {
         throw new AppError('Please enter at least one consultation detail before saving', 400);
@@ -1561,6 +1569,7 @@ const validateConsultationPayload = (body) => {
         allergiesHistory,
         gynecologicalHistory,
         personalSocialHistory,
+        lifestyleHistory,
         generalExamination,
         systematicExamination,
         differentialDiagnosis,

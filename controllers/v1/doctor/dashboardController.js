@@ -456,9 +456,7 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             `SELECT id, UPPER(medicine_value) AS medicine_value, normalized_value, is_active, is_doctor_manual, created_at, updated_at
              FROM master_text_medicines mtm
              WHERE mtm.is_active = 1
-               AND (
-                    mtm.is_doctor_manual = 1
-                    OR EXISTS (
+               AND EXISTS (
                     SELECT 1
                     FROM master_medical_products mmp
                     WHERE mmp.is_active = 1
@@ -469,7 +467,6 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
                                 AND mmp.normalized_product_name = mtm.normalized_value
                            )
                       )
-                    )
                )
              ORDER BY medicine_value ASC`
         ),
@@ -607,7 +604,7 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
             defaultMasterProduct?.mrp_rate,
             defaultMasterProduct?.price_max,
             defaultMasterProduct?.price_min,
-            historicalDefaultProduct?.historical_unit_price,
+            defaultMasterProduct ? historicalDefaultProduct?.historical_unit_price : null,
         ].map(Number).find((price) => Number.isFinite(price) && price > 0) || null;
         const medicalProducts = allMedicalProducts.filter((product) => (
             normalizeMasterValue(product.packing || product.size_or_weight) !== 'n/a'
@@ -631,21 +628,8 @@ const getDoctorTextMedicineMasters = asyncHandler(async (_req, res) => {
                 historical_price_conflict: historical.historical_price_conflict,
             };
         });
-        historicalByVariant.forEach((historical) => {
-            enrichedMedicalProducts.push({
-                id: null,
-                medicine_text_id: medicine.id,
-                source_type: 'DOCTOR_MANUAL_HISTORY',
-                product_name: medicine.medicine_value,
-                packing: historical.variant_value,
-                mrp_rate: null,
-                price_min: null,
-                price_max: null,
-                historical_unit_price: historical.historical_unit_price,
-                historical_price_conflict: historical.historical_price_conflict,
-                is_active: 1,
-            });
-        });
+        // History may enrich an active product's price, but cannot invent a
+        // selectable variant after it has been removed from Product Master.
         const canonicalProduct = [...enrichedMedicalProducts].sort((left, right) => {
             const leftPriority = sourcePriority[left.source_type] || 99;
             const rightPriority = sourcePriority[right.source_type] || 99;

@@ -65,6 +65,7 @@ test('manual medicine without a visible variant can retain its default price', a
     const connection = {
         execute: async (sql, params) => {
             calls.push({ sql, params });
+            if (sql.includes('FROM master_medical_products')) return [[]];
             return [{ affectedRows: 1 }];
         },
     };
@@ -74,6 +75,43 @@ test('manual medicine without a visible variant can retain its default price', a
     assert.equal(calls.length, 2);
     assert.equal(calls[1].params[2], 'N/A');
     assert.equal(calls[1].params[3], 85);
+});
+
+test('a name-only manual medicine gets a product with unspecified packing and unknown price', async () => {
+    const calls = [];
+    const connection = { execute: async (sql, params) => {
+        calls.push({ sql, params });
+        return sql.includes('FROM master_medical_products') ? [[]] : [{ affectedRows: 1 }];
+    } };
+    await upsertDoctorManualVariant(connection, 1004, 'BT ANTI DANDRUFF OIL + 74Q', '', null);
+    assert.match(calls[1].sql, /INSERT INTO master_medical_products/);
+    assert.deepEqual(calls[1].params.slice(0, 4), [1004, 'BT ANTI DANDRUFF OIL + 74Q', 'N/A', null]);
+    assert.doesNotMatch(calls[1].sql.split('ON DUPLICATE KEY UPDATE')[1], /is_active\s*=\s*1/);
+});
+
+test('saving a stale manual name cannot restore its deleted product or invent a replacement variant', async () => {
+    const calls = [];
+    const connection = { execute: async (sql, params) => {
+        calls.push({ sql, params });
+        return [[{ id: 44, medicine_text_id: 1004, source_type: 'DOCTOR_MANUAL',
+            product_name: 'BT ANTI DANDRUFF OIL + 74Q', normalized_product_name: 'bt anti dandruff oil + 74q',
+            packing: '100 ML', size_or_weight: null, is_active: 0 }]];
+    } };
+    await upsertDoctorManualVariant(connection, 1004, 'BT ANTI DANDRUFF OIL + 74Q', '100 ML', 200);
+    await upsertDoctorManualVariant(connection, 1004, 'BT ANTI DANDRUFF OIL + 74Q', '', 200);
+    assert.equal(calls.length, 2);
+    assert.ok(calls.every(call => !/INSERT|UPDATE/.test(call.sql)));
+});
+
+test('a deleted variant stays deleted when another packing of the same medicine is still active', async () => {
+    const rows = [
+        { id: 1, product_name: 'DROP', packing: '100 ML', is_active: 0, source_type: 'DOCTOR_MANUAL' },
+        { id: 2, product_name: 'DROP', packing: '200 ML', is_active: 1, source_type: 'DOCTOR_MANUAL' },
+    ];
+    const calls = [];
+    const connection = { execute: async (sql, params) => { calls.push({ sql, params }); return [rows]; } };
+    await upsertDoctorManualVariant(connection, 1, 'DROP', '100 ML', 200);
+    assert.equal(calls.length, 1);
 });
 
 test('manual product master skips an existing product variant across sources', async () => {

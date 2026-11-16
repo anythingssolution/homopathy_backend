@@ -7,11 +7,15 @@ process.env.JWT_SECRET = 'repeat-treatment-options-test';
 process.env.DB_HOST = '127.0.0.1'; process.env.DB_USER = 'test'; process.env.DB_NAME = 'test';
 const AppError = require('../utils/AppError');
 const db = require('../config/db');
-let sqlCall;
-db.query = async (sql, params) => { sqlCall = { sql, params }; return []; };
+let sqlCall, sqlCalls = [], sourceRows = [];
+db.query = async (sql, params) => {
+  sqlCall = { sql, params }; sqlCalls.push(sqlCall);
+  return sql.includes('ORDER BY consulted_at ASC') ? sourceRows.slice(-1) : sourceRows.slice(0, 2);
+};
 const { listRepeatTreatmentSources } = require('../services/followupService');
 
-test('last-three lookup scopes to the same family subject, excludes current/future/incomplete visits and medical-only records', async () => {
+test('latest-two plus first lookup preserves family, completed, date and doctor-medication eligibility', async () => {
+  sqlCalls = [];
   await listRepeatTreatmentSources({ appointment_id: 300, fk_patient_id: 7, fk_patient_family_member_id: 11, parent_appointment_id: 100,
     appointment_date: '2026-10-22', actual_started_at: '2026-10-22 12:00:00' });
   assert.match(sqlCall.sql, /a\.fk_patient_id = \? AND a\.appointment_id <> \?/);
@@ -20,8 +24,22 @@ test('last-three lookup scopes to the same family subject, excludes current/futu
   assert.match(sqlCall.sql, /a\.appointment_date <= \?/);
   assert.match(sqlCall.sql, /<= COALESCE\(\?, NOW\(\)\)/);
   assert.match(sqlCall.sql, /EXISTS[\s\S]*added_by_role[\s\S]*<> 'MEDICAL'/);
-  assert.match(sqlCall.sql, /ORDER BY consulted_at DESC, c\.id DESC LIMIT 3/);
+  assert.match(sqlCalls[0].sql, /ORDER BY consulted_at DESC, c\.id DESC LIMIT 2/);
+  assert.match(sqlCalls[1].sql, /ORDER BY consulted_at ASC, c\.id ASC LIMIT 1/);
   assert.deepEqual(sqlCall.params, [100, 7, 300, '2026-10-22', '2026-10-22 12:00:00', 11]);
+});
+test('picker returns latest two then first, with no duplicates for zero to three prescriptions', async () => {
+  for (const [ids, expected] of [
+    [[], []], [[10], [10]], [[20,10], [20,10]], [[30,20,10], [30,20,10]],
+    [[50,40,30,20,10], [50,40,10]],
+  ]) {
+    sourceRows = ids.map(id => ({ consultation_id: id, appointment_id: id * 10 }));
+    const result = await listRepeatTreatmentSources({ appointment_id: 999, fk_patient_id: 7, appointment_date: '2026-11-16' });
+    assert.deepEqual(result.map(row => row.consultation_id), expected);
+    assert.equal(result.filter(row => row.is_first_prescription).length, ids.length ? 1 : 0);
+    if (ids.length) assert.equal(result.find(row => row.is_first_prescription).consultation_id, ids.at(-1));
+  }
+  sourceRows = [];
 });
 test('account-holder prescription lookup excludes all family members without restricting historical clinic branch', async () => {
   await listRepeatTreatmentSources({ appointment_id: 300, fk_patient_id: 7, appointment_date: '2026-10-22' });
@@ -74,11 +92,16 @@ for (const count of [0, 1, 2, 3]) test(`options endpoint handles ${count} availa
     assert.equal(item.medications[1].amount, 120);
     assert.equal(item.medications[1].is_manual_entry, 1);
     assert.equal(item.medication_duration_days, 15);
+    assert.equal(item.prescription_preview.appointment.appointment_id, item.source_appointment_id);
+    assert.equal(item.prescription_preview.consultation.consultation_id, item.source_consultation_id);
+    assert.equal(item.prescription_preview.consultation.medications.length, 3, 'preview retains the complete saved prescription, including medical additions');
   }
 });
 test('selected prescription loads that source only; the existing default endpoint still selects its linked source', async () => {
   const { invoke, calls } = controller();
-  assert.equal((await invoke('getRepeatTreatmentDraft', { source_consultation_id: '18' })).data.source_appointment_id, 180);
+  const selected = await invoke('getRepeatTreatmentDraft', { source_consultation_id: '18' });
+  assert.equal(selected.data.source_appointment_id, 180);
+  assert.equal(selected.data.prescription_preview, undefined, 'preview data must not change the treatment-copy contract');
   assert.equal((await invoke('getRepeatTreatmentDraft')).data.source_appointment_id, 190);
   assert.deepEqual(calls.filter(c => c.kind === 'aggregate').map(c => c.id), [180, 190]);
 });
