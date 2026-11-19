@@ -9,6 +9,7 @@ test('dispensary register reconciles bill totals and keeps old pending cases wit
     const schemas = {
         tbl_appointments:'appointment_id INT PRIMARY KEY,fk_patient_id INT,fk_patient_family_member_id INT NULL,fk_branch_id INT,fk_treatment_id INT,fk_slot_id INT,appointment_date DATE,is_active INT DEFAULT 1,status VARCHAR(30),actual_completed_at DATETIME,original_token_number INT,current_token_number INT',
         tbl_consultations:'id INT PRIMARY KEY,appointment_id INT,doctor_id INT,workflow_status VARCHAR(40),sent_to_medical_at DATETIME,created_at DATETIME',
+        master_clinic_branches:'id INT PRIMARY KEY,branch_name VARCHAR(80)',
         master_users:'id INT PRIMARY KEY,uuid VARCHAR(30),full_name VARCHAR(50),mobile_no VARCHAR(20)',
         tbl_patient_family_members:'id INT PRIMARY KEY,full_name VARCHAR(50)',
         master_treatments:'id INT PRIMARY KEY,treatment_name VARCHAR(50)',

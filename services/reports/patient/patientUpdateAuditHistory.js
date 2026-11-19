@@ -1,12 +1,14 @@
 const { buildTimestampDateRangeScope, query } = require('../shared');
+const { applyPatientReportMembership } = require('./shared');
 
-const getPatientUpdateAuditHistoryReport = async ({ fromDate, toDate }) => {
-    const { whereClause, params } = buildTimestampDateRangeScope({
+const getPatientUpdateAuditHistoryReport = async (filters) => {
+    const { fromDate, toDate } = filters;
+    const { whereClause, params } = applyPatientReportMembership(buildTimestampDateRangeScope({
         alias: 'l',
         fromDate,
         toDate,
         branchAlias: null,
-    });
+    }), filters);
 
     return query(
         `SELECT

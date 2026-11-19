@@ -20,12 +20,20 @@ const {
     authenticate,
     authorizeRoles,
     authorizeRolesOrModuleAccess,
-    enforceSelectedBranchScope,
 } = require('../../middleware/authMiddleware');
+const { enforceReportBranchScope, authorizeReportEntity } = require('../../middleware/reportBranchScope');
 
 const router = express.Router();
 
-router.use(authenticate, authorizeRolesOrModuleAccess(['doctor', 'receptionist', 'medical'], 'RECEPTION'), enforceSelectedBranchScope);
+router.use(authenticate, authorizeRolesOrModuleAccess(['doctor', 'receptionist', 'medical'], 'RECEPTION'), enforceReportBranchScope);
+
+router.get('/branches', (req, res) => res.json({ success: true, data: { branches: req.reportScope?.availableBranches || [] } }));
+router.get('/prescriptions/:appointment_id', authorizeRoles('doctor'), authorizeReportEntity('appointment'), require('../../controllers/v1/reports/prescriptionReportController').getReportPrescription);
+router.get('/medical-prescriptions/:consultation_id', authorizeRoles('doctor'), authorizeReportEntity('consultation'), require('../../controllers/v1/medicalController').getMedicalPrescription);
+router.get('/bills/:bill_id', authorizeRoles('doctor'), authorizeReportEntity('bill'), (req, res, next) => {
+    req.query.billing_scope = 'branch';
+    return require('../../controllers/v1/billController').getBillById(req, res, next);
+});
 
 router.get('/appointments', getAppointmentReportsController);
 router.get('/appointments/list', authorizeRoles('doctor'), getAppointmentListController);

@@ -4,6 +4,7 @@ const { buildAgeDisplaySql } = require('../../../utils/age');
 const getRepeatBillTestRows = async (filters) => {
     const { whereClause, params } = buildTimestampDateRangeScope({
         alias: 'b', fromDate: filters.fromDate, toDate: filters.toDate, branchId: filters.branchId,
+        branchIds: filters.branchIds,
     });
     return query(`SELECT
         CONCAT('bill-test-', bi.id) AS consultation_test_id,

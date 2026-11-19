@@ -9,6 +9,7 @@ const getCourierRegisterReport = async (filters) => {
         toDate: filters.toDate,
         branchAlias: 'b',
         branchId: filters.branchId,
+    branchIds: filters.branchIds,
     });
 
     const dispensed = await query(
@@ -101,7 +102,7 @@ const getCourierRegisterReport = async (filters) => {
          ORDER BY b.created_at DESC, b.id DESC`,
         params
     );
-    const scope = buildTimestampDateRangeScope({ alias: 'c', column: 'updated_at', fromDate: filters.fromDate, toDate: filters.toDate, branchAlias: 'a', branchId: filters.branchId });
+    const scope = buildTimestampDateRangeScope({ alias: 'c', column: 'updated_at', fromDate: filters.fromDate, toDate: filters.toDate, branchAlias: 'a', branchId: filters.branchId, branchIds: filters.branchIds });
     const cancelled = await query(`SELECT c.id AS consultation_id, c.appointment_id,
         a.fk_patient_id, a.fk_branch_id, a.auid, p.uuid AS patient_uuid,
         COALESCE(fm.full_name, p.full_name) AS patient_full_name, p.mobile_no AS patient_mobile_no,

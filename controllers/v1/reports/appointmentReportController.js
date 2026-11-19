@@ -22,7 +22,8 @@ const getBookedVsConsultedController = asyncHandler(async (req, res) => {
         year: req.query.year || new Date().getFullYear(),
         month: req.query.month || null,
         date: req.query.date || null,
-        branchId: branchId && !isNaN(branchId) ? branchId : null,
+        branchId: req.reportScope ? req.reportScope.branchId : branchId && !isNaN(branchId) ? branchId : null,
+        ...(req.reportScope ? { branchIds: req.reportScope.branchIds } : {}),
     };
     const reportData = await getBookedVsConsultedReport(filters);
 

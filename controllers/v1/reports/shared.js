@@ -19,7 +19,8 @@ const parseReportFilters = (req) => {
     if (!fromDate) fromDate = today;
     if (!toDate) toDate = today;
 
-    const branchId = req.query.branch_id !== undefined && req.query.branch_id !== '' ? toPositiveInt(req.query.branch_id) : null;
+    const branchId = req.reportScope ? req.reportScope.branchId
+        : req.query.branch_id !== undefined && req.query.branch_id !== '' ? toPositiveInt(req.query.branch_id) : null;
 
     if (!isValidDateString(fromDate)) {
         throw new AppError('from/from_date must be in YYYY-MM-DD format', 400);
@@ -37,6 +38,7 @@ const parseReportFilters = (req) => {
         fromDate,
         toDate,
         branchId,
+        ...(req.reportScope ? { branchIds: req.reportScope.branchIds, allClinicBranches: req.reportScope.allClinicBranches } : {}),
         includeUnassigned: req.user?.role === 'doctor' && req.query.billing_scope === 'branch' && Number(req.selectedBranchId) > 0,
     };
 };
@@ -46,6 +48,7 @@ const buildReportResponseMeta = ({ filters, reports, report }) => ({
         from: filters.fromDate,
         to: filters.toDate,
         branch_id: filters.branchId,
+        ...(filters.branchIds ? { branch_ids: filters.branchIds, report_scope: 'independent' } : {}),
     },
     report_keys: reports && typeof reports === 'object' ? Object.keys(reports) : (report ? ['data'] : []),
 });

@@ -1,3 +1,4 @@
+const { buildReportBranchSql, requireReportBranch } = require('../utils/reportBranchSql');
 const { query } = require('../config/db');
 const AppError = require('../utils/AppError');
 
@@ -36,19 +37,23 @@ const saveDiscoverySource = async (appointmentId, patientId, body) => {
     [subject.subject_key, patientId, subject.fk_patient_family_member_id || null, subject.appointment_id, answer.source_code, answer.other_detail]);
     return getDiscoverySource(appointmentId, patientId);
 };
-const getPatientSourceReport = async ({ branchId, fromDate, toDate }) => {
-    if (!Number.isSafeInteger(Number(branchId)) || Number(branchId) <= 0) throw new AppError('Please select a branch', 400);
+const getPatientSourceReport = async (filters) => {
+    const { fromDate, toDate } = filters;
+    requireReportBranch(filters);
+    const branch = buildReportBranchSql('a.fk_branch_id', filters);
     const patients = await query(`SELECT d.subject_key, d.source_code, d.other_detail,
         DATE_FORMAT(d.created_at, '%Y-%m-%d') AS answered_on,
         DATE_FORMAT(a.appointment_date, '%Y-%m-%d') AS booking_date,
         p.id AS patient_id, p.uuid AS patient_uuid, p.mobile_no AS patient_mobile_no,
-        d.family_member_id, COALESCE(fm.full_name, p.full_name) AS patient_full_name
+        d.family_member_id, COALESCE(fm.full_name, p.full_name) AS patient_full_name,
+        a.fk_branch_id, br.branch_name
         FROM tbl_patient_discovery_sources d
         JOIN tbl_appointments a ON a.appointment_id = d.appointment_id
         JOIN master_users p ON p.id = d.patient_id
+        LEFT JOIN master_clinic_branches br ON br.id = a.fk_branch_id
         LEFT JOIN tbl_patient_family_members fm ON fm.id = d.family_member_id
-        WHERE a.fk_branch_id = ? AND d.created_at >= ? AND d.created_at < DATE_ADD(?, INTERVAL 1 DAY)
-        ORDER BY d.created_at DESC, d.subject_key`, [branchId, fromDate, toDate]);
+        WHERE ${branch.sql} AND d.created_at >= ? AND d.created_at < DATE_ADD(?, INTERVAL 1 DAY)
+        ORDER BY d.created_at DESC, d.subject_key`, [...branch.params, fromDate, toDate]);
     return { patients, sources: Object.entries(SOURCE_LABELS).map(([code, label]) => ({ code, label, count: patients.filter(p => p.source_code === code).length })) };
 };
 module.exports = { SOURCE_LABELS, validateAnswer, getOwnedSubject, getDiscoverySource, saveDiscoverySource, getPatientSourceReport };

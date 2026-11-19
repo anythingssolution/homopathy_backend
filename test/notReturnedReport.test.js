@@ -33,7 +33,7 @@ test('not-returned report uses latest visit, separate family subjects and calend
     await assert.rejects(getNotReturnedReport({ branchId: null }), /select a branch/);
     await getNotReturnedReport({ branchId: 2 });
     assert.equal(captured.params[2], 2);
-    assert.match(captured.sql, /a.fk_branch_id=\? AND a.is_active=1 AND a.status='Completed'/);
+    assert.match(captured.sql, /a.fk_branch_id\s*=\s*\? AND a.is_active=1 AND a.status='Completed'/);
     assert.match(captured.sql, /newer.fk_patient_family_member_id <=> a.fk_patient_family_member_id/);
     assert.match(captured.sql, /pf.status IN \('PENDING','NOTIFIED','CONFIRMED_BOOKED'\)/);
     assert.match(captured.sql, /mb.appointment_id IS NULL/);

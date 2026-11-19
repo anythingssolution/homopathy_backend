@@ -77,12 +77,16 @@ const resolveReportSource = async ({ sourceType, sourceId }) => {
     return rows[0] || null;
 };
 
-const saveTestReportSendStatus = async ({ sourceType, sourceId, status, reason, actorUserId, selectedBranchId }) => {
+const saveTestReportSendStatus = async ({ sourceType, sourceId, status, reason, actorUserId, selectedBranchId, allowedBranchIds }) => {
     const payload = normalizeStatusPayload({ sourceType, sourceId, status, reason });
     const source = await resolveReportSource(payload);
 
     if (!source) {
         throw new AppError('Test report source not found', 404);
+    }
+
+    if (Array.isArray(allowedBranchIds) && !allowedBranchIds.includes(Number(source.fk_branch_id))) {
+        throw new AppError('You do not have access to this report branch', 403);
     }
 
     if (selectedBranchId && Number(source.fk_branch_id) !== Number(selectedBranchId)) {

@@ -1,3 +1,4 @@
+const { buildReportBranchSql } = require('../../../utils/reportBranchSql');
 const { query } = require('./shared');
 
 const CONSULTED_SQL = "(a.status = 'Completed' OR c.id IS NOT NULL)";
@@ -42,16 +43,16 @@ const getBookedVsConsultedReport = async (filters) => {
     const selectedYear = Number(filters.year) || new Date().getFullYear();
     const selectedMonth = filters.month ? Number(filters.month) : null;
     const selectedDate = filters.date ? String(filters.date).trim() : null;
-    const branchId = filters.branchId ? Number(filters.branchId) : null;
+    const branch = buildReportBranchSql('a.fk_branch_id', filters);
 
     // 1. If a specific single date is selected (Level 3 - Patient List)
     if (selectedDate && /^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
         let whereSql = `WHERE a.appointment_date = ?`;
         let params = [selectedDate];
 
-        if (branchId) {
-            whereSql += ` AND a.fk_branch_id = ?`;
-            params.push(branchId);
+        if (filters.branchId || Array.isArray(filters.branchIds)) {
+            whereSql += ` AND ${branch.sql}`;
+            params.push(...branch.params);
         }
 
         const patients = await query(
@@ -118,9 +119,9 @@ const getBookedVsConsultedReport = async (filters) => {
         let whereSql = `WHERE a.appointment_date >= ? AND a.appointment_date <= ?`;
         let params = [startDate, endDate];
 
-        if (branchId) {
-            whereSql += ` AND a.fk_branch_id = ?`;
-            params.push(branchId);
+        if (filters.branchId || Array.isArray(filters.branchIds)) {
+            whereSql += ` AND ${branch.sql}`;
+            params.push(...branch.params);
         }
 
         const dailyRows = await query(
@@ -207,10 +208,10 @@ const getBookedVsConsultedReport = async (filters) => {
     let whereSql = `WHERE a.appointment_date >= ? AND a.appointment_date <= ?`;
     let params = [startDate, endDate];
 
-    if (branchId) {
-        whereSql += ` AND a.fk_branch_id = ?`;
-        params.push(branchId);
-    }
+    if (filters.branchId || Array.isArray(filters.branchIds)) {
+            whereSql += ` AND ${branch.sql}`;
+            params.push(...branch.params);
+        }
 
     const monthlyRows = await query(
         `SELECT

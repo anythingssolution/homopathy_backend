@@ -1,4 +1,5 @@
 const { query } = require('../shared');
+const { buildReportBranchSql } = require('../../../utils/reportBranchSql');
 
 const APPOINTMENT_JOIN = 'LEFT JOIN tbl_appointments a ON a.appointment_id = b.appointment_id';
 
@@ -9,9 +10,10 @@ const buildBillingReportScope = (filters) => {
     ];
     const params = [filters.fromDate, filters.toDate];
 
-    if (filters.branchId) {
-        conditions.push(`b.fk_branch_id = ?`);
-        params.push(filters.branchId);
+    if (filters.branchId || Array.isArray(filters.branchIds)) {
+        const branch = buildReportBranchSql('b.fk_branch_id', filters);
+        conditions.push(branch.sql);
+        params.push(...branch.params);
     }
 
     return {

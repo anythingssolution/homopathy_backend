@@ -1,12 +1,14 @@
 const { query } = require('./shared');
+const { buildReportBranchSql } = require('../../../utils/reportBranchSql');
 
-const getFollowupDueReport = async ({ fromDate, toDate, branchId }) => {
+const getFollowupDueReport = async ({ fromDate, toDate, branchId, branchIds }) => {
     const conditions = ['pf.due_date >= ?', 'pf.due_date <= ?'];
     const params = [fromDate, toDate];
 
-    if (branchId) {
-        conditions.push('pa.fk_branch_id = ?');
-        params.push(branchId);
+    if (branchId || Array.isArray(branchIds)) {
+        const branch = buildReportBranchSql('pa.fk_branch_id', { branchId, branchIds });
+        conditions.push(branch.sql);
+        params.push(...branch.params);
     }
 
     return query(

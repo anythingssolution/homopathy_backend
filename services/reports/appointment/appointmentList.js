@@ -24,7 +24,7 @@ const getAppointmentList = async (filters) => {
         a.fk_patient_id, a.fk_patient_family_member_id AS family_member_id,
         COALESCE(fm.full_name,p.full_name) AS patient_full_name,
         p.uuid AS patient_uuid, p.mobile_no AS patient_mobile_no,
-        t.treatment_name, s.slot_name, s.start_time,
+        t.treatment_name, s.slot_name, s.start_time, a.fk_branch_id, br.branch_name,
         c.id AS consultation_id, c.workflow_status,
         (EXISTS (SELECT 1 FROM tbl_appointments history
             WHERE history.fk_patient_id=a.fk_patient_id AND history.fk_branch_id=a.fk_branch_id
@@ -36,6 +36,7 @@ const getAppointmentList = async (filters) => {
         LEFT JOIN tbl_patient_family_members fm ON fm.id=a.fk_patient_family_member_id
         LEFT JOIN master_treatments t ON t.id=a.fk_treatment_id
         LEFT JOIN master_slots s ON s.id=a.fk_slot_id
+        LEFT JOIN master_clinic_branches br ON br.id=a.fk_branch_id
         LEFT JOIN tbl_consultations c ON c.id=(SELECT MAX(latest.id) FROM tbl_consultations latest WHERE latest.appointment_id=a.appointment_id)
         ${whereClause} AND a.status IN (${statuses.map(() => '?').join(',')})
         ORDER BY a.appointment_date DESC, s.start_time ASC,

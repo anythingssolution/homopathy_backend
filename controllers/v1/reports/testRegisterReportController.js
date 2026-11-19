@@ -22,7 +22,8 @@ const updateTestReportSendStatusController = asyncHandler(async (req, res) => {
         status: req.body?.status,
         reason: req.body?.reason,
         actorUserId: req.user?.id || null,
-        selectedBranchId: req.selectedBranchId || req.body?.branch_id || null,
+        selectedBranchId: req.reportScope ? req.reportScope.branchId : req.selectedBranchId || req.body?.branch_id || null,
+        allowedBranchIds: req.reportScope?.branchIds,
     });
 
     return res.status(200).json({

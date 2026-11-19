@@ -5,6 +5,7 @@ const buildClinicalReportScope = (filters) => buildDateRangeScope({
     fromDate: filters.fromDate,
     toDate: filters.toDate,
     branchId: filters.branchId,
+    branchIds: filters.branchIds,
 });
 
 module.exports = {

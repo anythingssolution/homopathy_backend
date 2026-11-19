@@ -28,6 +28,7 @@ test('not-returned SQL handles returns, families, medicine-only visits and futur
     await connection.query("INSERT INTO master_users (id,uuid,full_name) VALUES (1,'T1','One'),(2,'T2','Returned'),(3,'T3','Primary')");
     await connection.query("INSERT INTO tbl_patient_family_members (id,full_name,relationship) VALUES (7,'Family','Son')");
     await connection.query("INSERT INTO master_treatments VALUES (1,'Follow-up visit')");
+    await connection.query('CREATE TEMPORARY TABLE master_clinic_branches (id INT PRIMARY KEY,branch_name VARCHAR(80))');
     const appointments = [
         [1, 1, null, 1, monthsBefore(today, 1), 'Completed', null],
         [2, 2, null, 1, monthsBefore(today, 4), 'Completed', null],
