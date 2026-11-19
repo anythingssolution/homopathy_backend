@@ -70,7 +70,7 @@ const getConsultationEditAccess = async (executor, consultationId) => {
     if (!['READY_FOR_MEDICAL', 'COMPLETED_NO_PRESCRIPTION'].includes(consultation.workflow_status)) {
         return {
             can_edit_before_dispense: false,
-            edit_lock_reason: 'Medical has already processed this prescription',
+            edit_lock_reason: consultation.workflow_status === 'DISPENSE_CANCELLED' ? 'Dispensing has been cancelled for this prescription' : 'Medical has already processed this prescription',
             workflow_status: consultation.workflow_status,
         };
     }

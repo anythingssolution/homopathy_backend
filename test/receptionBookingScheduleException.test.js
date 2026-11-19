@@ -38,6 +38,7 @@ const read = (sql) => {
 };
 db.query = async sql => read(sql);
 db.withTransaction = async handler => handler({ execute: async (sql, params) => {
+    if (sql.includes('INSERT INTO tbl_reception_discovery_pending')) { assert.equal(params[0], 99); return [{ affectedRows: 1 }]; }
     if (sql.includes('INSERT INTO tbl_appointments')) { inserts.push({ sql, params }); return [{ insertId: 99 }]; }
     assert.doesNotMatch(sql, /^\s*(INSERT|UPDATE|DELETE)\b/);
     return [read(sql)];

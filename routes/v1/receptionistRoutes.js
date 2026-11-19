@@ -46,11 +46,15 @@ const {
 } = require('../../middleware/authMiddleware');
 
 const router = express.Router();
+const discoverySource = require('../../controllers/v1/patientDiscoverySourceController');
 
 router.use(authenticate, authorizeRolesOrModuleAccess(['doctor'], 'RECEPTION'));
 
 // Booking may target any active clinic; operational access stays branch scoped below.
 router.post('/book-appointment', createAppointmentByReceptionist);
+router.get('/booking-discovery/pending', discoverySource.pendingStaffSource);
+router.get('/booking-discovery/:appointment_id', discoverySource.getStaffSource);
+router.post('/booking-discovery/:appointment_id', discoverySource.saveStaffSource);
 router.get('/booking-form-data', getReceptionistFormData);
 router.get('/booking-patients', listReceptionistPatients);
 router.get('/token-plate', getReceptionistBookingTokenPlate);
@@ -63,6 +67,8 @@ router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdate
 router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
 
 router.use(enforceSelectedBranchScope);
+router.get('/appointments/:appointment_id/discovery-source', authorizeAppointmentBranchScope, discoverySource.getStaffSource);
+router.post('/appointments/:appointment_id/discovery-source', authorizeAppointmentBranchScope, discoverySource.saveStaffSource);
 router.get('/form-data', getReceptionistFormData);
 router.get('/appointments', listReceptionistAppointments);
 router.get('/appointments/:appointment_id/timing-change', authorizeAppointmentBranchScope, getTimingChangeDraft);

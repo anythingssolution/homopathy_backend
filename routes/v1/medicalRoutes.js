@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const {
     listMedicalPrescriptions,
+    cancelMedicalDispense,
     listPricedMedicalPrescriptions,
     getMedicalPrescription,
     getPatientLastCourierDelivery,
@@ -56,6 +57,7 @@ router.get('/prescriptions', listMedicalPrescriptions);
 router.get('/prescriptions/priced', listPricedMedicalPrescriptions);
 router.get('/prescriptions/:consultation_id', authorizeConsultationBranchScope, getMedicalPrescription);
 router.post('/prescriptions/:consultation_id/pricing', authorizeConsultationBranchScope, saveMedicalPrescriptionPricing);
+router.post('/prescriptions/:consultation_id/cancel', authorizeConsultationBranchScope, cancelMedicalDispense);
 router.post('/prescriptions/:consultation_id/process', authorizeConsultationBranchScope, processMedicalPrescription);
 
 module.exports = router;

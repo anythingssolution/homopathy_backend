@@ -1,3 +1,4 @@
+const { cancelPendingDispense } = require('../../services/dispenseCancellationService');
 const { resolveRepeatBillTests } = require('../../services/repeatBillTests');
 const { partitionMedicinePurchaseItems } = require('../../utils/medicinePurchaseItems');
 const { saveAdditionalMedications } = require('../../services/additionalMedicationSaveService');
@@ -227,6 +228,7 @@ const finalizeMedicalPrescription = async ({
             c.id,
             c.doctor_id,
             c.workflow_status,
+            c.dispense_cancellation,
             a.fk_patient_id AS patient_id,
             a.fk_branch_id AS branch_id
          FROM tbl_consultations c
@@ -419,6 +421,7 @@ const buildMedicalPrescriptionListItemResponse = (row, detail) => {
         consultation_id: row.consultation_id,
         appointment_id: row.appointment_id,
         workflow_status: row.workflow_status,
+        dispense_cancellation: row.dispense_cancellation ? JSON.parse(row.dispense_cancellation) : null,
         sent_to_medical_at: row.sent_to_medical_at,
         pricing_status: pricing ? 'PRICED' : 'UNPRICED',
         is_priced: Boolean(pricing),
@@ -543,6 +546,7 @@ const getMedicalPrescriptionDetail = async (consultationId, branchId = null) => 
             a.fk_branch_id,
             c.doctor_id,
             c.workflow_status,
+            c.dispense_cancellation,
             c.medication_duration_days,
             c.follow_up_after_days,
             c.follow_up_chain_closed,
@@ -762,6 +766,7 @@ const getRepeatMedicineLastPrescription = asyncHandler(async (req, res) => {
             c.symptoms,
             c.treatment_advice,
             c.workflow_status,
+            c.dispense_cancellation,
             COALESCE(c.doctor_finalized_at, c.created_at) AS prescription_date,
             a.appointment_date,
             a.auid,
@@ -1050,6 +1055,16 @@ const createRepeatMedicineBillController = asyncHandler(async (req, res) => {
     });
 });
 
+const cancelMedicalDispense = asyncHandler(async (req, res) => {
+    const consultationId = Number(req.params.consultation_id);
+    if (!Number.isSafeInteger(consultationId) || consultationId <= 0) throw new AppError('Invalid prescription', 400);
+    const cancellation = await withTransaction(connection => cancelPendingDispense(connection, {
+        consultationId, branchId: req.selectedBranchId || null,
+        actorId: req.user.id, deliveryMode: req.body.delivery_mode, reason: req.body.reason,
+    }));
+    res.json({ success: true, message: 'Dispensing cancelled', data: cancellation });
+});
+
 const listMedicalPrescriptions = asyncHandler(async (req, res) => {
     const branchId = req.query.branch_id !== undefined ? toPositiveInt(req.query.branch_id) : null;
     const pricingStatus = String(req.query.pricing_status || 'all').trim().toLowerCase();
@@ -1069,7 +1084,7 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
         throw new AppError('appointment_date must be in YYYY-MM-DD format', 400);
     }
 
-    if (!['pending', 'completed', 'all'].includes(workflowStatusFilter)) {
+    if (!['pending', 'completed', 'cancelled', 'all'].includes(workflowStatusFilter)) {
         throw new AppError('status must be one of pending, completed or all', 400);
     }
 
@@ -1094,10 +1109,12 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
 
     if (workflowStatusFilter === 'pending') {
         conditions.push(`c.workflow_status = 'READY_FOR_MEDICAL'`);
+    } else if (workflowStatusFilter === 'cancelled') {
+        conditions.push(`c.workflow_status = 'DISPENSE_CANCELLED'`);
     } else if (workflowStatusFilter === 'completed') {
         conditions.push(`c.workflow_status = 'PROCESSED_BY_MEDICAL'`);
     } else {
-        conditions.push(`c.workflow_status IN ('READY_FOR_MEDICAL', 'PROCESSED_BY_MEDICAL')`);
+        conditions.push(`c.workflow_status IN ('READY_FOR_MEDICAL', 'PROCESSED_BY_MEDICAL', 'DISPENSE_CANCELLED')`);
     }
 
     if (branchId) {
@@ -1134,6 +1151,7 @@ const listMedicalPrescriptions = asyncHandler(async (req, res) => {
             c.id AS consultation_id,
             c.appointment_id,
             c.workflow_status,
+            c.dispense_cancellation,
             c.sent_to_medical_at,
             c.medication_duration_days,
             c.symptoms,
@@ -1337,6 +1355,7 @@ const listPricedMedicalPrescriptions = asyncHandler(async (req, res) => {
                 c.appointment_id,
                 a.fk_branch_id,
                 c.workflow_status,
+            c.dispense_cancellation,
                 c.sent_to_medical_at,
                 c.medication_duration_days,
                 c.symptoms,
@@ -1709,6 +1728,8 @@ const saveMedicalPrescriptionPricing = asyncHandler(async (req, res) => {
         if (consultationRows.length === 0) {
             throw new AppError('Prescription not found', 404);
         }
+
+        if (consultationRows[0].workflow_status === 'DISPENSE_CANCELLED') throw new AppError('Dispensing has been cancelled; this prescription cannot be priced or processed', 409);
 
         if (receivedCorrection && (consultationRows[0].workflow_status !== 'PROCESSED_BY_MEDICAL' || processAfterSave || payment)) {
             throw new AppError('Received correction is only allowed through Save Changes on a completed prescription', 400);
@@ -2262,6 +2283,7 @@ const deleteMedicalProductMaster = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+    cancelMedicalDispense,
     buildMedicalPrescriptionListItemResponse,
     listRepeatMedicinePatients,
     getRepeatMedicineLastPrescription,

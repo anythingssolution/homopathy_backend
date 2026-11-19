@@ -10,20 +10,23 @@ test('courier register is bill-date and branch scoped with financial breakup', a
     ]);
     let capturedSql = '';
     let capturedParams = [];
+    let cancellationSql = '';
+    const scopeCalls = [];
 
     require.cache[sharedPath] = {
         id: sharedPath,
         filename: sharedPath,
         loaded: true,
         exports: {
-            buildTimestampDateRangeScope: () => ({
+            buildTimestampDateRangeScope: (scope) => { scopeCalls.push(scope); return ({
                 whereClause: 'WHERE DATE(b.created_at) >= ? AND DATE(b.created_at) <= ? AND b.fk_branch_id = ?',
                 params: ['2026-09-01', '2026-09-25', 2],
-            }),
+            }); },
             query: async (sql, params) => {
+                if (sql.includes("c.workflow_status = 'DISPENSE_CANCELLED'")) { cancellationSql = sql; return [{ consultation_id: 99, dispense_cancellation: JSON.stringify({ delivery_mode: 'COURIER', reason: 'Not collected', cancelled_at: '2026-09-24T12:00:00Z' }) }]; }
                 capturedSql = sql;
                 capturedParams = params;
-                return [{ bill_id: 10 }];
+                return [{ bill_id: 10, booked_at: '2026-09-25T12:00:00Z' }];
             },
         },
     };
@@ -49,4 +52,10 @@ test('courier register is bill-date and branch scoped with financial breakup', a
     assert.match(capturedSql, /UPPER\(item_type\) = 'TEST'/);
     assert.match(capturedSql, /GREATEST\(0, COALESCE\(items\.courier_gross/);
     assert.equal(rows[0].bill_id, 10);
+    assert.equal(rows[1].is_cancelled, true);
+    assert.equal(rows[1].courier_net, 0);
+    assert.equal(rows[1].delivery_remark, 'Not collected');
+    assert.match(cancellationSql, /delivery_mode.*COURIER/);
+    assert.equal(scopeCalls[1].column, 'updated_at');
+    assert.equal(scopeCalls[1].branchAlias, 'a');
 });

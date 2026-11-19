@@ -11,7 +11,7 @@ const getCourierRegisterReport = async (filters) => {
         branchId: filters.branchId,
     });
 
-    return query(
+    const dispensed = await query(
         `SELECT
             b.id AS bill_id,
             b.bill_number,
@@ -101,6 +101,28 @@ const getCourierRegisterReport = async (filters) => {
          ORDER BY b.created_at DESC, b.id DESC`,
         params
     );
+    const scope = buildTimestampDateRangeScope({ alias: 'c', column: 'updated_at', fromDate: filters.fromDate, toDate: filters.toDate, branchAlias: 'a', branchId: filters.branchId });
+    const cancelled = await query(`SELECT c.id AS consultation_id, c.appointment_id,
+        a.fk_patient_id, a.fk_branch_id, a.auid, p.uuid AS patient_uuid,
+        COALESCE(fm.full_name, p.full_name) AS patient_full_name, p.mobile_no AS patient_mobile_no,
+        br.branch_name, d.full_name AS doctor_name, c.dispense_cancellation,
+        c.updated_at AS booked_at
+        FROM tbl_consultations c JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+        JOIN master_users p ON p.id = a.fk_patient_id
+        JOIN master_clinic_branches br ON br.id = a.fk_branch_id
+        LEFT JOIN tbl_patient_family_members fm ON fm.id = a.fk_patient_family_member_id
+        LEFT JOIN master_users d ON d.id = c.doctor_id
+        ${scope.whereClause} AND c.workflow_status = 'DISPENSE_CANCELLED'
+        AND JSON_UNQUOTE(JSON_EXTRACT(c.dispense_cancellation, '$.delivery_mode')) = 'COURIER'`, scope.params);
+    const cancelledRows = cancelled.map(row => {
+        const cancellation = typeof row.dispense_cancellation === 'string' ? JSON.parse(row.dispense_cancellation) : row.dispense_cancellation;
+        return { ...row, bill_id: -Number(row.consultation_id), bill_number: 'Cancelled — no dispatch',
+            medicine_type: 'REGULAR', delivery_mode: 'COURIER', is_cancelled: true,
+            booked_at: cancellation.cancelled_at, delivery_remark: cancellation.reason,
+            total_amount: 0, paid_amount: 0, pending_amount: 0, medicine_gross: 0, medicine_discount: 0,
+            courier_gross: 0, courier_discount: 0, courier_net: 0, medicine_count: 0 };
+    });
+    return [...dispensed, ...cancelledRows].sort((a, b) => new Date(b.booked_at) - new Date(a.booked_at));
 };
 
 module.exports = getCourierRegisterReport;

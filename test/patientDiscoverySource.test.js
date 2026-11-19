@@ -8,7 +8,12 @@ let appointment;
 const answers = new Map();
 db.query = async (sql, params) => {
     calls.push({ sql, params });
-    if (sql.includes('FROM tbl_appointments WHERE')) return appointment && params[1] === appointment.fk_patient_id ? [appointment] : [];
+    if (sql.includes('FROM tbl_appointments WHERE')) {
+        if (!appointment) return [];
+        if (sql.includes('booked_by_user_id = ?')) return params[1] === appointment.booked_by_user_id ? [appointment] : [];
+        return !sql.includes('fk_patient_id = ?') || params[1] === appointment.fk_patient_id ? [appointment] : [];
+    }
+    if (sql.startsWith('UPDATE tbl_patient_discovery_sources')) { if (answers.has(params[2])) answers.set(params[2], { source_code: params[0], other_detail: params[1] }); return {}; }
     if (sql.startsWith('INSERT')) { if (!answers.has(params[0])) answers.set(params[0], { source_code: params[4], other_detail: params[5] }); return {}; }
     if (sql.startsWith('SELECT source_code')) return answers.has(params[0]) ? [answers.get(params[0])] : [];
     return [];
@@ -16,8 +21,8 @@ db.query = async (sql, params) => {
 const service = require('../services/patientDiscoverySourceService');
 test.beforeEach(() => { calls = []; answers.clear(); appointment = { appointment_id: 50, fk_patient_id: 7, fk_patient_family_member_id: null }; });
 
-test('all seven distinct sources are accepted; Facebook and Instagram stay separate', () => {
-    assert.equal(Object.keys(service.SOURCE_LABELS).length, 7);
+test('all source categories are accepted; Facebook and Instagram stay separate', () => {
+    assert.equal(Object.keys(service.SOURCE_LABELS).length, 8);
     for (const code of Object.keys(service.SOURCE_LABELS)) assert.equal(service.validateAnswer({ source_code: code, other_detail: 'Poster' }).source_code, code);
 });
 test('invalid source and missing or oversized Other detail are rejected; unrelated detail is discarded', () => {
@@ -56,6 +61,35 @@ test('report requires branch and uses answer-date boundaries with branch attribu
     assert.deepEqual(calls[0].params, [2, '2026-10-01', '2026-10-22']);
     assert.match(calls[0].sql, /a\.fk_branch_id = \?/);
     assert.match(calls[0].sql, /d\.created_at < DATE_ADD\(\?, INTERVAL 1 DAY\)/);
-    assert.equal(result.sources.length, 7);
+    assert.equal(result.sources.length, 8);
     assert.equal(result.sources.reduce((sum, source) => sum + source.count, 0), 0);
+});
+
+test('reception reuses the existing patient answer and explicit corrections retain one subject row', async () => {
+    appointment.booked_by_user_id = 42;
+    await service.saveDiscoverySource(50, 7, { source_code: 'GOOGLE' });
+    assert.equal((await service.getStaffSource(50, 42)).source_code, 'GOOGLE');
+    assert.equal((await service.saveStaffSource(50, { source_code: 'FACEBOOK' }, 42)).source_code, 'GOOGLE');
+    assert.equal((await service.saveStaffSource(50, { source_code: 'INSTAGRAM', replace_existing: true }, 42)).source_code, 'INSTAGRAM');
+    assert.equal(answers.size, 1);
+});
+test('booking-owned source endpoint rejects another operator and separates family from Self', async () => {
+    appointment.booked_by_user_id = 42;
+    await assert.rejects(service.getStaffSource(50, 43), e => e.statusCode === 404);
+    await service.saveStaffSource(50, { source_code: 'NOT_KNOWN' }, 42);
+    appointment.fk_patient_family_member_id = 19;
+    assert.equal(await service.getStaffSource(50, 42), null);
+    await service.saveStaffSource(50, { source_code: 'FAMILY_FRIEND' }, 42);
+    assert.equal(answers.get('PAT:7').source_code, 'NOT_KNOWN');
+    assert.equal(answers.get('FM:19').source_code, 'FAMILY_FRIEND');
+});
+test('refresh recovery is operator scoped and only tracks new, active, unanswered bookings', async () => {
+    await service.getPendingReceptionSource(42);
+    assert.deepEqual(calls[0].params, [42]);
+    assert.match(calls[0].sql, /tbl_reception_discovery_pending/);
+    assert.match(calls[0].sql, /p.actor_id = \?/);
+    assert.match(calls[0].sql, /a.is_active = 1/);
+    assert.match(calls[0].sql, /a.status <> 'Cancelled'/);
+    assert.match(calls[0].sql, /d.subject_key IS NULL/);
+    assert.match(calls[0].sql, /FM:/);
 });

@@ -3,7 +3,7 @@ const AppError = require('../utils/AppError');
 
 const SOURCE_LABELS = Object.freeze({
     FACEBOOK: 'Facebook', INSTAGRAM: 'Instagram', GOOGLE: 'Google / Google Maps',
-    YOUTUBE: 'YouTube', FAMILY_FRIEND: 'Family / Friend', DOCTOR: 'Another Doctor', OTHER: 'Other',
+    YOUTUBE: 'YouTube', FAMILY_FRIEND: 'Family / Friend', DOCTOR: 'Another Doctor', OTHER: 'Other', NOT_KNOWN: 'Patient does not know',
 });
 const validateAnswer = (body) => {
     const source = String(body?.source_code || '').trim().toUpperCase();
@@ -52,3 +52,36 @@ const getPatientSourceReport = async ({ branchId, fromDate, toDate }) => {
     return { patients, sources: Object.entries(SOURCE_LABELS).map(([code, label]) => ({ code, label, count: patients.filter(p => p.source_code === code).length })) };
 };
 module.exports = { SOURCE_LABELS, validateAnswer, getOwnedSubject, getDiscoverySource, saveDiscoverySource, getPatientSourceReport };
+
+// Staff routes apply module and branch/booking-ownership authorization first.
+const getStaffSubject = async (appointmentId, actorId = null) => {
+    if (!Number.isSafeInteger(Number(appointmentId)) || Number(appointmentId) <= 0) throw new AppError('Valid appointment is required', 400);
+    const rows = await query(`SELECT appointment_id, fk_patient_id, fk_patient_family_member_id FROM tbl_appointments WHERE appointment_id = ?${actorId ? ' AND booked_by_user_id = ?' : ''} LIMIT 1`, actorId ? [Number(appointmentId), actorId] : [Number(appointmentId)]);
+    if (!rows.length) throw new AppError('Appointment not found', 404);
+    return rows[0];
+};
+const getStaffSource = async (appointmentId, actorId = null) => {
+    const subject = await getStaffSubject(appointmentId, actorId);
+    return getDiscoverySource(subject.appointment_id, subject.fk_patient_id);
+};
+const saveStaffSource = async (appointmentId, body, actorId = null) => {
+    const subject = await getStaffSubject(appointmentId, actorId);
+    const answer = validateAnswer(body);
+    // First attribution stays on the original appointment; explicit staff correction updates only the answer.
+    if (body?.replace_existing === true) {
+        const key = subject.fk_patient_family_member_id ? `FM:${subject.fk_patient_family_member_id}` : `PAT:${subject.fk_patient_id}`;
+        await query('UPDATE tbl_patient_discovery_sources SET source_code = ?, other_detail = ? WHERE subject_key = ? AND patient_id = ?', [answer.source_code, answer.other_detail, key, subject.fk_patient_id]);
+    }
+    return saveDiscoverySource(subject.appointment_id, subject.fk_patient_id, body);
+};
+const getPendingReceptionSource = async actorId => {
+    const rows = await query(`SELECT p.appointment_id FROM tbl_reception_discovery_pending p
+      JOIN tbl_appointments a ON a.appointment_id = p.appointment_id
+      LEFT JOIN tbl_patient_discovery_sources d ON d.subject_key = CASE WHEN a.fk_patient_family_member_id IS NULL THEN CONCAT('PAT:', a.fk_patient_id) ELSE CONCAT('FM:', a.fk_patient_family_member_id) END
+      WHERE p.actor_id = ? AND a.booked_by_user_id = p.actor_id AND a.is_active = 1 AND a.status <> 'Cancelled' AND d.subject_key IS NULL
+      ORDER BY p.appointment_id ASC LIMIT 1`, [actorId]);
+    return rows[0] || null;
+};
+module.exports.getStaffSource = getStaffSource;
+module.exports.saveStaffSource = saveStaffSource;
+module.exports.getPendingReceptionSource = getPendingReceptionSource;
