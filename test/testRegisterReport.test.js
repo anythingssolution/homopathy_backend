@@ -123,3 +123,24 @@ test('test report send status payload requires valid source, status and not-sent
         /source_type/
     );
 });
+
+test('report-send updates authorize the source branch for combined reports and still protect legacy selected-branch writes', async t => {
+    const db = require.resolve('../config/db'), service = require.resolve('../services/reports/medical/testReportSendStatus');
+    const before = require.cache[db], previous = require.cache[service];
+    let writes = 0;
+    require.cache[db] = { id: db, filename: db, loaded: true, exports: { query: async sql => {
+        if (sql.includes('FROM tbl_consultation_tests ct')) return [{ source_id: 9, fk_branch_id: 2 }];
+        if (sql.includes('INSERT INTO')) { writes += 1; return {}; }
+        return [{ source_id: 9, report_send_status: 'SENT' }];
+    } } };
+    delete require.cache[service];
+    t.after(() => { if (before) require.cache[db] = before; else delete require.cache[db]; if (previous) require.cache[service] = previous; else delete require.cache[service]; });
+    const { saveTestReportSendStatus } = require(service);
+    const payload = { sourceType: 'CONSULTATION', sourceId: 9, status: 'SENT', actorUserId: 7 };
+    await assert.rejects(saveTestReportSendStatus({ ...payload, allowedBranchIds: [1] }), error => error.statusCode === 403);
+    await assert.rejects(saveTestReportSendStatus({ ...payload, selectedBranchId: 1 }), error => error.statusCode === 403);
+    assert.equal(writes, 0);
+    const row = await saveTestReportSendStatus({ ...payload, allowedBranchIds: [1,2] });
+    assert.equal(row.report_send_status, 'SENT');
+    assert.equal(writes, 1);
+});

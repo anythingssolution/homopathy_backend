@@ -48,10 +48,17 @@ const params = new URLSearchParams({
 }
 ```
 
-### Branch behavior
+### Branch behavior (updated 20 November 2026)
 
-- Branch-scoped users ke liye selected branch automatically apply hoti hai.
-- Frontend usually `branch_id` na bheje; selected branch gate already branch context set karta hai.
+- **Reports Next** opts into `report_scope=independent`. Default: `branch_id=all` (or omitted); a local filter may send a positive branch ID.
+- All Branches includes only the authenticated user's assigned, active clinic branches. Individual selections and record drilldowns are validated on the server.
+- This report selection never reads or changes `master_users.selected_branch_id`; no working branch needs to be selected to view Reports Next.
+- Existing consumers, including Bills Next, omit `report_scope` and retain their operational selected-branch behavior.
+- For independent patient registration summaries, a specific/restricted branch set uses an account's historical active appointments or bills for membership, while the date window remains the account creation date. No creation-branch field is inferred. Unlinked registrations are included only in All Branches when the user can access every active clinic branch.
+- Location reports use the same local branch scope. Combined Not Returned data uses the latest consultation across the accessible selected branches, avoiding false overdue cases when a person returned at another included branch.
+- Response metadata includes the authorized `branch_ids` for independent requests.
+- Read-only Reports Next drilldowns: `/reports/prescriptions/:appointment_id`, `/reports/medical-prescriptions/:consultation_id`, and `/reports/bills/:bill_id`, with the same independent scope. Operational consultation, pricing, payment and booking routes remain unchanged.
+- Test Register report-send PUT supports the same report scope and validates the actual test source branch; it does not bypass operational branch rules for other writes.
 
 ## APIs
 

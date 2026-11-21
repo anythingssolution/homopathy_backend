@@ -57,4 +57,11 @@ test('dispensary register reconciles bill totals and keeps old pending cases wit
     assert.equal(result.top_medicines.find(row=>row.medicine_name==='17').bill_count,2);
     assert.equal(result.top_medicines.some(row=>row.medicine_name==='CBC'),false);
     assert.equal(result.trend[0].net_billed,800);
+    const all = await getDispensaryRegister({ ...scope, branchId: null, branchIds: [1,2] });
+    assert.equal(all.summary.dispensed_bills,4);
+    assert.equal(all.summary.net_billed,1300);
+    assert.equal(all.summary.pending_count,2);
+    const branch2 = await getDispensaryRegister({ ...scope, branchId: null, branchIds: [2] });
+    assert.equal(branch2.summary.dispensed_bills,1);
+    assert.equal(branch2.summary.net_billed,500);
 });

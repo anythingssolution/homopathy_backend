@@ -10,6 +10,7 @@ test('not-returned SQL handles returns, families, medicine-only visits and futur
     const schemas = {
         tbl_appointments: 'appointment_id INT PRIMARY KEY,fk_patient_id INT,fk_patient_family_member_id INT NULL,fk_branch_id INT,fk_treatment_id INT,appointment_date DATE,is_active INT DEFAULT 1,status VARCHAR(30),reception_status VARCHAR(40),queue_status VARCHAR(30)',
         tbl_consultations: 'id INT PRIMARY KEY,appointment_id INT,workflow_status VARCHAR(40),disease VARCHAR(50),diagnosis VARCHAR(50),follow_up_chain_closed INT DEFAULT 0',
+        master_clinic_branches: 'id INT PRIMARY KEY,branch_name VARCHAR(80)',
         master_users: 'id INT PRIMARY KEY,uuid VARCHAR(30),full_name VARCHAR(50),mobile_no VARCHAR(20),is_active INT DEFAULT 1',
         tbl_patient_family_members: 'id INT PRIMARY KEY,full_name VARCHAR(50),relationship VARCHAR(30),is_active INT DEFAULT 1',
         master_treatments: 'id INT PRIMARY KEY,treatment_name VARCHAR(50)',
@@ -28,7 +29,6 @@ test('not-returned SQL handles returns, families, medicine-only visits and futur
     await connection.query("INSERT INTO master_users (id,uuid,full_name) VALUES (1,'T1','One'),(2,'T2','Returned'),(3,'T3','Primary')");
     await connection.query("INSERT INTO tbl_patient_family_members (id,full_name,relationship) VALUES (7,'Family','Son')");
     await connection.query("INSERT INTO master_treatments VALUES (1,'Follow-up visit')");
-    await connection.query('CREATE TEMPORARY TABLE master_clinic_branches (id INT PRIMARY KEY,branch_name VARCHAR(80))');
     const appointments = [
         [1, 1, null, 1, monthsBefore(today, 1), 'Completed', null],
         [2, 2, null, 1, monthsBefore(today, 4), 'Completed', null],
@@ -63,4 +63,7 @@ test('not-returned SQL handles returns, families, medicine-only visits and futur
     assert.equal(one.last_medicine_date, today);
     assert.equal(one.next_appointment, null);
     assert.ok(one.overdue_days >= 28);
+    const all = await getNotReturnedReport({ branchIds: [1,2] });
+    assert.ok(!all.rows.some(row => row.subject_key === 'PAT:1'), 'Recent return at branch 2 removes the patient from the combined overdue list');
+    assert.deepEqual(all.rows.map(row => row.subject_key).sort(), ['FM:7', 'PAT:3']);
 });

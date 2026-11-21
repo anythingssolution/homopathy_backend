@@ -9,7 +9,7 @@ const getCourierRegisterReport = async (filters) => {
         toDate: filters.toDate,
         branchAlias: 'b',
         branchId: filters.branchId,
-    branchIds: filters.branchIds,
+        branchIds: filters.branchIds,
     });
 
     const dispensed = await query(

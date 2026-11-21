@@ -18,7 +18,7 @@ const getRepeatBillTestRows = async (filters) => {
         trs.not_sent_reason AS report_not_sent_reason,
         trs.marked_at AS report_status_marked_at,
         marker.full_name AS report_status_marked_by_name,
-        b.patient_id AS fk_patient_id, b.fk_branch_id,
+        b.patient_id AS fk_patient_id, b.fk_branch_id, br.branch_name,
         COALESCE(fm.full_name, p.full_name) AS patient_full_name,
         COALESCE(fm.age, p.age) AS patient_age,
         COALESCE(fm.date_of_birth, p.date_of_birth) AS patient_date_of_birth,
@@ -31,6 +31,7 @@ const getRepeatBillTestRows = async (filters) => {
         'Medical' AS slot_name, NULL AS token_number, '—' AS display_token_display
      FROM tbl_bill_items bi
      JOIN tbl_bills b ON b.id = bi.bill_id
+        LEFT JOIN master_clinic_branches br ON br.id = b.fk_branch_id
      JOIN master_users p ON p.id = b.patient_id
      LEFT JOIN tbl_consultations c ON c.id = b.consultation_id
      LEFT JOIN tbl_appointments source_a ON source_a.appointment_id = c.appointment_id
