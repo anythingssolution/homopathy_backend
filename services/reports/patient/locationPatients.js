@@ -22,7 +22,7 @@ const getLocationPatients = async (filters) => {
     const branch = alias => buildReportBranchSql(`${alias}.fk_branch_id`, filters);
     const ba = branch('ba'), bb = branch('bb'), ha = branch('ha'), hb = branch('hb'), a = branch('a'), fa = branch('fa');
     const fields = `p.id AS patient_id, p.uuid AS patient_uuid, p.mobile_no AS patient_mobile_no,
-        p.city, p.vidhan_sabha, p.area_name, p.ward_no, p.pincode`;
+        p.city, p.state_name, p.vidhan_sabha, p.area_name, p.ward_no, p.pincode`;
     const branchMembership = `EXISTS (SELECT 1 FROM tbl_appointments ba WHERE ba.fk_patient_id = p.id AND ${ba.sql} AND ba.is_active = 1)
         OR EXISTS (SELECT 1 FROM tbl_bills bb WHERE bb.patient_id = p.id AND ${bb.sql})`;
     const historyAccess = `EXISTS (SELECT 1 FROM tbl_appointments ha
