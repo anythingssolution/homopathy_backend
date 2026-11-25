@@ -2199,6 +2199,8 @@ const importMedicalProducts = asyncHandler(async (req, res) => {
 
 const listMedicalProductMasters = asyncHandler(async (req, res) => {
     const result = await listMedicalProducts({
+        sortBy: req.query.sort_by || 'product',
+        sortOrder: req.query.sort_order || 'asc',
         page: req.query.page,
         limit: req.query.limit,
         search: req.query.search,

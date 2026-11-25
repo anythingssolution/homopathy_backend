@@ -1139,7 +1139,13 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
         `SELECT c.id AS consultation_id, c.appointment_id,
                 COALESCE(c.doctor_finalized_at, c.created_at, a.actual_completed_at, a.appointment_date) AS event_at,
                 a.auid, a.appointment_date, a.current_token_number AS token_number,
-                a.fk_patient_family_member_id, a.booked_for_type,
+                ${PATIENT_SELECT},
+                p.mobile_no AS patient_mobile_no,
+                p.address AS patient_address,
+                p.area_name AS patient_area_name,
+                p.city AS patient_city,
+                p.state_name AS patient_state_name,
+                p.pincode AS patient_pincode,
                 b.branch_name, t.treatment_name, s.slot_name,
                 mb.id AS medication_bill_id,
                 mb.delivery_mode,
@@ -1148,6 +1154,8 @@ const listPatientPrescriptionTimeline = async ({ patientId, filters: rawFilters,
                 d.full_name AS doctor_full_name
          FROM tbl_consultations c
          JOIN tbl_appointments a ON a.appointment_id = c.appointment_id
+         JOIN master_users p ON p.id = a.fk_patient_id
+         LEFT JOIN tbl_patient_family_members fm ON fm.id = a.fk_patient_family_member_id
          JOIN master_clinic_branches b ON b.id = a.fk_branch_id
          JOIN master_treatments t ON t.id = a.fk_treatment_id
          JOIN master_slots s ON s.id = a.fk_slot_id

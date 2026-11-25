@@ -10,6 +10,13 @@ const monthsBefore = (date, months) => {
 };
 const daysBetween = (from, to) => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000);
 
+// Acute visits do not establish a regular follow-up visit or count as a return.
+// Keep the legacy name fallback for masters without a persisted treatment code.
+const nonAcuteTreatmentSql = alias => `NOT (
+    UPPER(REPLACE(TRIM(COALESCE(${alias}.treatment_code,'')), '-', '_')) = 'ACUTE_TREATMENT'
+    OR LOWER(REPLACE(REPLACE(TRIM(COALESCE(${alias}.treatment_name,'')), '-', ' '), '_', ' ')) = 'acute treatment'
+)`;
+
 const buildNotReturnedReport = (rows, asOf) => {
     const cutoffs = [1, 2, 3].map(months => monthsBefore(asOf, months));
     const patients = new Map();
@@ -47,8 +54,10 @@ const getNotReturnedReport = async (filters) => {
         (SELECT DATE_FORMAT(MIN(pf.due_date),'%Y-%m-%d') FROM tbl_pending_followups pf
             WHERE pf.parent_appointment_id=a.appointment_id AND pf.status IN ('PENDING','NOTIFIED','CONFIRMED_BOOKED')) AS due_date,
         (SELECT DATE_FORMAT(MIN(na.appointment_date),'%Y-%m-%d') FROM tbl_appointments na
+            JOIN master_treatments next_t ON next_t.id=na.fk_treatment_id
             WHERE na.fk_patient_id=a.fk_patient_id AND na.fk_patient_family_member_id <=> a.fk_patient_family_member_id
               AND ${nextBranch.sql} AND na.appointment_date>=? AND na.is_active=1
+              AND ${nonAcuteTreatmentSql('next_t')}
               AND na.status NOT IN ('Cancelled','Completed')
               AND COALESCE(na.reception_status,'') <> 'REJECTED_BY_RECEPTION'
               AND COALESCE(na.queue_status,'') <> 'CANCELLED') AS next_appointment,
@@ -68,11 +77,14 @@ const getNotReturnedReport = async (filters) => {
         WHERE ${branch.sql} AND a.is_active=1 AND a.status='Completed'
           AND p.is_active=1 AND (fm.id IS NULL OR fm.is_active=1)
           AND a.appointment_date<=?
+          AND ${nonAcuteTreatmentSql('t')}
           AND NOT EXISTS (SELECT 1 FROM tbl_appointments newer
               JOIN tbl_consultations nc ON nc.appointment_id=newer.appointment_id
+              JOIN master_treatments newer_t ON newer_t.id=newer.fk_treatment_id
               WHERE newer.fk_patient_id=a.fk_patient_id AND ${newerBranch.sql}
                 AND newer.fk_patient_family_member_id <=> a.fk_patient_family_member_id
                 AND newer.is_active=1 AND newer.status='Completed' AND newer.appointment_date<=?
+                AND ${nonAcuteTreatmentSql('newer_t')}
                 AND (newer.appointment_date>a.appointment_date OR (newer.appointment_date=a.appointment_date AND nc.id>c.id)))`,
     [...nextBranch.params, today, ...billBranch.params, today, ...branch.params, today, ...newerBranch.params, today]);
     return buildNotReturnedReport(rows, today);

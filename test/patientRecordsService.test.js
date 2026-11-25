@@ -45,6 +45,36 @@ test('prescription timeline orders consultations and medicine collections by act
     assert.deepEqual(items.slice(2).map((item) => item.source_id), [31, 30]);
 });
 
+test('prescription previews carry patient identity and selected family demographics with account contact/address', async () => {
+    const shared = require('../controllers/v1/doctor/shared');
+    const original = shared.getConsultationAggregateByAppointmentId;
+    shared.getConsultationAggregateByAppointmentId = async () => ({ consultation_id: 44, medications: [] });
+    try {
+        for (const family of [false, true]) {
+            registryQueries = [];
+            queryResponder = sql => {
+                if (sql.includes('SELECT c.id AS consultation_id, c.appointment_id')) {
+                    assert.match(sql, /JOIN master_users p ON p.id = a.fk_patient_id/);
+                    assert.match(sql, /LEFT JOIN tbl_patient_family_members fm ON fm.id = a.fk_patient_family_member_id/);
+                    assert.match(sql, /COALESCE\(fm.full_name, p.full_name\) AS patient_full_name/);
+                    for (const field of ['patient_uuid','patient_age','patient_age_display','patient_gender','patient_mobile_no','patient_address','patient_state_name','patient_pincode']) assert.match(sql, new RegExp(`AS ${field}\\b`));
+                    return [{ consultation_id: 44, appointment_id: 22, event_at: '2026-10-12', appointment_date: '2026-10-12', patient_uuid: 'DTH_101', patient_full_name: family ? 'Family patient' : 'V. K SHARMA', patient_age: family ? 12 : 77, patient_gender: family ? 'male' : 'female', patient_mobile_no: '7987334282', patient_address: 'RAIPUR', fk_patient_family_member_id: family ? 7 : null }];
+                }
+                if (sql.includes('FROM master_users')) return [{ id: 2772 }];
+                if (sql.includes('FROM tbl_patient_family_members')) return [{ id: 7 }];
+                return [];
+            };
+            const result = await listPatientPrescriptionTimeline({ patientId: 2772, actor: {}, filters: { branch_id: 'all', ...(family ? { family_member_id: 7 } : { subject_scope: 'SELF' }) } });
+            const appointment = result.items[0].appointment;
+            assert.equal(appointment.patient_uuid, 'DTH_101');
+            assert.equal(appointment.patient_full_name, family ? 'Family patient' : 'V. K SHARMA');
+            assert.equal(appointment.patient_age, family ? 12 : 77);
+            assert.equal(appointment.patient_mobile_no, '7987334282');
+            assert.equal(appointment.patient_address, 'RAIPUR');
+        }
+    } finally { queryResponder = null; shared.getConsultationAggregateByAppointmentId = original; }
+});
+
 test('explicit all-branch registry scope uses shared visit and bill counts without changing the working branch', async () => {
     registryQueries = [];
     const actor = { selected_branch_id: 1 };

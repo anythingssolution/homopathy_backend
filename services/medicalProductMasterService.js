@@ -129,7 +129,20 @@ const listMedicalProducts = async ({
     search = '',
     sourceType = '',
     status = 'all',
+    sortBy = 'product',
+    sortOrder = 'asc',
 }) => {
+    const sorts = {
+        product: 'mmp.product_name', source: 'mmp.source_type',
+        variant: "COALESCE(NULLIF(mmp.packing,''),NULLIF(mmp.size_or_weight,''),NULLIF(mmp.product_type,''),mmp.category)",
+        price: 'COALESCE(mmp.mrp_rate,mmp.price_min,mmp.price_max)',
+        status: 'mmp.is_active', created_at: 'mmp.created_at',
+    };
+    if (!Object.hasOwn(sorts, sortBy) || !['asc','desc'].includes(sortOrder)) throw new AppError('Invalid product sort', 400);
+    const direction = sortOrder.toUpperCase();
+    const orderSql = sortBy === 'product'
+        ? `(TRIM(mmp.product_name) REGEXP '^[0-9]') ${direction}, mmp.product_name ${direction}, mmp.id ${direction}`
+        : `${sorts[sortBy]} IS NULL ASC, ${sorts[sortBy]} ${direction}, mmp.id ${direction}`;
     const safePage = Math.max(Number(page) || 1, 1);
     const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
     const offset = (safePage - 1) * safeLimit;
@@ -197,7 +210,7 @@ const listMedicalProducts = async ({
          FROM master_medical_products mmp
          LEFT JOIN master_text_medicines mtm ON mtm.id = mmp.medicine_text_id
          ${whereSql}
-         ORDER BY (TRIM(mmp.product_name) REGEXP '^[0-9]') ASC, mmp.product_name ASC, mmp.id ASC
+         ORDER BY ${orderSql}
          LIMIT ? OFFSET ?`,
         [...params, safeLimit, offset]
     );
