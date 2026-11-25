@@ -22,11 +22,11 @@ const service = require('../services/patientDiscoverySourceService');
 test.beforeEach(() => { calls = []; answers.clear(); appointment = { appointment_id: 50, fk_patient_id: 7, fk_patient_family_member_id: null }; });
 
 test('all source categories are accepted; Facebook and Instagram stay separate', () => {
-    assert.equal(Object.keys(service.SOURCE_LABELS).length, 8);
+    assert.equal(Object.keys(service.SOURCE_LABELS).length, 7);
     for (const code of Object.keys(service.SOURCE_LABELS)) assert.equal(service.validateAnswer({ source_code: code, other_detail: 'Poster' }).source_code, code);
 });
 test('invalid source and missing or oversized Other detail are rejected; unrelated detail is discarded', () => {
-    for (const body of [{}, { source_code: 'UNKNOWN' }, { source_code: 'OTHER' }, { source_code: 'OTHER', other_detail: 'x'.repeat(256) }]) assert.throws(() => service.validateAnswer(body), e => e.statusCode === 400);
+    for (const body of [{}, { source_code: 'NOT_KNOWN' }, { source_code: 'UNKNOWN' }, { source_code: 'OTHER' }, { source_code: 'OTHER', other_detail: 'x'.repeat(256) }]) assert.throws(() => service.validateAnswer(body), e => e.statusCode === 400);
     assert.deepEqual(service.validateAnswer({ source_code: 'OTHER', other_detail: ' Poster ' }), { source_code: 'OTHER', other_detail: 'Poster' });
     assert.equal(service.validateAnswer({ source_code: 'GOOGLE', other_detail: 'irrelevant' }).other_detail, null);
 });
@@ -61,7 +61,7 @@ test('report requires branch and uses answer-date boundaries with branch attribu
     assert.deepEqual(calls[0].params, [2, '2026-10-01', '2026-10-22']);
     assert.match(calls[0].sql, /a\.fk_branch_id = \?/);
     assert.match(calls[0].sql, /d\.created_at < DATE_ADD\(\?, INTERVAL 1 DAY\)/);
-    assert.equal(result.sources.length, 8);
+    assert.equal(result.sources.length, 7);
     assert.equal(result.sources.reduce((sum, source) => sum + source.count, 0), 0);
 });
 
@@ -76,20 +76,20 @@ test('reception reuses the existing patient answer and explicit corrections reta
 test('booking-owned source endpoint rejects another operator and separates family from Self', async () => {
     appointment.booked_by_user_id = 42;
     await assert.rejects(service.getStaffSource(50, 43), e => e.statusCode === 404);
-    await service.saveStaffSource(50, { source_code: 'NOT_KNOWN' }, 42);
+    await service.saveStaffSource(50, { source_code: 'OTHER', other_detail: 'Patient does not know' }, 42);
     appointment.fk_patient_family_member_id = 19;
     assert.equal(await service.getStaffSource(50, 42), null);
     await service.saveStaffSource(50, { source_code: 'FAMILY_FRIEND' }, 42);
-    assert.equal(answers.get('PAT:7').source_code, 'NOT_KNOWN');
+    assert.equal(answers.get('PAT:7').source_code, 'OTHER');
     assert.equal(answers.get('FM:19').source_code, 'FAMILY_FRIEND');
 });
-test('refresh recovery is operator scoped and only tracks new, active, unanswered bookings', async () => {
-    await service.getPendingReceptionSource(42);
-    assert.deepEqual(calls[0].params, [42]);
-    assert.match(calls[0].sql, /tbl_reception_discovery_pending/);
-    assert.match(calls[0].sql, /p.actor_id = \?/);
-    assert.match(calls[0].sql, /a.is_active = 1/);
-    assert.match(calls[0].sql, /a.status <> 'Cancelled'/);
-    assert.match(calls[0].sql, /d.subject_key IS NULL/);
-    assert.match(calls[0].sql, /FM:/);
+test('legacy booking recovery no longer returns a mandatory booking prompt', async () => {
+    assert.equal(await service.getPendingReceptionSource(42), null);
+    assert.equal(calls.length, 0);
+});
+test('check-in recovery requires a valid operator and selected branch before querying', async () => {
+    for (const [actor, branch] of [[null, 1], [42, null], [0, 1], [42, -1], [42, 'all'], [42, 1.5]]) {
+        await assert.rejects(service.getPendingReceptionCheckInSource(actor, branch), e => e.statusCode === 400);
+    }
+    assert.equal(calls.length, 0);
 });

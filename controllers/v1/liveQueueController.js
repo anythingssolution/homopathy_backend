@@ -858,6 +858,7 @@ const checkInAppointment = asyncHandler(async (req, res) => {
             newQueueStatus: QUEUE_STATUS.CHECKED_IN,
             createdBy: actorUserId,
             meta: {
+                patient_source_collection: 'CHECK_IN',
                 protected_visible_window_appointment_ids: effectiveProtectedWindowAppointmentIds,
                 protected_visible_window_size: effectiveProtectedWindowAppointmentIds.length,
                 protected_window_reason: 'VISIBLE_QUEUE_STABILITY_ON_CHECK_IN',

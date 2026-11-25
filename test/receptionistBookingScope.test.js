@@ -52,6 +52,17 @@ test('operational lists and appointment mutations retain branch restrictions', (
     assert.ok(routeGuards('post', '/appointments/:appointment_id/approve').includes('appointment-branch'));
 });
 
+test('check-in source recovery and source read/write retain operational access guards', () => {
+    assert.deepEqual(routeGuards('get', '/check-in-discovery/pending'), [
+        'authentication', 'reception-access', 'selected-branch', 'pendingCheckInSource',
+    ]);
+    for (const method of ['get', 'post']) {
+        assert.deepEqual(routeGuards(method, '/appointments/:appointment_id/discovery-source').slice(0, 4), [
+            'authentication', 'reception-access', 'selected-branch', 'appointment-branch',
+        ]);
+    }
+});
+
 test('shared patient registry and corrections retain reception access without a visit in the working branch', () => {
     for (const [method, route] of [['get', '/patients'], ['patch', '/patients/:patient_id'], ['post', '/patients/:patient_id/reset-password'], ['get', '/patients/:patient_id/update-history']]) {
         const guards = routeGuards(method, route);

@@ -21,3 +21,6 @@ exports.saveStaffSource = asyncHandler(async (req, res) => {
 exports.pendingStaffSource = asyncHandler(async (req, res) => {
     res.json({ success: true, data: await staffSources.getPendingReceptionSource(req.user.id) });
 });
+exports.pendingCheckInSource = asyncHandler(async (req, res) => {
+    res.json({ success: true, data: await staffSources.getPendingReceptionCheckInSource(req.user.id, req.selectedBranchId) });
+});

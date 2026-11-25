@@ -67,6 +67,7 @@ router.get('/patients/:patient_id/update-history', listReceptionistPatientUpdate
 router.post('/patients/:patient_id/family-members', createReceptionistPatientFamilyMember);
 
 router.use(enforceSelectedBranchScope);
+router.get('/check-in-discovery/pending', discoverySource.pendingCheckInSource);
 router.get('/appointments/:appointment_id/discovery-source', authorizeAppointmentBranchScope, discoverySource.getStaffSource);
 router.post('/appointments/:appointment_id/discovery-source', authorizeAppointmentBranchScope, discoverySource.saveStaffSource);
 router.get('/form-data', getReceptionistFormData);

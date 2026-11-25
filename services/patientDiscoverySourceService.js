@@ -4,7 +4,7 @@ const AppError = require('../utils/AppError');
 
 const SOURCE_LABELS = Object.freeze({
     FACEBOOK: 'Facebook', INSTAGRAM: 'Instagram', GOOGLE: 'Google / Google Maps',
-    YOUTUBE: 'YouTube', FAMILY_FRIEND: 'Family / Friend', DOCTOR: 'Another Doctor', OTHER: 'Other', NOT_KNOWN: 'Patient does not know',
+    YOUTUBE: 'YouTube', FAMILY_FRIEND: 'Family / Friend', DOCTOR: 'Another Doctor', OTHER: 'Other',
 });
 const validateAnswer = (body) => {
     const source = String(body?.source_code || '').trim().toUpperCase();
@@ -79,14 +79,32 @@ const saveStaffSource = async (appointmentId, body, actorId = null) => {
     }
     return saveDiscoverySource(subject.appointment_id, subject.fk_patient_id, body);
 };
-const getPendingReceptionSource = async actorId => {
-    const rows = await query(`SELECT p.appointment_id FROM tbl_reception_discovery_pending p
-      JOIN tbl_appointments a ON a.appointment_id = p.appointment_id
+// Old clients must not recover a required source question during booking.
+const getPendingReceptionSource = async () => null;
+
+const getPendingReceptionCheckInSource = async (actorId, branchId) => {
+    const actor = Number(actorId), branch = Number(branchId);
+    if (!Number.isSafeInteger(actor) || actor <= 0 || !Number.isSafeInteger(branch) || branch <= 0) {
+        throw new AppError('Valid operator and selected branch are required', 400);
+    }
+    // The marker is committed with the existing check-in event, so refresh recovery
+    // needs no separate write and cannot make an otherwise valid check-in fail.
+    // Only marked events are eligible: do not backfill historical unanswered visits.
+    const rows = await query(`SELECT a.appointment_id FROM tbl_appointments a
+      JOIN tbl_appointment_queue_events checkin ON checkin.id = (
+        SELECT MAX(latest.id) FROM tbl_appointment_queue_events latest
+        WHERE latest.appointment_id = a.appointment_id AND latest.event_type = 'CHECKED_IN'
+      )
       LEFT JOIN tbl_patient_discovery_sources d ON d.subject_key = CASE WHEN a.fk_patient_family_member_id IS NULL THEN CONCAT('PAT:', a.fk_patient_id) ELSE CONCAT('FM:', a.fk_patient_family_member_id) END
-      WHERE p.actor_id = ? AND a.booked_by_user_id = p.actor_id AND a.is_active = 1 AND a.status <> 'Cancelled' AND d.subject_key IS NULL
-      ORDER BY p.appointment_id ASC LIMIT 1`, [actorId]);
+      WHERE checkin.created_by = ? AND a.fk_branch_id = ?
+        AND a.checked_in_at IS NOT NULL AND a.is_active = 1 AND a.status <> 'Cancelled'
+        AND CASE WHEN JSON_VALID(checkin.meta_json)
+          THEN JSON_UNQUOTE(JSON_EXTRACT(checkin.meta_json, '$.patient_source_collection')) END = 'CHECK_IN'
+        AND d.subject_key IS NULL
+      ORDER BY checkin.id ASC, a.appointment_id ASC LIMIT 1`, [actor, branch]);
     return rows[0] || null;
 };
 module.exports.getStaffSource = getStaffSource;
 module.exports.saveStaffSource = saveStaffSource;
 module.exports.getPendingReceptionSource = getPendingReceptionSource;
+module.exports.getPendingReceptionCheckInSource = getPendingReceptionCheckInSource;

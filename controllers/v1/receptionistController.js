@@ -2122,10 +2122,6 @@ const createAppointmentByReceptionist = asyncHandler(async (req, res) => {
             });
         }
 
-        await connection.execute(
-            'INSERT INTO tbl_reception_discovery_pending (appointment_id, actor_id) VALUES (?, ?)',
-            [insertResult.insertId, req.user.id]
-        );
         return insertResult.insertId;
     });
 
